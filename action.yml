@@ -1,5 +1,5 @@
 name: 'Carbon-Aware Dispatcher'
-description: 'Checks real-time grid carbon intensity and dispatches workflows only when the grid is running on clean energy. Works out of the box for US and UK zones with no API key required.'
+description: 'Green & Sustainable CI/CD — dispatches workflows only when the energy grid is powered by renewables. Free, zero-config for US & UK.'
 author: 'Open Source Climate Tech'
 branding:
   icon: 'globe'
