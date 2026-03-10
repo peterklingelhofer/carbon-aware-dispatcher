@@ -13,9 +13,9 @@ import check_grid
 def _clear_env():
     """Ensure test env vars don't leak between tests."""
     keys = [
-        "GRID_ZONE", "GRID_ZONES", "EIA_API_KEY", "MAX_CARBON",
-        "WORKFLOW_ID", "GITHUB_TOKEN", "TARGET_REPO", "TARGET_REF",
-        "FAIL_ON_API_ERROR", "ENABLE_FORECAST", "GITHUB_OUTPUT",
+        "GRID_ZONE", "GRID_ZONES", "EIA_API_KEY", "GRID_STATUS_API_KEY",
+        "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN", "TARGET_REPO",
+        "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST", "GITHUB_OUTPUT",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -371,6 +371,130 @@ class TestEiaGetHistoryTrend:
 
 
 # ---------------------------------------------------------------------------
+# GridStatus.io forecast tests
+# ---------------------------------------------------------------------------
+
+class TestGridstatusApiRequest:
+    @mock.patch("check_grid.requests.get")
+    def test_success(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {"data": [{"interval_start_utc": "2026-03-10T12:00:00+00:00"}]},
+        )
+        result = check_grid.gridstatus_api_request("https://api.gridstatus.io/v1/test", "my-key")
+        assert result is not None
+        call_headers = mock_get.call_args[1].get("headers", {})
+        assert call_headers.get("x-api-key") == "my-key"
+
+    @mock.patch("check_grid.requests.get")
+    def test_auth_error(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
+        result = check_grid.gridstatus_api_request("https://api.gridstatus.io/v1/test", "bad-key")
+        assert result is None
+        assert mock_get.call_count == 1
+
+
+class TestGridstatusGetForecast:
+    @mock.patch("check_grid._gridstatus_get_load_forecast")
+    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    def test_finds_green_window(self, mock_renew, mock_load):
+        mock_renew.return_value = {
+            "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
+            "2026-03-10T18:00:00+00:00": {"solar_mw": 8000, "wind_mw": 2000},
+        }
+        mock_load.return_value = {
+            "2026-03-10T12:00:00+00:00": 10000,
+            "2026-03-10T18:00:00+00:00": 10000,
+        }
+        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 250, "key")
+        # At 18:00: 10000/10000 = 100% renewable -> 0 intensity
+        assert dt == "2026-03-10T18:00:00+00:00"
+        assert intensity == 0
+
+    @mock.patch("check_grid._gridstatus_get_load_forecast")
+    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    def test_no_green_window(self, mock_renew, mock_load):
+        mock_renew.return_value = {
+            "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
+        }
+        mock_load.return_value = {
+            "2026-03-10T12:00:00+00:00": 10000,
+        }
+        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 100, "key")
+        # 150/10000 = 1.5% renewable -> 542 intensity, > 100 threshold
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    def test_no_renewable_data(self, mock_renew):
+        mock_renew.return_value = {}
+        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 250, "key")
+        assert dt is None
+        assert intensity is None
+
+    def test_unsupported_zone(self):
+        dt, intensity = check_grid.gridstatus_get_forecast("BPAT", 250, "key")
+        assert dt is None
+        assert intensity is None
+
+    @mock.patch("check_grid._gridstatus_get_load_forecast")
+    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    def test_no_key_returns_none(self, mock_renew, mock_load):
+        """get_forecast returns None for US zones without GridStatus key."""
+        dt, intensity = check_grid.get_forecast("CISO", "", 250, check_grid.PROVIDER_EIA, "")
+        assert dt is None
+        assert intensity is None
+        mock_renew.assert_not_called()
+
+    @mock.patch("check_grid._gridstatus_get_load_forecast")
+    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    def test_get_forecast_with_key(self, mock_renew, mock_load):
+        """get_forecast calls gridstatus when key is provided."""
+        mock_renew.return_value = {
+            "2026-03-10T18:00:00+00:00": {"solar_mw": 9000, "wind_mw": 1000},
+        }
+        mock_load.return_value = {
+            "2026-03-10T18:00:00+00:00": 10000,
+        }
+        dt, intensity = check_grid.get_forecast(
+            "CISO", "", 250, check_grid.PROVIDER_EIA, "my-gridstatus-key"
+        )
+        assert dt == "2026-03-10T18:00:00+00:00"
+        assert intensity == 0
+
+
+class TestGridstatusRenewableForecast:
+    @mock.patch("check_grid._gridstatus_query_dataset")
+    def test_single_dataset_with_location_filter(self, mock_query):
+        """CAISO-style: single dataset with location filter."""
+        mock_query.return_value = [
+            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "location": "CAISO",
+             "solar_mw": 8000, "wind_mw": 1500},
+            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "location": "NP15",
+             "solar_mw": 2000, "wind_mw": 500},
+        ]
+        iso_config = check_grid.GRIDSTATUS_ISO_MAP["CISO"]
+        result = check_grid._gridstatus_get_renewable_forecast(iso_config, "key", "2026-03-10")
+        assert "2026-03-10T18:00:00+00:00" in result
+        assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 8000
+        assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 1500
+
+    @mock.patch("check_grid._gridstatus_query_dataset")
+    def test_separate_solar_wind_datasets(self, mock_query):
+        """PJM-style: separate solar and wind datasets."""
+        mock_query.side_effect = [
+            # solar
+            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "solar_forecast": 3000}],
+            # wind
+            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "wind_forecast": 2000}],
+        ]
+        iso_config = check_grid.GRIDSTATUS_ISO_MAP["PJM"]
+        result = check_grid._gridstatus_get_renewable_forecast(iso_config, "key", "2026-03-10")
+        assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 3000
+        assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 2000
+
+
+# ---------------------------------------------------------------------------
 # Provider-agnostic tests
 # ---------------------------------------------------------------------------
 
@@ -509,8 +633,8 @@ class TestHandleDirtyGrid:
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
     @mock.patch("check_grid.set_output")
-    def test_eia_no_forecast(self, mock_output, mock_trend, mock_forecast):
-        """EIA zones don't have forecasts."""
+    def test_eia_no_forecast_without_key(self, mock_output, mock_trend, mock_forecast):
+        """EIA zones without GridStatus key don't have forecasts."""
         mock_trend.return_value = "increasing"
         mock_forecast.return_value = (None, None)
 
@@ -520,6 +644,22 @@ class TestHandleDirtyGrid:
         assert output_calls["grid_clean"] == "false"
         assert output_calls["intensity_trend"] == "increasing"
         assert "forecast_green_at" not in output_calls
+
+    @mock.patch("check_grid.get_forecast")
+    @mock.patch("check_grid.get_history_trend")
+    @mock.patch("check_grid.set_output")
+    def test_eia_with_gridstatus_key_gets_forecast(self, mock_output, mock_trend, mock_forecast):
+        """EIA zones with GridStatus key get forecasts."""
+        mock_trend.return_value = "decreasing"
+        mock_forecast.return_value = ("2026-03-10T18:00:00+00:00", 50)
+
+        check_grid.handle_dirty_grid("CISO", "", 250, 400, enable_forecast=True,
+                                     gridstatus_api_key="gs-key")
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["forecast_green_at"] == "2026-03-10T18:00:00+00:00"
+        assert output_calls["forecast_intensity"] == "50"
+        mock_forecast.assert_called_once_with("CISO", "", 250, check_grid.PROVIDER_EIA, "gs-key")
 
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
