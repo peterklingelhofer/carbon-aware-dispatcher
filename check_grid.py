@@ -24,6 +24,7 @@ PROVIDER_EIA = "eia"
 
 UK_API_BASE = "https://api.carbonintensity.org.uk"
 EIA_API_BASE = "https://api.eia.gov/v2"
+GRIDSTATUS_API_BASE = "https://api.gridstatus.io/v1"
 
 # Lifecycle emission factors in gCO2eq/kWh by EIA fuel type code
 EIA_EMISSION_FACTORS = {
@@ -81,6 +82,85 @@ UK_REGION_IDS = {
     "GB-16": 16, "Scotland": 16,
     "GB-17": 17, "Wales": 17,
 }
+
+# GridStatus.io ISO mapping: EIA BA code -> (gridstatus source, solar+wind dataset, load dataset)
+# Only ISOs with both renewable forecast and load forecast are included.
+GRIDSTATUS_ISO_MAP = {
+    # CAISO
+    "CISO": {
+        "renewable_dataset": "caiso_solar_and_wind_forecast_dam",
+        "load_dataset": "caiso_load_forecast",
+        "solar_col": "solar_mw",
+        "wind_col": "wind_mw",
+        "load_col": "load_forecast",
+        "location_filter": "CAISO",  # filter by location column
+    },
+    # ERCOT
+    "ERCO": {
+        "renewable_dataset": "ercot_net_load_forecast",
+        "load_dataset": None,  # net load forecast has all fields
+        "solar_col": "solar_forecast",
+        "wind_col": "wind_forecast",
+        "load_col": "load_forecast",
+        "location_filter": None,
+    },
+    # ISO New England
+    "ISNE": {
+        "renewable_dataset": None,  # separate solar + wind datasets
+        "solar_dataset": "isone_solar_forecast_hourly",
+        "wind_dataset": "isone_wind_forecast_hourly",
+        "load_dataset": "isone_load_forecast",
+        "solar_col": "solar_forecast",
+        "wind_col": "wind_forecast",
+        "load_col": "load_forecast",
+        "location_filter": None,
+    },
+    # MISO
+    "MISO": {
+        "renewable_dataset": None,
+        "solar_dataset": "miso_solar_forecast_hourly",
+        "wind_dataset": "miso_wind_forecast_hourly",
+        "load_dataset": "miso_load_forecast",
+        "solar_col": None,  # uses regional columns, sum them
+        "wind_col": None,
+        "load_col": "load_forecast",
+        "location_filter": None,
+        "sum_columns": True,  # solar/wind have regional columns to sum
+    },
+    # NYISO
+    "NYIS": {
+        "renewable_dataset": "nyiso_btm_solar_forecast",
+        "load_dataset": "nyiso_load_forecast",
+        "solar_col": "system_btm_solar_forecast",
+        "wind_col": None,  # no wind forecast dataset
+        "load_col": "load_forecast",
+        "location_filter": None,
+    },
+    # PJM
+    "PJM": {
+        "renewable_dataset": None,
+        "solar_dataset": "pjm_solar_forecast_hourly",
+        "wind_dataset": "pjm_wind_forecast_hourly",
+        "load_dataset": "pjm_load_forecast",
+        "solar_col": "solar_forecast",
+        "wind_col": "wind_forecast",
+        "load_col": "load_forecast",
+        "location_filter": None,
+    },
+    # SPP
+    "SWPP": {
+        "renewable_dataset": "spp_solar_and_wind_forecast_mid_term",
+        "load_dataset": "spp_load_forecast",
+        "solar_col": "solar_forecast_mw",
+        "wind_col": "wind_forecast_mw",
+        "load_col": "load_forecast",
+        "location_filter": None,
+    },
+}
+
+# Average fossil fuel intensity (gCO2eq/kWh) used to estimate carbon intensity
+# from renewable percentage. Based on typical US fossil mix (~60% gas, ~30% coal, ~10% oil).
+FOSSIL_AVG_INTENSITY = 550
 
 
 def get_required_env(name):
@@ -365,6 +445,215 @@ def eia_get_history_trend(zone, eia_api_key=""):
 
 
 # ---------------------------------------------------------------------------
+# Provider: GridStatus.io (US forecast — requires free API key)
+# ---------------------------------------------------------------------------
+
+def gridstatus_api_request(url, api_key, timeout=DEFAULT_TIMEOUT):
+    """Make a GET request to GridStatus API with the x-api-key header."""
+    headers = {"x-api-key": api_key}
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            print(f"::warning::GridStatus network error (attempt {attempt + 1}): {exc}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+                continue
+            return None
+
+        if response.status_code == 200:
+            try:
+                return response.json()
+            except (ValueError, requests.exceptions.JSONDecodeError):
+                print(f"::warning::GridStatus invalid JSON: {response.text[:200]}")
+                return None
+
+        print(f"::warning::GridStatus API returned {response.status_code} (attempt {attempt + 1}): {response.text[:200]}")
+        if response.status_code in (401, 403):
+            print("::error::GridStatus authentication failed. Check your GRID_STATUS_API_KEY.")
+            return None
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
+
+    return None
+
+
+def _gridstatus_query_dataset(dataset, api_key, start_time, limit=48):
+    """Query a GridStatus dataset and return the data rows."""
+    url = (
+        f"{GRIDSTATUS_API_BASE}/datasets/{dataset}/query"
+        f"?start_time={start_time}&limit={limit}"
+    )
+    result = gridstatus_api_request(url, api_key)
+    if result is None:
+        return []
+    return result.get("data", [])
+
+
+def _gridstatus_get_renewable_forecast(iso_config, api_key, start_time):
+    """Fetch solar+wind forecast data for a given ISO.
+
+    Returns list of dicts with keys: interval_start_utc, solar_mw, wind_mw.
+    """
+    results = {}
+
+    if iso_config.get("renewable_dataset"):
+        # Single dataset with both solar and wind
+        rows = _gridstatus_query_dataset(iso_config["renewable_dataset"], api_key, start_time)
+        loc_filter = iso_config.get("location_filter")
+
+        for row in rows:
+            if loc_filter and row.get("location") != loc_filter:
+                continue
+            ts = row.get("interval_start_utc")
+            if ts not in results:
+                results[ts] = {"solar_mw": 0, "wind_mw": 0}
+            solar = row.get(iso_config.get("solar_col", ""), 0) or 0
+            wind = row.get(iso_config.get("wind_col", ""), 0) or 0
+            # Keep the latest publish_time for each interval
+            results[ts]["solar_mw"] = float(solar)
+            results[ts]["wind_mw"] = float(wind)
+    else:
+        # Separate solar and wind datasets
+        solar_dataset = iso_config.get("solar_dataset")
+        wind_dataset = iso_config.get("wind_dataset")
+
+        if solar_dataset:
+            solar_rows = _gridstatus_query_dataset(solar_dataset, api_key, start_time)
+            for row in solar_rows:
+                ts = row.get("interval_start_utc")
+                if ts not in results:
+                    results[ts] = {"solar_mw": 0, "wind_mw": 0}
+                if iso_config.get("sum_columns"):
+                    # Sum all numeric columns except timestamps
+                    total = 0
+                    for k, v in row.items():
+                        if k.startswith("interval_") or k.startswith("publish_"):
+                            continue
+                        if isinstance(v, (int, float)) and v > 0:
+                            total += v
+                    results[ts]["solar_mw"] = float(total)
+                else:
+                    col = iso_config.get("solar_col", "solar_forecast")
+                    results[ts]["solar_mw"] = float(row.get(col, 0) or 0)
+
+        if wind_dataset:
+            wind_rows = _gridstatus_query_dataset(wind_dataset, api_key, start_time)
+            for row in wind_rows:
+                ts = row.get("interval_start_utc")
+                if ts not in results:
+                    results[ts] = {"solar_mw": 0, "wind_mw": 0}
+                if iso_config.get("sum_columns"):
+                    total = 0
+                    for k, v in row.items():
+                        if k.startswith("interval_") or k.startswith("publish_"):
+                            continue
+                        if isinstance(v, (int, float)) and v > 0:
+                            total += v
+                    results[ts]["wind_mw"] = float(total)
+                else:
+                    col = iso_config.get("wind_col", "wind_forecast")
+                    results[ts]["wind_mw"] = float(row.get(col, 0) or 0)
+
+    return results
+
+
+def _gridstatus_get_load_forecast(iso_config, api_key, start_time):
+    """Fetch load forecast data for a given ISO.
+
+    Returns dict: interval_start_utc -> load_mw.
+    """
+    dataset = iso_config.get("load_dataset")
+    if not dataset:
+        # Some ISOs (e.g., ERCOT net load) have load in the renewable dataset
+        return None
+
+    rows = _gridstatus_query_dataset(dataset, api_key, start_time)
+    results = {}
+    load_col = iso_config.get("load_col", "load_forecast")
+
+    for row in rows:
+        ts = row.get("interval_start_utc")
+        load = row.get(load_col)
+        if load is not None and ts:
+            results[ts] = float(load)
+
+    return results
+
+
+def gridstatus_get_forecast(zone, max_carbon, gridstatus_api_key):
+    """Get carbon intensity forecast for a US zone using GridStatus.io.
+
+    Estimates future carbon intensity from renewable generation and load forecasts.
+    Returns (forecast_green_at, forecast_intensity) or (None, None).
+    """
+    iso_config = GRIDSTATUS_ISO_MAP.get(zone)
+    if not iso_config:
+        print(f"  GridStatus forecast not available for zone {zone}")
+        return None, None
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    start_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    print(f"  Fetching GridStatus.io forecast for zone: {zone}...")
+
+    # Get renewable forecast
+    renewables = _gridstatus_get_renewable_forecast(iso_config, gridstatus_api_key, start_time)
+    if not renewables:
+        print(f"::warning::No GridStatus renewable forecast data for zone {zone}")
+        return None, None
+
+    # Get load forecast
+    if iso_config.get("load_dataset"):
+        loads = _gridstatus_get_load_forecast(iso_config, gridstatus_api_key, start_time)
+    else:
+        # For ERCOT net load dataset, load is already in the renewable data
+        loads = {}
+        rows = _gridstatus_query_dataset(iso_config["renewable_dataset"], gridstatus_api_key, start_time)
+        load_col = iso_config.get("load_col", "load_forecast")
+        for row in rows:
+            ts = row.get("interval_start_utc")
+            load = row.get(load_col)
+            if load is not None and ts:
+                loads[ts] = float(load)
+
+    if not loads:
+        print(f"::warning::No GridStatus load forecast data for zone {zone}")
+        return None, None
+
+    # Calculate estimated carbon intensity for each forecast period
+    for ts in sorted(renewables.keys()):
+        if ts not in loads:
+            continue
+
+        load_mw = loads[ts]
+        if load_mw <= 0:
+            continue
+
+        solar_mw = renewables[ts].get("solar_mw", 0)
+        wind_mw = renewables[ts].get("wind_mw", 0)
+        renewable_mw = solar_mw + wind_mw
+
+        # Clamp renewable to load (can't exceed 100%)
+        renewable_pct = min(renewable_mw / load_mw, 1.0)
+        fossil_pct = 1.0 - renewable_pct
+
+        # Estimate carbon intensity: fossil portion * avg fossil intensity
+        estimated_intensity = round(fossil_pct * FOSSIL_AVG_INTENSITY)
+
+        if estimated_intensity <= max_carbon:
+            print(f"  Forecast: grid expected to be green at {ts} "
+                  f"(~{estimated_intensity} gCO2eq/kWh, "
+                  f"{renewable_pct:.0%} renewable)")
+            return ts, estimated_intensity
+
+    print(f"  Forecast: no green window found in GridStatus forecast horizon.")
+    return "none_in_forecast", None
+
+
+# ---------------------------------------------------------------------------
 # Provider-agnostic helpers
 # ---------------------------------------------------------------------------
 
@@ -409,11 +698,14 @@ def check_carbon_intensity(zone, api_key, max_carbon, provider):
     return eia_check_carbon_intensity(zone, max_carbon, api_key)
 
 
-def get_forecast(zone, api_key, max_carbon, provider):
+def get_forecast(zone, api_key, max_carbon, provider, gridstatus_api_key=""):
     """Get forecast using the appropriate provider."""
     if provider == PROVIDER_UK:
         return uk_get_forecast(zone, max_carbon)
-    # EIA does not provide carbon intensity forecasts
+    # US zones: use GridStatus.io if API key is available
+    if gridstatus_api_key:
+        return gridstatus_get_forecast(zone, max_carbon, gridstatus_api_key)
+    print("  No forecast available for US zones without a GridStatus API key.")
     return None, None
 
 
@@ -502,7 +794,8 @@ def set_output(name, value):
     print(f"  Output {name}={value}")
 
 
-def handle_dirty_grid(zone, api_key, max_carbon, intensity, enable_forecast):
+def handle_dirty_grid(zone, api_key, max_carbon, intensity, enable_forecast,
+                      gridstatus_api_key=""):
     """When the grid is dirty, fetch forecast/trend info and set outputs."""
     provider = detect_provider(zone)
 
@@ -517,9 +810,11 @@ def handle_dirty_grid(zone, api_key, max_carbon, intensity, enable_forecast):
     if trend:
         set_output("intensity_trend", trend)
 
-    # Forecast — free for UK, not available for EIA
+    # Forecast — free for UK, GridStatus for US (requires key)
     if enable_forecast or provider == PROVIDER_UK:
-        forecast_at, forecast_intensity = get_forecast(zone, api_key, max_carbon, provider)
+        forecast_at, forecast_intensity = get_forecast(
+            zone, api_key, max_carbon, provider, gridstatus_api_key
+        )
         if forecast_at and forecast_at != "none_in_forecast":
             set_output("forecast_green_at", forecast_at)
             if forecast_intensity is not None:
@@ -538,6 +833,7 @@ def main():
 
     # Optional inputs with defaults
     api_key = os.environ.get("EIA_API_KEY", "")
+    gridstatus_api_key = os.environ.get("GRID_STATUS_API_KEY", "")
     ref = os.environ.get("TARGET_REF", DEFAULT_REF) or DEFAULT_REF
     max_carbon = float(os.environ.get("MAX_CARBON", DEFAULT_MAX_CARBON))
     fail_on_api_error = os.environ.get("FAIL_ON_API_ERROR", "false").lower() == "true"
@@ -587,7 +883,8 @@ def main():
             print(f"\nGrid is clean! Triggering workflow...")
             trigger_workflow(repo, workflow_id, token, ref)
         else:
-            handle_dirty_grid(entry["zone"], api_key, max_carbon, intensity, enable_forecast)
+            handle_dirty_grid(entry["zone"], api_key, max_carbon, intensity, enable_forecast,
+                              gridstatus_api_key)
             print(f"\nGrid is dirty ({intensity} gCO2eq/kWh > {max_carbon}). Will retry on next schedule.")
             sys.exit(EXIT_SUCCESS)
 
@@ -599,7 +896,8 @@ def main():
 
         if best_zone is None:
             first_zone = zones_config[0]["zone"]
-            handle_dirty_grid(first_zone, api_key, max_carbon, None, enable_forecast)
+            handle_dirty_grid(first_zone, api_key, max_carbon, None, enable_forecast,
+                              gridstatus_api_key)
             if fail_on_api_error:
                 print("::error::No green zones found and fail_on_api_error is enabled.")
                 sys.exit(EXIT_FAILURE)
