@@ -1,0 +1,94 @@
+name: 'Carbon-Aware Dispatcher'
+description: 'Checks real-time grid carbon intensity and dispatches workflows only when the grid is running on clean energy. Works out of the box for US and UK zones with no API key required.'
+author: 'Open Source Climate Tech'
+branding:
+  icon: 'globe'
+  color: 'green'
+
+inputs:
+  grid_zone:
+    description: 'Single zone identifier. US zones use EIA balancing authority codes (e.g., CISO, ERCO, PJM). UK zones use GB, GB-1..GB-17. No API key needed for either.'
+    required: false
+  grid_zones:
+    description: >-
+      Comma-separated list of zones, optionally with runner labels.
+      Examples: "CISO,ERCO,PJM" or "CISO:runner-cal,GB:runner-uk".
+      The action picks the zone with the lowest carbon intensity under the threshold.
+    required: false
+  eia_api_key:
+    description: 'Optional EIA API key for US zones. The built-in DEMO_KEY works but has lower rate limits. Register free at https://www.eia.gov/opendata/'
+    required: false
+    default: ''
+  max_carbon_intensity:
+    description: 'Maximum gCO2eq/kWh allowed to trigger the job.'
+    required: false
+    default: '250'
+  workflow_id:
+    description: 'The filename of the workflow to dispatch (e.g., heavy-batch.yml).'
+    required: true
+  github_token:
+    description: 'A GitHub token with Actions read/write permissions.'
+    required: true
+  target_ref:
+    description: 'The git ref to dispatch the workflow on (default: main).'
+    required: false
+    default: 'main'
+  fail_on_api_error:
+    description: 'If true, fail the action when the carbon intensity API is unreachable instead of skipping silently.'
+    required: false
+    default: 'false'
+  enable_forecast:
+    description: 'If true, fetch carbon intensity forecast when the grid is dirty. Only available for UK zones (free, 48h ahead). US zones provide trend data instead.'
+    required: false
+    default: 'false'
+
+outputs:
+  grid_clean:
+    description: 'Whether the grid was clean enough to dispatch (true/false).'
+    value: ${{ steps.grid-check.outputs.grid_clean }}
+  carbon_intensity:
+    description: 'The carbon intensity reading in gCO2eq/kWh, or "unknown" on API error.'
+    value: ${{ steps.grid-check.outputs.carbon_intensity }}
+  grid_zone:
+    description: 'The zone that was selected (useful in multi-zone mode).'
+    value: ${{ steps.grid-check.outputs.grid_zone }}
+  runner_label:
+    description: 'The runner label for the selected zone (if configured in grid_zones).'
+    value: ${{ steps.grid-check.outputs.runner_label }}
+  intensity_trend:
+    description: 'Carbon intensity trend from recent history: "decreasing", "increasing", or "stable".'
+    value: ${{ steps.grid-check.outputs.intensity_trend }}
+  forecast_green_at:
+    description: 'ISO 8601 timestamp of the next predicted green window (UK zones only).'
+    value: ${{ steps.grid-check.outputs.forecast_green_at }}
+  forecast_intensity:
+    description: 'Predicted carbon intensity at the next green window in gCO2eq/kWh.'
+    value: ${{ steps.grid-check.outputs.forecast_intensity }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install requests==2.32.*
+
+    - name: Check grid and dispatch
+      id: grid-check
+      shell: bash
+      run: python ${{ github.action_path }}/check_grid.py
+      env:
+        GRID_ZONE: ${{ inputs.grid_zone }}
+        GRID_ZONES: ${{ inputs.grid_zones }}
+        EIA_API_KEY: ${{ inputs.eia_api_key }}
+        MAX_CARBON: ${{ inputs.max_carbon_intensity }}
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        TARGET_REPO: ${{ github.repository }}
+        TARGET_REF: ${{ inputs.target_ref }}
+        FAIL_ON_API_ERROR: ${{ inputs.fail_on_api_error }}
+        ENABLE_FORECAST: ${{ inputs.enable_forecast }}
