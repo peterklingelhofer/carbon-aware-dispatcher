@@ -27,6 +27,17 @@ EIA_EMISSION_FACTORS = {
 # from renewable percentage. Based on typical US fossil mix (~60% gas, ~30% coal, ~10% oil).
 FOSSIL_AVG_INTENSITY = 550
 
+# Global average grid carbon intensity (~450 gCO2eq/kWh).
+# Used as baseline for estimating carbon savings from green scheduling.
+GLOBAL_AVG_INTENSITY = 450
+
+# Average CI job power draw in kW. GitHub-hosted runners are 2-4 vCPU machines
+# drawing roughly 30-60W. We use 0.05 kW as a conservative estimate.
+CI_JOB_POWER_KW = 0.05
+
+# Default estimated CI job duration in hours (15 minutes).
+DEFAULT_JOB_DURATION_HOURS = 0.25
+
 
 def api_request(url, api_key=None, timeout=DEFAULT_TIMEOUT):
     """Make a GET request with retries.
