@@ -7,13 +7,13 @@ branding:
 
 inputs:
   grid_zone:
-    description: 'Single zone identifier. US: EIA BA codes (CISO, ERCO, PJM). UK: GB, GB-1..GB-17. Global: any Electricity Maps zone. Presets: "auto:detect" (detects cloud region), "auto:green", "auto:cleanest" (zero-config), "auto:escape-coal" (dirty-grid routing), or "auto:escape-coal:IN" (escape from specific zone). If omitted, auto-detects your cloud region or falls back to auto:cleanest.'
+    description: 'Single zone identifier. US: EIA BA codes (CISO, ERCO, PJM). UK: GB, GB-1..GB-17. Global: any Electricity Maps zone. Presets: "auto:detect" (detects cloud region), "auto:nearest" (picks zones closest to your timezone), "auto:green", "auto:cleanest" (zero-config), "auto:escape-coal" (dirty-grid routing), or "auto:escape-coal:IN" (escape from specific zone). If omitted, auto-detects your cloud region or falls back to auto:cleanest.'
     required: false
   grid_zones:
     description: >-
       Comma-separated list of zones, optionally with runner labels.
       Examples: "CISO,ERCO,PJM" or "CISO:runner-cal,GB:runner-uk".
-      Presets: "auto:detect", "auto:green", "auto:cleanest", "auto:escape-coal", "auto:escape-coal:IN".
+      Presets: "auto:detect", "auto:nearest", "auto:green", "auto:cleanest", "auto:escape-coal", "auto:escape-coal:IN".
       The action picks the zone with the lowest carbon intensity under the threshold.
       If omitted entirely, auto-detects your cloud region or falls back to auto:cleanest.
     required: false
@@ -125,23 +125,26 @@ outputs:
   optimal_zone:
     description: 'The zone recommended for the optimal dispatch window (strategy=queue).'
     value: ${{ steps.grid-check.outputs.optimal_zone }}
+  suggested_cron:
+    description: 'Suggested cron expression for scheduling green builds based on the zone energy profile (e.g., solar peak, wind peak, off-peak hydro).'
+    value: ${{ steps.grid-check.outputs.suggested_cron }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v4
       with:
-        python-version: '3.11'
+        enable-cache: true
 
     - name: Install dependencies
       shell: bash
-      run: pip install requests==2.32.*
+      run: uv run --with requests==2.32.* --python 3.11 python -c "print('deps ready')"
 
     - name: Check grid and dispatch
       id: grid-check
       shell: bash
-      run: python ${{ github.action_path }}/check_grid.py
+      run: uv run --with requests==2.32.* --python 3.11 python ${{ github.action_path }}/check_grid.py
       env:
         GRID_ZONE: ${{ inputs.grid_zone }}
         GRID_ZONES: ${{ inputs.grid_zones }}
