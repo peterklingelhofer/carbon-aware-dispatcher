@@ -179,7 +179,8 @@ ZONE_TO_AWS_REGION = {
     "HK": "ap-east-1",          # Hong Kong
 
     # Latin America
-    "BR-CS": "sa-east-1",       # Brazil South -> São Paulo
+    "BR-CS": "sa-east-1",       # Brazil Centro-South -> São Paulo
+    "BR-SE": "sa-east-1",       # Brazil Southeast -> São Paulo
     "BR-S": "sa-east-1",
     "BR-NE": "sa-east-1",
     "BR-N": "sa-east-1",
@@ -254,8 +255,20 @@ ZONE_TO_GCP_REGION = {
     "GB-16": "europe-west2",
     # Europe
     "NO-NO1": "europe-north1",  # Finland (closest to Nordics)
+    "NO-NO2": "europe-north1",
+    "NO-NO3": "europe-north1",
+    "NO-NO4": "europe-north1",
+    "NO-NO5": "europe-north1",
+    "SE-SE1": "europe-north1",
     "SE-SE2": "europe-north1",
+    "SE-SE3": "europe-north1",
+    "SE-SE4": "europe-north1",
+    "DK-DK1": "europe-north1",
+    "DK-DK2": "europe-north1",
     "FI": "europe-north1",
+    "EE": "europe-north1",
+    "LV": "europe-north1",
+    "LT": "europe-north1",
     "FR": "europe-west9",       # Paris
     "DE": "europe-west3",       # Frankfurt
     "NL": "europe-west4",       # Netherlands
@@ -264,7 +277,22 @@ ZONE_TO_GCP_REGION = {
     "PL": "europe-central2",    # Warsaw
     "ES": "europe-southwest1",  # Madrid
     "PT": "europe-southwest1",
+    "AT": "europe-west3",       # Austria -> Frankfurt
+    "CZ": "europe-central2",    # Czech -> Warsaw
+    "HU": "europe-central2",
+    "SK": "europe-central2",
+    "RO": "europe-central2",
+    "BG": "europe-west8",       # -> Milan (closest)
+    "HR": "europe-west8",
+    "SI": "europe-west8",
+    "RS": "europe-west8",
+    "GR": "europe-west8",
     "IT-NO": "europe-west8",    # Milan
+    "IT-CNO": "europe-west8",
+    "IT-CSO": "europe-west8",
+    "IT-SO": "europe-west8",
+    "IT-SIC": "europe-west8",
+    "IT-SAR": "europe-west8",
     "IE": "europe-west1",
     "IS": "europe-north1",      # Closest to Iceland
     # Asia-Pacific
@@ -281,11 +309,14 @@ ZONE_TO_GCP_REGION = {
     "AU-QLD": "australia-southeast1",
     "AU-SA": "australia-southeast2",
     "AU-TAS": "australia-southeast2",
+    "NZ-NZN": "australia-southeast1",  # Closest to NZ
+    "NZ-NZS": "australia-southeast1",
     "SG": "asia-southeast1",    # Singapore
     "TW": "asia-east1",         # Taiwan
     "HK": "asia-east2",         # Hong Kong
     # Latin America
     "BR-S": "southamerica-east1",   # Sao Paulo
+    "BR-SE": "southamerica-east1",
     "BR-CS": "southamerica-east1",
     "BR-NE": "southamerica-east1",
     "BR-N": "southamerica-east1",
@@ -339,8 +370,20 @@ ZONE_TO_AZURE_REGION = {
     "GB-16": "uksouth",
     # Europe
     "NO-NO1": "norwayeast",
+    "NO-NO2": "norwayeast",
+    "NO-NO3": "norwayeast",
+    "NO-NO4": "norwayeast",
+    "NO-NO5": "norwayeast",
+    "SE-SE1": "swedencentral",
     "SE-SE2": "swedencentral",
+    "SE-SE3": "swedencentral",
+    "SE-SE4": "swedencentral",
+    "DK-DK1": "swedencentral",
+    "DK-DK2": "swedencentral",
     "FI": "swedencentral",
+    "EE": "swedencentral",
+    "LV": "swedencentral",
+    "LT": "swedencentral",
     "FR": "francecentral",
     "DE": "germanywestcentral",
     "NL": "westeurope",
@@ -349,7 +392,22 @@ ZONE_TO_AZURE_REGION = {
     "PL": "polandcentral",
     "ES": "spaincentral",
     "PT": "spaincentral",
+    "AT": "germanywestcentral",
+    "CZ": "germanywestcentral",
+    "HU": "germanywestcentral",
+    "SK": "germanywestcentral",
+    "RO": "germanywestcentral",
+    "BG": "italynorth",
+    "HR": "italynorth",
+    "SI": "italynorth",
+    "RS": "italynorth",
+    "GR": "italynorth",
     "IT-NO": "italynorth",
+    "IT-CNO": "italynorth",
+    "IT-CSO": "italynorth",
+    "IT-SO": "italynorth",
+    "IT-SIC": "italynorth",
+    "IT-SAR": "italynorth",
     "IE": "northeurope",
     "IS": "northeurope",
     # Asia-Pacific
@@ -366,11 +424,14 @@ ZONE_TO_AZURE_REGION = {
     "AU-QLD": "australiaeast",
     "AU-SA": "australiasoutheast",
     "AU-TAS": "australiasoutheast",
+    "NZ-NZN": "australiaeast",     # Closest to NZ
+    "NZ-NZS": "australiaeast",
     "SG": "southeastasia",
     "TW": "eastasia",
     "HK": "eastasia",
     # Latin America
     "BR-S": "brazilsouth",
+    "BR-SE": "brazilsouth",
     "BR-CS": "brazilsouth",
     "BR-NE": "brazilsouth",
     "BR-N": "brazilsouth",
