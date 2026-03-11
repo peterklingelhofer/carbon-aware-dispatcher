@@ -16,6 +16,12 @@ from providers import (
 )
 from providers import eia, electricity_maps, gridstatus, uk
 from providers.base import api_request, api_request_with_header, compute_trend
+from providers.runners import (
+    format_runner_label,
+    format_runson_label,
+    get_cloud_region,
+    ZONE_TO_AWS_REGION,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +32,7 @@ def _clear_env():
         "ELECTRICITY_MAPS_TOKEN", "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN",
         "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
         "MAX_WAIT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
+        "RUNNER_PROVIDER", "RUNNER_SPEC", "GITHUB_RUN_ID",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -995,3 +1002,177 @@ class TestInlineMode:
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["grid_clean"] == "true"
         assert output_calls["carbon_intensity"] == "50"
+
+
+# ---------------------------------------------------------------------------
+# Runner provider tests
+# ---------------------------------------------------------------------------
+
+class TestGetCloudRegion:
+    def test_us_zones(self):
+        assert get_cloud_region("CISO") == "us-west-1"
+        assert get_cloud_region("BPAT") == "us-west-2"
+        assert get_cloud_region("PJM") == "us-east-1"
+        assert get_cloud_region("ERCO") == "us-east-2"
+
+    def test_uk_zones(self):
+        assert get_cloud_region("GB") == "eu-west-2"
+        assert get_cloud_region("GB-16") == "eu-west-2"
+
+    def test_europe_zones(self):
+        assert get_cloud_region("NO-NO1") == "eu-north-1"
+        assert get_cloud_region("FR") == "eu-west-3"
+        assert get_cloud_region("DE") == "eu-central-1"
+
+    def test_canada_zones(self):
+        assert get_cloud_region("CA-QC") == "ca-central-1"
+
+    def test_asia_pacific(self):
+        assert get_cloud_region("JP-TK") == "ap-northeast-1"
+        assert get_cloud_region("AU-NSW") == "ap-southeast-2"
+        assert get_cloud_region("SG") == "ap-southeast-1"
+
+    def test_latin_america(self):
+        assert get_cloud_region("BR-CS") == "sa-east-1"
+
+    def test_unknown_zone_returns_default(self):
+        assert get_cloud_region("UNKNOWN-ZONE") == "us-east-1"
+
+
+class TestFormatRunsonLabel:
+    def test_basic(self):
+        label = format_runson_label("CISO", "12345")
+        assert label == "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1"
+
+    def test_custom_spec(self):
+        label = format_runson_label("GB", "99999", "4cpu-linux-arm64")
+        assert label == "runs-on=99999/runner=4cpu-linux-arm64/region=eu-west-2"
+
+    def test_europe_region(self):
+        label = format_runson_label("NO-NO1", "111")
+        assert "region=eu-north-1" in label
+
+
+class TestFormatRunnerLabel:
+    def test_runson_provider(self):
+        label = format_runner_label("CISO", "runson", "12345")
+        assert label == "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1"
+
+    def test_runson_with_custom_spec(self):
+        label = format_runner_label("DE", "runson", "12345", "8cpu-linux-x64")
+        assert label == "runs-on=12345/runner=8cpu-linux-x64/region=eu-central-1"
+
+    def test_runson_without_run_id_returns_none(self):
+        label = format_runner_label("CISO", "runson", "")
+        assert label is None
+
+    def test_unknown_provider_returns_none(self):
+        label = format_runner_label("CISO", "unknown-provider", "12345")
+        assert label is None
+
+    def test_empty_provider_returns_none(self):
+        label = format_runner_label("CISO", "", "12345")
+        assert label is None
+
+    def test_case_insensitive(self):
+        label = format_runner_label("CISO", "RunsOn", "12345")
+        assert "region=us-west-1" in label
+
+
+class TestSetRunnerOutputs:
+    @mock.patch("check_grid.set_output")
+    def test_no_provider_with_user_label(self, mock_output):
+        check_grid.set_runner_outputs("CISO", "my-runner", "", "", "")
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["cloud_region"] == "us-west-1"
+        assert output_calls["runner_label"] == "my-runner"
+
+    @mock.patch("check_grid.set_output")
+    def test_no_provider_no_label(self, mock_output):
+        check_grid.set_runner_outputs("CISO", None, "", "", "")
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["cloud_region"] == "us-west-1"
+        assert "runner_label" not in output_calls
+
+    @mock.patch("check_grid.set_output")
+    def test_runson_provider(self, mock_output):
+        check_grid.set_runner_outputs("DE", None, "runson", "", "12345")
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["cloud_region"] == "eu-central-1"
+        assert "runs-on=12345" in output_calls["runner_label"]
+        assert "region=eu-central-1" in output_calls["runner_label"]
+
+    @mock.patch("check_grid.set_output")
+    def test_runson_overrides_user_label(self, mock_output):
+        """Provider-formatted label takes precedence over user label."""
+        check_grid.set_runner_outputs("CISO", "my-label", "runson", "", "12345")
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert "runs-on=12345" in output_calls["runner_label"]
+        assert output_calls["runner_label"] != "my-label"
+
+    @mock.patch("check_grid.set_output")
+    def test_runson_fallback_to_user_label_without_run_id(self, mock_output):
+        """Falls back to user label if RunsOn can't format (no run_id)."""
+        check_grid.set_runner_outputs("CISO", "my-label", "runson", "", "")
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["runner_label"] == "my-label"
+
+
+class TestRoutingIntegration:
+    """Integration tests: main() sets cloud_region and provider-formatted labels."""
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_single_zone_with_runson_provider(self, mock_summary, mock_output, mock_check):
+        mock_check.return_value = (True, 50)
+
+        os.environ["GRID_ZONE"] = "CISO"
+        os.environ["WORKFLOW_ID"] = ""
+        os.environ["RUNNER_PROVIDER"] = "runson"
+        os.environ["RUNNER_SPEC"] = "4cpu-linux-x64"
+        os.environ["GITHUB_RUN_ID"] = "98765"
+
+        check_grid.main()
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["grid_clean"] == "true"
+        assert output_calls["cloud_region"] == "us-west-1"
+        assert output_calls["runner_label"] == "runs-on=98765/runner=4cpu-linux-x64/region=us-west-1"
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_multi_zone_with_runson_provider(self, mock_summary, mock_output, mock_check):
+        mock_check.side_effect = [
+            (False, 400),  # ERCO dirty
+            (True, 80),    # GB green
+        ]
+
+        os.environ["GRID_ZONES"] = "ERCO,GB"
+        os.environ["WORKFLOW_ID"] = ""
+        os.environ["RUNNER_PROVIDER"] = "runson"
+        os.environ["GITHUB_RUN_ID"] = "11111"
+
+        check_grid.main()
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["grid_zone"] == "GB"
+        assert output_calls["cloud_region"] == "eu-west-2"
+        assert "region=eu-west-2" in output_calls["runner_label"]
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_cloud_region_output_without_provider(self, mock_summary, mock_output, mock_check):
+        """cloud_region is always set even without a runner_provider."""
+        mock_check.return_value = (True, 100)
+
+        os.environ["GRID_ZONE"] = "NO-NO1"
+        os.environ["WORKFLOW_ID"] = ""
+        os.environ.pop("RUNNER_PROVIDER", None)
+
+        check_grid.main()
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["cloud_region"] == "eu-north-1"

@@ -16,6 +16,7 @@ from providers import (
 )
 from providers import eia, electricity_maps, gridstatus, uk
 from providers.base import DEFAULT_TIMEOUT
+from providers.runners import format_runner_label, get_cloud_region
 
 # Exit codes
 EXIT_SUCCESS = 0
@@ -177,6 +178,31 @@ def set_output(name, value):
         with open(output_file, "a") as f:
             f.write(f"{name}={value}\n")
     print(f"  Output {name}={value}")
+
+
+def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_run_id):
+    """Set runner-related outputs: runner_label and cloud_region.
+
+    If runner_provider is set (e.g., 'runson'), formats a provider-specific
+    runner label. Otherwise uses the user-provided label from grid_zones.
+    Always sets cloud_region to the nearest AWS region.
+    """
+    # Always output cloud_region
+    cloud_region = get_cloud_region(zone)
+    set_output("cloud_region", cloud_region)
+
+    # Provider-formatted label takes precedence over user label
+    if runner_provider:
+        formatted = format_runner_label(
+            zone, runner_provider, github_run_id, runner_spec
+        )
+        if formatted:
+            set_output("runner_label", formatted)
+            return
+        # Fall through to user label if formatting failed
+
+    if user_label:
+        set_output("runner_label", user_label)
 
 
 def write_job_summary(zone, intensity, is_green, max_carbon, trend=None,
@@ -392,6 +418,9 @@ def main():
     fail_on_api_error = os.environ.get("FAIL_ON_API_ERROR", "false").lower() == "true"
     enable_forecast = os.environ.get("ENABLE_FORECAST", "false").lower() == "true"
     max_wait = min(int(os.environ.get("MAX_WAIT", "0")), MAX_WAIT_CAP)
+    runner_provider = os.environ.get("RUNNER_PROVIDER", "")
+    runner_spec = os.environ.get("RUNNER_SPEC", "")
+    github_run_id = os.environ.get("GITHUB_RUN_ID", "")
 
     # Parse zone(s)
     grid_zones_str = os.environ.get("GRID_ZONES", "")
@@ -451,8 +480,8 @@ def main():
         if is_green:
             set_output("grid_clean", "true")
             set_output("carbon_intensity", str(intensity))
-            if entry.get("runner_label"):
-                set_output("runner_label", entry["runner_label"])
+            set_runner_outputs(entry["zone"], entry.get("runner_label"),
+                               runner_provider, runner_spec, github_run_id)
             write_job_summary(entry["zone"], intensity, True, max_carbon,
                               waited_minutes=waited_minutes)
             if dispatch_mode:
@@ -510,8 +539,8 @@ def main():
         set_output("grid_clean", "true")
         set_output("grid_zone", best_zone)
         set_output("carbon_intensity", str(best_intensity))
-        if best_label:
-            set_output("runner_label", best_label)
+        set_runner_outputs(best_zone, best_label,
+                           runner_provider, runner_spec, github_run_id)
 
         write_job_summary(best_zone, best_intensity, True, max_carbon,
                           waited_minutes=waited_minutes, skipped=skipped)

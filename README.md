@@ -112,6 +112,102 @@ Check multiple zones and pick the cleanest one. You can mix US and UK zones. Pai
 
 The selected runner label is available via `${{ steps.carbon-check.outputs.runner_label }}`.
 
+## Carbon-Aware Routing (Route Jobs to Green Regions)
+
+The action can shift from gatekeeper (block if dirty) to **router** (send jobs to the greenest region). This works today with any provider that supports region selection.
+
+### Phase 1: Label-Based Routing (Any Runner Provider)
+
+Use multi-zone mode with `runner_label` to route a downstream job to whichever region is greenest:
+
+```yaml
+jobs:
+  pick-region:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.carbon.outputs.runner_label }}
+      region: ${{ steps.carbon.outputs.cloud_region }}
+      clean: ${{ steps.carbon.outputs.grid_clean }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'CISO:us-west-runner,PJM:us-east-runner,GB:uk-runner'
+          max_carbon_intensity: '200'
+
+  build:
+    needs: pick-region
+    if: needs.pick-region.outputs.clean == 'true'
+    runs-on: ${{ needs.pick-region.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Building in greenest region (${{ needs.pick-region.outputs.region }})"
+```
+
+This works with self-hosted runners, GitHub Larger Runners, or any third-party runner provider. You provide the label mapping; the action picks the greenest zone.
+
+The `cloud_region` output always contains the nearest AWS region name (e.g., `us-west-1`, `eu-west-2`), useful for configuring deployments, caches, or artifact stores to match where the job ran.
+
+### Phase 2: RunsOn Integration (Automatic Region Routing)
+
+[RunsOn](https://runs-on.com) is an AWS-based runner provider that supports per-job region selection via labels. Set `runner_provider: 'runson'` and the action automatically outputs a RunsOn-compatible label with the greenest AWS region (no manual label mapping needed):
+
+```yaml
+jobs:
+  pick-region:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.carbon.outputs.runner_label }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'CISO,BPAT,PJM,GB'
+          max_carbon_intensity: '200'
+          runner_provider: 'runson'
+          runner_spec: '2cpu-linux-x64'   # Optional, this is the default
+
+  build:
+    needs: pick-region
+    if: needs.pick-region.outputs.clean == 'true'
+    runs-on: ${{ needs.pick-region.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Running on clean energy!"
+```
+
+The action maps grid zones to AWS regions automatically:
+
+| Grid Zone | AWS Region | Location |
+|-----------|-----------|----------|
+| `CISO` | `us-west-1` | N. California |
+| `BPAT` | `us-west-2` | Oregon |
+| `PJM` | `us-east-1` | N. Virginia |
+| `ERCO` | `us-east-2` | Ohio |
+| `GB` | `eu-west-2` | London |
+| `NO-NO1` | `eu-north-1` | Stockholm |
+| `FR` | `eu-west-3` | Paris |
+| `DE` | `eu-central-1` | Frankfurt |
+| `CA-QC` | `ca-central-1` | Montreal |
+| `JP-TK` | `ap-northeast-1` | Tokyo |
+| `AU-NSW` | `ap-southeast-2` | Sydney |
+
+200+ zones are mapped. The full mapping covers all EIA balancing authorities, UK regions, and major Electricity Maps zones worldwide.
+
+### Using cloud_region with Other Providers
+
+Even without `runner_provider`, the `cloud_region` output lets you build your own routing logic for any provider:
+
+```yaml
+# Use cloud_region to construct your own runner labels
+- run: echo "Greenest AWS region: ${{ steps.carbon.outputs.cloud_region }}"
+
+# Example: use with WarpBuild, Namespace, or custom labels
+- run: |
+    echo "Deploy to ${{ steps.carbon.outputs.cloud_region }}"
+    # Or use in Terraform/Pulumi to provision in the green region
+```
+
 ## Auto-Green Mode (Zero-Config Global Routing)
 
 Don't know which zones are green? Use `auto:green`, a curated list of zones that are frequently powered by clean energy, spanning multiple time zones so at least one is likely green at any given time:
@@ -195,6 +291,8 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 | `electricity_maps_token` | No | none | [Electricity Maps](https://portal.electricitymaps.com/) API token for global zones (200+ zones, 50 req/hr free). |
 | `max_wait` | No | `0` | Minutes to wait for green energy (0 = check once). Uses forecasts to sleep efficiently. Max 360 (6h). Billable time. |
 | `enable_forecast` | No | `false` | Fetch forecast when grid is dirty. UK: free 48h. US: requires `gridstatus_api_key`. Global: requires `electricity_maps_token`. |
+| `runner_provider` | No | none | Runner provider for automatic region routing. Set to `runson` for [RunsOn](https://runs-on.com) AWS-based labels. |
+| `runner_spec` | No | `2cpu-linux-x64` | Runner machine spec for RunsOn (e.g., `4cpu-linux-arm64`). Only used when `runner_provider` is set. |
 
 \* One of `grid_zone` or `grid_zones` is required.
 
@@ -205,7 +303,8 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 | `grid_clean` | `true` if a zone was clean enough, `false` otherwise |
 | `carbon_intensity` | Carbon intensity in gCO2eq/kWh, or `unknown` on error |
 | `grid_zone` | The zone that was selected |
-| `runner_label` | Runner label for the selected zone (multi-zone mode) |
+| `runner_label` | Runner label for the selected zone. Auto-formatted when `runner_provider` is set. |
+| `cloud_region` | Nearest AWS region for the selected zone (e.g., `us-west-1`, `eu-west-2`). Always set. |
 | `intensity_trend` | Recent trend: `decreasing`, `increasing`, or `stable` |
 | `forecast_green_at` | ISO 8601 timestamp of next predicted green window (UK: free, US: GridStatus key) |
 | `forecast_intensity` | Predicted intensity at the next green window |
