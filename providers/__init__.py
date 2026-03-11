@@ -6,9 +6,21 @@ PROVIDER_ELECTRICITY_MAPS = "electricity_maps"
 PROVIDER_AEMO = "aemo"
 PROVIDER_ENTSOE = "entsoe"
 PROVIDER_OPEN_METEO = "open_meteo"
+PROVIDER_GRID_INDIA = "grid_india"
+PROVIDER_ONS_BRAZIL = "ons_brazil"
+PROVIDER_ESKOM = "eskom"
 
 # Australian NEM region codes (free, no API key)
 AEMO_ZONE_IDS = {"AU-NSW", "AU-QLD", "AU-VIC", "AU-SA", "AU-TAS"}
+
+# Indian grid region codes (free, no API key)
+GRID_INDIA_ZONE_IDS = {"IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"}
+
+# Brazilian grid region codes (free, no API key)
+ONS_BRAZIL_ZONE_IDS = {"BR-S", "BR-SE", "BR-CS", "BR-NE", "BR-N"}
+
+# South Africa (free, no API key)
+ESKOM_ZONE_IDS = {"ZA"}
 
 # UK Carbon Intensity API region IDs
 UK_REGION_IDS = {
@@ -80,6 +92,93 @@ AUTO_GREEN_ZONES = [
     {"zone": "AU-TAS", "runner_label": "oc-tasmania",     "utc_offset": 10, "type": "hydro"},
 ]
 
+# auto:cleanest: ALL free-provider zones for zero-config global routing.
+# Checks a smart subset of zones from every free provider (no API keys needed).
+# Picks the zone with the lowest carbon intensity worldwide.
+AUTO_CLEANEST_ZONES = [
+    # US (EIA, no key needed): most likely clean regions
+    {"zone": "CISO", "runner_label": None, "utc_offset": -8, "type": "solar"},
+    {"zone": "BPAT", "runner_label": None, "utc_offset": -8, "type": "hydro"},
+    {"zone": "SCL", "runner_label": None, "utc_offset": -8, "type": "hydro"},
+    {"zone": "NYIS", "runner_label": None, "utc_offset": -5, "type": "hydro"},
+    {"zone": "ISNE", "runner_label": None, "utc_offset": -5, "type": "nuclear"},
+    # UK (Carbon Intensity API, no key needed)
+    {"zone": "GB-16", "runner_label": None, "utc_offset": 0, "type": "wind"},
+    {"zone": "GB", "runner_label": None, "utc_offset": 0, "type": "wind"},
+    # Australia (AEMO, no key needed)
+    {"zone": "AU-TAS", "runner_label": None, "utc_offset": 10, "type": "hydro"},
+    {"zone": "AU-SA", "runner_label": None, "utc_offset": 9.5, "type": "wind"},
+    {"zone": "AU-VIC", "runner_label": None, "utc_offset": 10, "type": "wind"},
+    # India (Grid India, no key needed)
+    {"zone": "IN-SO", "runner_label": None, "utc_offset": 5.5, "type": "solar"},
+    {"zone": "IN-WE", "runner_label": None, "utc_offset": 5.5, "type": "solar"},
+    # Brazil (ONS, no key needed)
+    {"zone": "BR-S", "runner_label": None, "utc_offset": -3, "type": "hydro"},
+    {"zone": "BR-NE", "runner_label": None, "utc_offset": -3, "type": "wind"},
+    # South Africa (Eskom, no key needed, but typically dirty)
+    {"zone": "ZA", "runner_label": None, "utc_offset": 2, "type": "coal"},
+    # Open-Meteo estimates (no key needed): clean regions globally
+    {"zone": "IS", "runner_label": None, "utc_offset": 0, "type": "hydro"},
+    {"zone": "KE", "runner_label": None, "utc_offset": 3, "type": "hydro"},
+]
+
+# auto:escape-coal: dirty-grid presets.
+# Maps dirty-grid countries to their closest clean alternatives.
+# Users in coal-heavy countries can use "auto:escape-coal" to route
+# their CI jobs to the nearest clean energy region.
+ESCAPE_COAL_MAPPINGS = {
+    # India -> clean alternatives (closest first)
+    "IN": ["IS", "NO-NO1", "FR", "SE-SE2", "CISO", "BPAT"],
+    "IN-NO": ["IS", "NO-NO1", "FR", "SE-SE2"],
+    "IN-SO": ["IS", "NO-NO1", "FR", "AU-TAS"],
+    "IN-EA": ["IS", "NO-NO1", "FR", "SE-SE2"],
+    "IN-WE": ["IS", "NO-NO1", "FR", "SE-SE2"],
+    "IN-NE": ["IS", "NO-NO1", "SE-SE2", "AU-TAS"],
+    # China -> Pacific clean regions
+    "CN": ["NZ-NZN", "AU-TAS", "BPAT", "CISO", "CA-BC"],
+    "CN-BJ": ["NZ-NZN", "AU-TAS", "BPAT", "CISO"],
+    "CN-SH": ["NZ-NZN", "AU-TAS", "BPAT", "CISO"],
+    "CN-GD": ["NZ-NZN", "AU-TAS", "BPAT"],
+    # Poland -> Nordic clean
+    "PL": ["NO-NO1", "SE-SE2", "FR", "GB-16", "IS"],
+    # Germany -> Nordic clean
+    "DE": ["NO-NO1", "SE-SE2", "FR", "AT", "GB-16"],
+    # South Africa -> Europe/Iceland clean
+    "ZA": ["IS", "NO-NO1", "FR", "SE-SE2", "GB-16"],
+    # Australia (coal states) -> Tasmania/NZ
+    "AU-NSW": ["AU-TAS", "NZ-NZN", "BPAT", "CISO"],
+    "AU-QLD": ["AU-TAS", "NZ-NZN", "BPAT", "CISO"],
+    "AU-VIC": ["AU-TAS", "NZ-NZN", "BPAT"],
+    # US coal regions -> US clean regions
+    "PJM": ["BPAT", "CISO", "NYIS", "GB-16"],
+    "MISO": ["BPAT", "CISO", "NYIS", "GB-16"],
+    # Japan -> Pacific clean
+    "JP-TK": ["NZ-NZN", "AU-TAS", "BPAT", "CISO"],
+    # South Korea -> Pacific clean
+    "KR": ["NZ-NZN", "AU-TAS", "BPAT", "CISO"],
+    # Indonesia -> Pacific clean
+    "ID": ["NZ-NZN", "AU-TAS", "BPAT"],
+}
+
+# Default escape-coal zones when no specific dirty zone is given.
+# A curated set of the world's cleanest grids.
+AUTO_ESCAPE_COAL_ZONES = [
+    {"zone": "IS", "runner_label": None, "utc_offset": 0, "type": "hydro"},
+    {"zone": "NO-NO1", "runner_label": None, "utc_offset": 1, "type": "hydro"},
+    {"zone": "SE-SE2", "runner_label": None, "utc_offset": 1, "type": "hydro"},
+    {"zone": "FR", "runner_label": None, "utc_offset": 1, "type": "nuclear"},
+    {"zone": "CISO", "runner_label": None, "utc_offset": -8, "type": "solar"},
+    {"zone": "BPAT", "runner_label": None, "utc_offset": -8, "type": "hydro"},
+    {"zone": "CA-QC", "runner_label": None, "utc_offset": -5, "type": "hydro"},
+    {"zone": "AU-TAS", "runner_label": None, "utc_offset": 10, "type": "hydro"},
+    {"zone": "NZ-NZN", "runner_label": None, "utc_offset": 12, "type": "hydro"},
+    {"zone": "GB-16", "runner_label": None, "utc_offset": 0, "type": "wind"},
+    {"zone": "BR-S", "runner_label": None, "utc_offset": -3, "type": "hydro"},
+    {"zone": "UY", "runner_label": None, "utc_offset": -3, "type": "wind"},
+    {"zone": "CR", "runner_label": None, "utc_offset": -6, "type": "hydro"},
+    {"zone": "PY", "runner_label": None, "utc_offset": -4, "type": "hydro"},
+]
+
 
 def _time_priority_score(zone_entry, utc_hour):
     """Score a zone's likelihood of being green at the given UTC hour.
@@ -129,8 +228,15 @@ def sort_auto_green_by_time(zones, utc_hour):
 def detect_provider(zone, entsoe_token=""):
     """Auto-detect the provider based on zone identifier.
 
-    If entsoe_token is set and the zone is in ENTSO-E's coverage,
-    ENTSO-E is preferred over Electricity Maps for EU zones.
+    Priority chain (all free providers first, then token-based):
+    1. UK Carbon Intensity API (no key)
+    2. EIA (no key needed, DEMO_KEY built-in)
+    3. AEMO Australia (no key)
+    4. Grid India (no key)
+    5. ONS Brazil (no key)
+    6. Eskom South Africa (no key)
+    7. ENTSO-E (free token required)
+    8. Electricity Maps (free token required) / Open-Meteo fallback
     """
     from providers.entsoe import ENTSOE_AREA_CODES
 
@@ -140,6 +246,12 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_EIA
     if zone in AEMO_ZONE_IDS:
         return PROVIDER_AEMO
+    if zone in GRID_INDIA_ZONE_IDS:
+        return PROVIDER_GRID_INDIA
+    if zone in ONS_BRAZIL_ZONE_IDS:
+        return PROVIDER_ONS_BRAZIL
+    if zone in ESKOM_ZONE_IDS:
+        return PROVIDER_ESKOM
     if entsoe_token and zone in ENTSOE_AREA_CODES:
         return PROVIDER_ENTSOE
     # Electricity Maps if token available, otherwise Open-Meteo fallback
