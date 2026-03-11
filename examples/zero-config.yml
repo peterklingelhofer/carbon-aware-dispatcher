@@ -1,0 +1,29 @@
+# Zero-Config Carbon-Aware Build
+#
+# The simplest possible setup: just add this file.
+# No API keys, no secrets, no configuration needed.
+# The action auto-detects your cloud region and checks 17+ zones worldwide.
+#
+# Copy this file to .github/workflows/carbon-aware-build.yml
+
+name: Carbon-Aware Build
+on:
+  schedule:
+    - cron: '0 * * * *'   # Check hourly
+  workflow_dispatch:        # Allow manual triggers
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        run: |
+          echo "Running on clean energy in ${{ steps.carbon.outputs.grid_zone }}!"
+          echo "Carbon intensity: ${{ steps.carbon.outputs.carbon_intensity }} gCO2eq/kWh"
+          # Add your build/test/deploy commands here

@@ -1,0 +1,36 @@
+# Escape Dirty Grids
+#
+# Routes CI jobs away from coal-heavy grids to the nearest clean energy region.
+# Use this if your team is in India, China, Poland, South Africa, or other
+# coal-dependent countries.
+#
+# Copy to .github/workflows/carbon-escape.yml
+
+name: Escape Coal Grid
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          # Choose your escape route:
+          grid_zones: 'auto:escape-coal'        # Global clean routing
+          # grid_zones: 'auto:escape-coal:IN'   # India -> Iceland, Norway, France
+          # grid_zones: 'auto:escape-coal:CN'   # China -> NZ, Tasmania, Pacific NW
+          # grid_zones: 'auto:escape-coal:PL'   # Poland -> Nordic clean
+          # grid_zones: 'auto:escape-coal:ZA'   # South Africa -> Iceland, Norway
+          max_carbon_intensity: '150'
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        run: |
+          echo "Running on clean energy in ${{ steps.carbon.outputs.grid_zone }}!"
+          echo "CO2 saved: ${{ steps.carbon.outputs.co2_saved_grams }}g"

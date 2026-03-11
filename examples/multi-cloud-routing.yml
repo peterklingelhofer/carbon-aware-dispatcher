@@ -1,0 +1,43 @@
+# Multi-Cloud Carbon-Aware Routing
+#
+# Routes your jobs to the greenest cloud region across AWS, GCP, or Azure.
+# No API keys needed for US/UK/Australia/India/Brazil zones.
+#
+# Copy to .github/workflows/carbon-aware-routing.yml
+
+name: Green Region Router
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  find-green-region:
+    runs-on: ubuntu-latest
+    outputs:
+      clean: ${{ steps.carbon.outputs.grid_clean }}
+      zone: ${{ steps.carbon.outputs.grid_zone }}
+      aws: ${{ steps.carbon.outputs.cloud_region }}
+      gcp: ${{ steps.carbon.outputs.gcp_region }}
+      azure: ${{ steps.carbon.outputs.azure_region }}
+      intensity: ${{ steps.carbon.outputs.carbon_intensity }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'auto:green'
+          max_carbon_intensity: '200'
+
+  deploy:
+    needs: find-green-region
+    if: needs.find-green-region.outputs.clean == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "Deploying to greenest region:"
+          echo "  Zone: ${{ needs.find-green-region.outputs.zone }}"
+          echo "  AWS:  ${{ needs.find-green-region.outputs.aws }}"
+          echo "  GCP:  ${{ needs.find-green-region.outputs.gcp }}"
+          echo "  Azure: ${{ needs.find-green-region.outputs.azure }}"
+          echo "  Intensity: ${{ needs.find-green-region.outputs.intensity }} gCO2eq/kWh"

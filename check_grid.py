@@ -36,6 +36,7 @@ from providers.base import (
     GLOBAL_AVG_INTENSITY,
 )
 from providers.runners import (
+    detect_cloud_zone,
     format_runner_label, get_azure_region, get_cloud_region, get_gcp_region,
 )
 
@@ -265,6 +266,15 @@ def expand_auto_zones(zones_str):
     """
     normalized = zones_str.strip().lower()
     utc_hour = datetime.now(timezone.utc).hour
+
+    if normalized == "auto:detect":
+        zone, source = detect_cloud_zone()
+        if zone:
+            print(f"Auto-detected grid zone: {zone} (from {source})")
+            return [{"zone": zone, "runner_label": None}]
+        print("::notice::Could not auto-detect cloud region. "
+              "Falling back to auto:cleanest.")
+        return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
 
     if normalized == "auto:green":
         return sort_auto_green_by_time(list(AUTO_GREEN_ZONES), utc_hour)
@@ -757,8 +767,9 @@ def main():
         zones_config = parse_zones_input(policy_zones)
         print(f"Using zones from carbon policy: {policy_zones}")
     else:
-        print("::error::Either GRID_ZONE or GRID_ZONES must be set.")
-        sys.exit(EXIT_FAILURE)
+        # Zero-config: try auto-detect from cloud env, fall back to auto:cleanest
+        print("No zone specified, using auto:detect (zero-config mode).")
+        zones_config = parse_zones_input("auto:detect")
 
     if not zones_config:
         print("::error::No valid zones provided.")
