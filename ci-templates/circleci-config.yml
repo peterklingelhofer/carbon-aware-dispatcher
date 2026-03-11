@@ -20,7 +20,7 @@ jobs:
       - checkout
       - run:
           name: Install dependencies
-          command: pip install -q requests==2.32.*
+          command: pip install -q uv && uv pip install --system -q requests==2.32.*
       - run:
           name: Check grid carbon intensity
           command: |
