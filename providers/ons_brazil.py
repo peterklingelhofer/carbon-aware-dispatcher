@@ -164,8 +164,52 @@ def get_history_trend(zone):
 
 
 def get_forecast(zone, max_carbon):
-    """ONS Brazil forecast: not available via the public API.
+    """Estimate future green windows from Brazil's known generation patterns.
 
-    Returns (None, None).
+    Brazil's grid is ~65-75% hydro, making it one of the cleanest large grids.
+    South (BR-S) and North (BR-N) are hydro-dominated (~80-100 gCO2eq/kWh).
+    Northeast (BR-NE) has strong wind generation, especially at night.
+    Thermal dispatch increases during evening peak (17:00-21:00 BRT).
+    BRT = UTC-3.
+
+    Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    return None, None
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    brt = timezone(timedelta(hours=-3))
+    now_brt = now_utc.astimezone(brt)
+    local_hour = now_brt.hour
+
+    # Off-peak (22:00-16:00): mostly hydro, very clean
+    # Evening peak (17:00-21:00): thermal plants dispatched, dirtier
+    hydro_zones = {"BR-S", "BR-N", "BR-CS"}
+    is_hydro_heavy = zone in hydro_zones
+
+    offpeak_intensity = 80 if is_hydro_heavy else 120
+    peak_intensity = 150 if is_hydro_heavy else 200
+
+    # If already in off-peak and green, no forecast needed
+    if not (17 <= local_hour <= 21):
+        if offpeak_intensity <= max_carbon:
+            return None, None
+
+    # Find next green window
+    for hours_ahead in range(1, 49):
+        future = now_brt + timedelta(hours=hours_ahead)
+        future_hour = future.hour
+
+        if 17 <= future_hour <= 21:
+            est_intensity = peak_intensity
+        else:
+            est_intensity = offpeak_intensity
+
+        if est_intensity <= max_carbon:
+            future_utc = future.astimezone(timezone.utc)
+            dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
+            print(f"  Forecast: Brazil grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                  f"(heuristic based on hydro/thermal dispatch patterns)")
+            return dt_str, est_intensity
+
+    print(f"  Forecast: no estimated green window in 48h for {zone}.")
+    return "none_in_forecast", None

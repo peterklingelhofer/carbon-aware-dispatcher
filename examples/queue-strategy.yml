@@ -1,0 +1,42 @@
+# Queue Strategy: Find Optimal Green Window
+#
+# Instead of just checking now, searches forecasts across all zones
+# to find the best time to run within your deadline.
+# Perfect for nightly ML training, weekly reports, or any non-urgent job.
+#
+# Copy to .github/workflows/carbon-queue.yml
+
+name: Carbon-Aware Queue
+on:
+  schedule:
+    - cron: '0 6 * * *'    # Check daily at 6am UTC
+  workflow_dispatch:
+
+jobs:
+  find-optimal-window:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'auto:green'
+          strategy: 'queue'
+          deadline_hours: '24'
+          max_wait: '120'            # Wait up to 2h if window is soon
+          max_carbon_intensity: '150'
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        run: |
+          echo "Running in optimal green window!"
+          echo "Zone: ${{ steps.carbon.outputs.grid_zone }}"
+          echo "Intensity: ${{ steps.carbon.outputs.carbon_intensity }} gCO2eq/kWh"
+          # Add your ML training, batch processing, etc.
+
+      - if: steps.carbon.outputs.grid_clean == 'false'
+        run: |
+          echo "Optimal window: ${{ steps.carbon.outputs.optimal_dispatch_at }}"
+          echo "Optimal zone: ${{ steps.carbon.outputs.optimal_zone }}"
+          echo "Schedule a cron trigger at that time for green energy."

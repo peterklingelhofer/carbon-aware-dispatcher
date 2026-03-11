@@ -1,0 +1,89 @@
+# Carbon-Aware CI for CircleCI
+#
+# Add this to your .circleci/config.yml or use as an orb.
+# Set environment variables in CircleCI Project Settings:
+#   GRID_ZONE: Grid zone to check (default: auto:detect)
+#   MAX_CARBON: Max gCO2eq/kWh threshold (default: 250)
+#   ELECTRICITY_MAPS_TOKEN: Optional, for global coverage
+#   ENTSOE_TOKEN: Optional, for EU coverage
+#
+# Usage: Add the carbon-check job before your heavy build jobs.
+# The build job only runs if the grid is clean.
+
+version: 2.1
+
+jobs:
+  carbon-check:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: pip install -q requests==2.32.*
+      - run:
+          name: Check grid carbon intensity
+          command: |
+            python -c "
+            import os, sys
+            sys.path.insert(0, '.')
+            from check_grid import parse_zones_input, check_carbon_intensity
+            from providers import detect_provider
+
+            zone_str = os.environ.get('GRID_ZONE', 'auto:detect')
+            max_carbon = float(os.environ.get('MAX_CARBON', '250'))
+            entsoe_token = os.environ.get('ENTSOE_TOKEN', '')
+
+            zones = parse_zones_input(zone_str)
+            zone = zones[0]['zone'] if zones else 'CISO'
+            provider = detect_provider(zone, entsoe_token)
+            is_green, intensity = check_carbon_intensity(
+                zone, max_carbon, provider,
+                eia_api_key=os.environ.get('EIA_API_KEY', ''),
+                emaps_api_key=os.environ.get('ELECTRICITY_MAPS_TOKEN', ''),
+                entsoe_token=entsoe_token,
+            )
+            result = 'true' if is_green else 'false'
+            # Write to file for downstream jobs
+            with open('/tmp/carbon_result.txt', 'w') as f:
+                f.write(result)
+            with open('/tmp/carbon_intensity.txt', 'w') as f:
+                f.write(str(intensity or 'unknown'))
+            print(f'Grid clean: {result} ({intensity} gCO2eq/kWh)')
+            "
+      - persist_to_workspace:
+          root: /tmp
+          paths:
+            - carbon_result.txt
+            - carbon_intensity.txt
+
+  build:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - attach_workspace:
+          at: /tmp
+      - run:
+          name: Check carbon result
+          command: |
+            GRID_CLEAN=$(cat /tmp/carbon_result.txt)
+            if [ "$GRID_CLEAN" != "true" ]; then
+              echo "Grid is dirty ($(cat /tmp/carbon_intensity.txt) gCO2eq/kWh). Skipping build."
+              circleci-agent step halt
+            fi
+            echo "Grid is clean! Running build on green energy..."
+      - checkout
+      - run:
+          name: Build
+          command: |
+            echo "Your build commands here"
+
+workflows:
+  carbon-aware-build:
+    # Schedule: run hourly (CircleCI scheduled triggers)
+    # Configure in CircleCI UI: Project Settings > Triggers
+    jobs:
+      - carbon-check
+      - build:
+          requires:
+            - carbon-check

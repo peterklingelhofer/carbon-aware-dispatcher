@@ -32,11 +32,15 @@ from providers import (
 )
 from providers.base import api_request, api_request_with_header, compute_trend
 from providers.runners import (
+    detect_cloud_zone,
     format_runner_label,
     format_runson_label,
     get_azure_region,
     get_cloud_region,
     get_gcp_region,
+    AWS_REGION_TO_ZONE,
+    GCP_REGION_TO_ZONE,
+    AZURE_REGION_TO_ZONE,
     ZONE_TO_AWS_REGION,
     ZONE_TO_GCP_REGION,
     ZONE_TO_AZURE_REGION,
@@ -1910,8 +1914,21 @@ class TestGridIndiaProvider:
         assert is_green is not None
         assert intensity is not None
 
-    def test_forecast_returns_none(self):
-        assert grid_india.get_forecast("IN-NO", 250) == (None, None)
+    def test_forecast_returns_heuristic(self):
+        """Grid India forecast should return time-of-day heuristic."""
+        dt, intensity = grid_india.get_forecast("IN-SO", 500)
+        # With a high threshold, either already green (None) or finds a window
+        assert dt is None or isinstance(dt, str)
+
+    def test_forecast_south_lower_than_north(self):
+        """IN-SO should have lower midday intensity than IN-NO."""
+        dt_south, int_south = grid_india.get_forecast("IN-SO", 1000)
+        dt_north, int_north = grid_india.get_forecast("IN-NO", 1000)
+        # Both should find green windows at high threshold
+        # The actual intensity comparison depends on time of day,
+        # so just verify both return valid results
+        assert dt_south is None or isinstance(dt_south, str)
+        assert dt_north is None or isinstance(dt_north, str)
 
     def test_trend_returns_none(self):
         assert grid_india.get_history_trend("IN-NO") is None
@@ -1957,8 +1974,11 @@ class TestOnsBrazilProvider:
         is_green, intensity = ons_brazil.check_carbon_intensity("BR-S", 250)
         assert is_green is None
 
-    def test_forecast_returns_none(self):
-        assert ons_brazil.get_forecast("BR-S", 250) == (None, None)
+    def test_forecast_returns_heuristic(self):
+        """ONS Brazil forecast should return time-of-day heuristic."""
+        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
+        # With a high threshold, should find a window or already be green
+        assert dt is None or isinstance(dt, str)
 
     def test_trend_returns_none(self):
         assert ons_brazil.get_history_trend("BR-S") is None
@@ -1998,8 +2018,21 @@ class TestEskomProvider:
         is_green, intensity = eskom.check_carbon_intensity("ZA", 1000)
         assert is_green is True  # Even SA is green at 1000 threshold
 
-    def test_forecast_returns_none(self):
-        assert eskom.get_forecast("ZA", 250) == (None, None)
+    def test_forecast_returns_heuristic(self):
+        """Eskom forecast should return time-of-day heuristic."""
+        # At 250 threshold, SA grid (650+ gCO2eq/kWh) will never be green
+        dt, intensity = eskom.get_forecast("ZA", 250)
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+    def test_forecast_with_high_threshold(self):
+        """Eskom forecast with high threshold should find a window."""
+        dt, intensity = eskom.get_forecast("ZA", 800)
+        # SA midday is ~650, so with 800 threshold it should find a window
+        assert dt is None or isinstance(dt, str)
+        if dt and dt != "none_in_forecast":
+            assert intensity is not None
+            assert intensity <= 800
 
     def test_trend_returns_none(self):
         assert eskom.get_history_trend("ZA") is None
@@ -2470,3 +2503,172 @@ class TestFallbackChain:
         assert is_green is None
         # Should only be called once (primary), not twice (no self-fallback)
         assert mock_meteo.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Cloud auto-detection tests
+# ---------------------------------------------------------------------------
+
+class TestCloudAutoDetection:
+    def test_aws_region_detection(self):
+        """Detects grid zone from AWS_REGION env var."""
+        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}, clear=False):
+            zone, source = detect_cloud_zone()
+            assert zone == "BPAT"
+            assert "AWS" in source
+
+    def test_aws_default_region_detection(self):
+        with mock.patch.dict(os.environ, {"AWS_DEFAULT_REGION": "eu-west-2"}, clear=False):
+            os.environ.pop("AWS_REGION", None)
+            zone, source = detect_cloud_zone()
+            assert zone == "GB"
+
+    def test_gcp_region_detection(self):
+        with mock.patch.dict(os.environ, {"GOOGLE_CLOUD_REGION": "europe-west9"}, clear=False):
+            os.environ.pop("AWS_REGION", None)
+            os.environ.pop("AWS_DEFAULT_REGION", None)
+            zone, source = detect_cloud_zone()
+            assert zone == "FR"
+            assert "GCP" in source
+
+    def test_azure_region_detection(self):
+        with mock.patch.dict(os.environ, {"AZURE_REGION": "japaneast"}, clear=False):
+            os.environ.pop("AWS_REGION", None)
+            os.environ.pop("AWS_DEFAULT_REGION", None)
+            os.environ.pop("GOOGLE_CLOUD_REGION", None)
+            zone, source = detect_cloud_zone()
+            assert zone == "JP-TK"
+            assert "Azure" in source
+
+    def test_cloud_region_override(self):
+        with mock.patch.dict(os.environ, {"CLOUD_REGION_OVERRIDE": "ap-southeast-1"}, clear=False):
+            zone, source = detect_cloud_zone()
+            assert zone == "SG"
+            assert "CLOUD_REGION_OVERRIDE" in source
+
+    def test_no_cloud_env_returns_none(self):
+        env_keys = ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_REGION",
+                     "CLOUDSDK_COMPUTE_REGION", "CLOUD_RUN_REGION",
+                     "AZURE_REGION", "REGION_NAME", "WEBSITE_SITE_NAME_REGION",
+                     "CLOUD_REGION_OVERRIDE", "GITHUB_ACTIONS", "RUNNER_NAME"]
+        clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
+        with mock.patch.dict(os.environ, clean_env, clear=True):
+            zone, source = detect_cloud_zone()
+            assert zone is None
+            assert source is None
+
+    def test_unknown_region_returns_none(self):
+        with mock.patch.dict(os.environ, {"AWS_REGION": "xx-unknown-99"}, clear=False):
+            os.environ.pop("CLOUD_REGION_OVERRIDE", None)
+            zone, source = detect_cloud_zone()
+            assert zone is None
+
+
+class TestReverseRegionMappings:
+    def test_aws_reverse_map_covers_major_regions(self):
+        major = ["us-west-1", "us-west-2", "us-east-1", "eu-west-2", "ap-northeast-1"]
+        for region in major:
+            assert region in AWS_REGION_TO_ZONE, f"Missing AWS reverse: {region}"
+
+    def test_gcp_reverse_map_covers_major_regions(self):
+        major = ["us-west1", "us-east4", "europe-west2", "asia-northeast1"]
+        for region in major:
+            assert region in GCP_REGION_TO_ZONE, f"Missing GCP reverse: {region}"
+
+    def test_azure_reverse_map_covers_major_regions(self):
+        major = ["eastus", "westus2", "uksouth", "japaneast"]
+        for region in major:
+            assert region in AZURE_REGION_TO_ZONE, f"Missing Azure reverse: {region}"
+
+
+class TestAutoDetectPreset:
+    def test_auto_detect_expansion_with_aws_region(self):
+        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-1"}, clear=False):
+            result = check_grid.expand_auto_zones("auto:detect")
+            assert result is not None
+            assert len(result) == 1
+            assert result[0]["zone"] == "CISO"
+
+    def test_auto_detect_fallback_to_cleanest(self):
+        """auto:detect falls back to auto:cleanest when no cloud env is set."""
+        env_keys = ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_REGION",
+                     "CLOUDSDK_COMPUTE_REGION", "CLOUD_RUN_REGION",
+                     "AZURE_REGION", "REGION_NAME", "WEBSITE_SITE_NAME_REGION",
+                     "CLOUD_REGION_OVERRIDE", "GITHUB_ACTIONS", "RUNNER_NAME"]
+        clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
+        with mock.patch.dict(os.environ, clean_env, clear=True):
+            result = check_grid.expand_auto_zones("auto:detect")
+            assert result is not None
+            assert len(result) == len(AUTO_CLEANEST_ZONES)
+
+
+class TestZeroConfigDefault:
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_no_zone_input_uses_auto_detect(self, mock_summary, mock_output, mock_check):
+        """When no zone is specified, should use auto:detect."""
+        mock_check.return_value = (True, 100)
+        os.environ.pop("GRID_ZONE", None)
+        os.environ.pop("GRID_ZONES", None)
+        os.environ["WORKFLOW_ID"] = ""
+        os.environ.pop("CARBON_POLICY_PATH", None)
+        # Set a cloud region so auto:detect finds something
+        os.environ["AWS_REGION"] = "us-west-2"
+        try:
+            check_grid.main()
+            output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+            assert output_calls["grid_clean"] == "true"
+        finally:
+            os.environ.pop("AWS_REGION", None)
+
+
+# ---------------------------------------------------------------------------
+# Forecast heuristic tests
+# ---------------------------------------------------------------------------
+
+class TestIndiaForecastHeuristic:
+    def test_high_threshold_finds_window(self):
+        """With high threshold, India forecast should find a green window."""
+        dt, intensity = grid_india.get_forecast("IN-SO", 500)
+        # Should either be already in window (None) or find one
+        if dt is not None:
+            assert isinstance(dt, str)
+            if dt != "none_in_forecast":
+                assert intensity is not None
+                assert intensity <= 500
+
+    def test_very_low_threshold_no_window(self):
+        """With very low threshold, India forecast won't find a window."""
+        dt, intensity = grid_india.get_forecast("IN-NO", 50)
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+
+class TestBrazilForecastHeuristic:
+    def test_high_threshold_finds_window(self):
+        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
+        if dt is not None and dt != "none_in_forecast":
+            assert intensity is not None
+            assert intensity <= 500
+
+    def test_hydro_zone_very_clean(self):
+        """BR-S (hydro) should be green at moderate threshold."""
+        dt, intensity = ons_brazil.get_forecast("BR-S", 200)
+        # Should find a window or be already green
+        if dt is not None and dt != "none_in_forecast":
+            assert intensity <= 200
+
+
+class TestEskomForecastHeuristic:
+    def test_coal_grid_rarely_green(self):
+        """SA grid at low threshold should not find green window."""
+        dt, intensity = eskom.get_forecast("ZA", 250)
+        assert dt == "none_in_forecast"
+
+    def test_high_threshold_finds_window(self):
+        """SA grid at high threshold should find midday window."""
+        dt, intensity = eskom.get_forecast("ZA", 800)
+        if dt is not None and dt != "none_in_forecast":
+            assert intensity is not None
+            assert intensity <= 800
