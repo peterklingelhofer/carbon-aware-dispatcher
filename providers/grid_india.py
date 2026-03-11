@@ -135,12 +135,14 @@ def check_carbon_intensity(zone, max_carbon):
     print(f"Checking carbon intensity for zone: {zone} (Grid India)...")
     data = _fetch_generation_data()
     if data is None:
+        print(f"  Grid India API may be temporarily unavailable. "
+              f"Data source: https://report.grid-india.in/")
         return None, None
 
     intensity = _estimate_from_national_mix(data)
     if intensity is None:
-        # API format may have changed; fall back gracefully
-        print(f"::warning::Could not parse Grid India generation data for {zone}")
+        print(f"::warning::Could not parse Grid India generation data for {zone}. "
+              f"API format may have changed. Check https://report.grid-india.in/")
         return None, None
 
     is_green = intensity <= max_carbon

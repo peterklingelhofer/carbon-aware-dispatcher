@@ -155,12 +155,14 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
         return None, None
 
     if response.status_code == 401:
-        print("::error::ENTSO-E authentication failed. Check your security token.")
+        print("::error::ENTSO-E authentication failed. Check your entsoe_token secret. "
+              "Get a free token at https://transparency.entsoe.eu/ -> Account Settings -> "
+              "Web API Security Token.")
         return None, None
 
     if response.status_code == 429:
         print("::warning::ENTSO-E rate limit exceeded (400 req/min). "
-              "Wait 10 minutes and retry.")
+              "Automatically blocked for 10 minutes. Will retry on next schedule run.")
         return None, None
 
     if response.status_code != 200:

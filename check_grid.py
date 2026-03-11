@@ -58,74 +58,85 @@ def get_required_env(name):
     return value
 
 
+# ---------------------------------------------------------------------------
+# Provider dispatch registry: maps provider IDs to modules.
+# Each module must have: check_carbon_intensity(zone, max_carbon, *extra_args)
+# Optional: get_forecast(zone, max_carbon, *extra_args), get_history_trend(zone, *extra_args)
+# ---------------------------------------------------------------------------
+_PROVIDER_MODULES = {
+    PROVIDER_UK: uk,
+    PROVIDER_AEMO: aemo,
+    PROVIDER_ENTSOE: entsoe,
+    PROVIDER_OPEN_METEO: open_meteo,
+    PROVIDER_GRID_INDIA: grid_india,
+    PROVIDER_ONS_BRAZIL: ons_brazil,
+    PROVIDER_ESKOM: eskom,
+    PROVIDER_ELECTRICITY_MAPS: electricity_maps,
+    PROVIDER_EIA: eia,
+}
+
+# Providers that need an extra auth token passed to their functions.
+# Maps (provider, function_type) -> env-key-based extra arg.
+_PROVIDER_AUTH_ARGS = {
+    PROVIDER_ENTSOE: lambda keys: [keys.get("entsoe_token", "")],
+    PROVIDER_ELECTRICITY_MAPS: lambda keys: [keys.get("emaps_api_key", "")],
+    PROVIDER_EIA: lambda keys: [keys.get("eia_api_key", "")],
+}
+
+
+def _get_extra_args(provider, api_keys):
+    """Get extra auth arguments for a provider, if any."""
+    resolver = _PROVIDER_AUTH_ARGS.get(provider)
+    return resolver(api_keys) if resolver else []
+
+
 def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
                            emaps_api_key="", entsoe_token=""):
     """Check carbon intensity using the appropriate provider."""
-    if provider == PROVIDER_UK:
-        return uk.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_AEMO:
-        return aemo.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_ENTSOE:
-        return entsoe.check_carbon_intensity(zone, max_carbon, entsoe_token)
-    if provider == PROVIDER_OPEN_METEO:
-        return open_meteo.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_GRID_INDIA:
-        return grid_india.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_ONS_BRAZIL:
-        return ons_brazil.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_ESKOM:
-        return eskom.check_carbon_intensity(zone, max_carbon)
-    if provider == PROVIDER_ELECTRICITY_MAPS:
-        return electricity_maps.check_carbon_intensity(zone, max_carbon, emaps_api_key)
-    return eia.check_carbon_intensity(zone, max_carbon, eia_api_key)
+    module = _PROVIDER_MODULES.get(provider)
+    if module is None:
+        print(f"::warning::Unknown provider '{provider}' for zone '{zone}'")
+        return None, None
+    extra = _get_extra_args(provider, {
+        "eia_api_key": eia_api_key,
+        "emaps_api_key": emaps_api_key,
+        "entsoe_token": entsoe_token,
+    })
+    return module.check_carbon_intensity(zone, max_carbon, *extra)
 
 
 def get_forecast(zone, max_carbon, provider, gridstatus_api_key="",
                  emaps_api_key="", entsoe_token=""):
     """Get forecast using the appropriate provider."""
-    if provider == PROVIDER_UK:
-        return uk.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_AEMO:
-        return aemo.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_ENTSOE:
-        return entsoe.get_forecast(zone, max_carbon, entsoe_token)
-    if provider == PROVIDER_OPEN_METEO:
-        return open_meteo.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_GRID_INDIA:
-        return grid_india.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_ONS_BRAZIL:
-        return ons_brazil.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_ESKOM:
-        return eskom.get_forecast(zone, max_carbon)
-    if provider == PROVIDER_ELECTRICITY_MAPS:
-        return electricity_maps.get_forecast(zone, max_carbon, emaps_api_key)
-    # US zones: use GridStatus.io if API key is available
-    if gridstatus_api_key:
+    module = _PROVIDER_MODULES.get(provider)
+    if module is None:
+        return None, None
+    extra = _get_extra_args(provider, {
+        "emaps_api_key": emaps_api_key,
+        "entsoe_token": entsoe_token,
+    })
+    result = module.get_forecast(zone, max_carbon, *extra)
+    # EIA doesn't have its own forecast; use GridStatus if available
+    if provider == PROVIDER_EIA and result == (None, None) and gridstatus_api_key:
         return gridstatus.get_forecast(zone, max_carbon, gridstatus_api_key)
-    print("  No forecast available for US zones without a GridStatus API key.")
-    return None, None
+    if provider == PROVIDER_EIA and not gridstatus_api_key:
+        print("  No forecast available for US zones without a GridStatus API key. "
+              "Register free at https://www.gridstatus.io")
+    return result
 
 
 def get_history_trend(zone, provider, eia_api_key="", emaps_api_key="",
                       entsoe_token=""):
     """Get history trend using the appropriate provider."""
-    if provider == PROVIDER_UK:
-        return uk.get_history_trend(zone)
-    if provider == PROVIDER_AEMO:
-        return aemo.get_history_trend(zone)
-    if provider == PROVIDER_ENTSOE:
-        return entsoe.get_history_trend(zone, entsoe_token)
-    if provider == PROVIDER_OPEN_METEO:
-        return open_meteo.get_history_trend(zone)
-    if provider == PROVIDER_GRID_INDIA:
-        return grid_india.get_history_trend(zone)
-    if provider == PROVIDER_ONS_BRAZIL:
-        return ons_brazil.get_history_trend(zone)
-    if provider == PROVIDER_ESKOM:
-        return eskom.get_history_trend(zone)
-    if provider == PROVIDER_ELECTRICITY_MAPS:
-        return electricity_maps.get_history_trend(zone, emaps_api_key)
-    return eia.get_history_trend(zone, eia_api_key)
+    module = _PROVIDER_MODULES.get(provider)
+    if module is None:
+        return None
+    extra = _get_extra_args(provider, {
+        "eia_api_key": eia_api_key,
+        "emaps_api_key": emaps_api_key,
+        "entsoe_token": entsoe_token,
+    })
+    return module.get_history_trend(zone, *extra)
 
 
 def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
@@ -527,7 +538,7 @@ def smart_wait_multi(zones_config, max_carbon, max_wait_minutes,
 
     waited = (_time.time() - start) / 60
     best_zone, best_intensity, best_label, skipped = check_multiple_zones(
-        zones_config, max_carbon, eia_api_key, emaps_api_key
+        zones_config, max_carbon, eia_api_key, emaps_api_key, entsoe_token
     )
     return best_zone, best_intensity, best_label, waited, skipped
 
@@ -774,6 +785,13 @@ def main():
             set_output("grid_clean", "false")
             set_output("optimal_dispatch_at", "none_in_deadline")
             print(f"\nQueue: no green window found within {deadline_hours}h deadline.")
+            if fail_on_api_error:
+                print("::error::No green window in queue deadline and "
+                      "fail_on_api_error is enabled.")
+                write_job_summary(
+                    zones_config[0]["zone"], None, False, max_carbon, skipped=skipped
+                )
+                sys.exit(EXIT_FAILURE)
 
         write_job_summary(
             (opt_zone or zones_config[0]["zone"]), opt_intensity, False, max_carbon,

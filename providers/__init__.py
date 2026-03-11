@@ -226,9 +226,9 @@ def sort_auto_green_by_time(zones, utc_hour):
 
 
 def detect_provider(zone, entsoe_token=""):
-    """Auto-detect the provider based on zone identifier.
+    """Auto-detect the best provider for a zone.
 
-    Priority chain (all free providers first, then token-based):
+    Priority chain (free providers first, then token-based, then fallback):
     1. UK Carbon Intensity API (no key)
     2. EIA (no key needed, DEMO_KEY built-in)
     3. AEMO Australia (no key)
@@ -236,9 +236,11 @@ def detect_provider(zone, entsoe_token=""):
     5. ONS Brazil (no key)
     6. Eskom South Africa (no key)
     7. ENTSO-E (free token required)
-    8. Electricity Maps (free token required) / Open-Meteo fallback
+    8. Open-Meteo (free, no key; if zone has known coordinates)
+    9. Electricity Maps (free token required, catch-all)
     """
     from providers.entsoe import ENTSOE_AREA_CODES
+    from providers.open_meteo import ZONE_COORDINATES
 
     if zone in UK_REGION_IDS:
         return PROVIDER_UK
@@ -254,5 +256,8 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_ESKOM
     if entsoe_token and zone in ENTSOE_AREA_CODES:
         return PROVIDER_ENTSOE
-    # Electricity Maps if token available, otherwise Open-Meteo fallback
+    # Open-Meteo for zones with known coordinates (free, no key)
+    if zone in ZONE_COORDINATES:
+        return PROVIDER_OPEN_METEO
+    # Electricity Maps as final catch-all (requires token)
     return PROVIDER_ELECTRICITY_MAPS
