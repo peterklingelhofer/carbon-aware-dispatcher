@@ -16,7 +16,7 @@
 #             name: Check Grid Carbon Intensity
 #             image: python:3.11-slim
 #             script:
-#               - pip install -q requests==2.32.*
+#               - pip install -q uv && uv pip install --system -q requests==2.32.*
 #               - python carbon_check_ci.py
 #             artifacts:
 #               - carbon_result.txt
@@ -40,7 +40,7 @@ pipelines:
           name: Check Grid Carbon Intensity
           image: python:3.11-slim
           script:
-            - pip install -q requests==2.32.*
+            - pip install -q uv && uv pip install --system -q requests==2.32.*
             - |
               python -c "
               import os, sys
