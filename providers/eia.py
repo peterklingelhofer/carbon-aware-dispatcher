@@ -40,6 +40,9 @@ def check_carbon_intensity(zone, max_carbon, eia_api_key=""):
     Returns (is_green, intensity) or (None, None) on error.
     """
     api_key = eia_api_key or "DEMO_KEY"
+    if api_key == "DEMO_KEY":
+        print("::notice::Using built-in EIA DEMO_KEY (rate limit ~30 req/hr). "
+              "For higher limits, register a free key at https://www.eia.gov/opendata/register.php")
     url = (
         f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
         f"?api_key={api_key}"

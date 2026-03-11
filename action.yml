@@ -7,12 +7,12 @@ branding:
 
 inputs:
   grid_zone:
-    description: 'Single zone identifier. US zones use EIA balancing authority codes (e.g., CISO, ERCO, PJM). UK zones use GB, GB-1..GB-17. No API key needed for either.'
+    description: 'Single zone identifier. US: EIA BA codes (CISO, ERCO, PJM). UK: GB, GB-1..GB-17. Global: any Electricity Maps zone. Or use "auto:green" for curated green zones.'
     required: false
   grid_zones:
     description: >-
       Comma-separated list of zones, optionally with runner labels.
-      Examples: "CISO,ERCO,PJM" or "CISO:runner-cal,GB:runner-uk".
+      Examples: "CISO,ERCO,PJM" or "CISO:runner-cal,GB:runner-uk" or "auto:green".
       The action picks the zone with the lowest carbon intensity under the threshold.
     required: false
   eia_api_key:
@@ -24,11 +24,13 @@ inputs:
     required: false
     default: '250'
   workflow_id:
-    description: 'The filename of the workflow to dispatch (e.g., heavy-batch.yml).'
-    required: true
+    description: 'The filename of the workflow to dispatch (e.g., heavy-batch.yml). Omit for inline mode (just set outputs, no dispatch).'
+    required: false
+    default: ''
   github_token:
-    description: 'A GitHub token with Actions read/write permissions.'
-    required: true
+    description: 'A GitHub token with Actions read/write permissions. Required when workflow_id is set.'
+    required: false
+    default: ''
   target_ref:
     description: 'The git ref to dispatch the workflow on (default: main).'
     required: false
@@ -45,6 +47,10 @@ inputs:
     description: 'Optional Electricity Maps API token for global zone coverage (200+ zones). Register free at https://portal.electricitymaps.com/ (50 requests/hour).'
     required: false
     default: ''
+  max_wait:
+    description: 'Maximum minutes to wait for the grid to become green (0 = no waiting, just check and exit). The action will re-check periodically using forecasts. Note: GitHub Actions bills for wait time. Max 360 (6 hours).'
+    required: false
+    default: '0'
   enable_forecast:
     description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts. Global zones require an Electricity Maps token.'
     required: false
@@ -101,4 +107,5 @@ runs:
         TARGET_REF: ${{ inputs.target_ref }}
         FAIL_ON_API_ERROR: ${{ inputs.fail_on_api_error }}
         ELECTRICITY_MAPS_TOKEN: ${{ inputs.electricity_maps_token }}
+        MAX_WAIT: ${{ inputs.max_wait }}
         ENABLE_FORECAST: ${{ inputs.enable_forecast }}
