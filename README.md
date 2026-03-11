@@ -2,11 +2,17 @@
 
 A GitHub Action that delays compute-heavy CI/CD workflows until the energy grid is powered by clean, renewable energy. Runs on a cron schedule as a gatekeeper — checks live carbon intensity data, and dispatches your heavy workflow only when the grid is green.
 
-**Zero config for US & UK — no API keys required.** Uses the [EIA API](https://www.eia.gov/opendata/) for US zones and the [UK Carbon Intensity API](https://carbonintensity.org.uk/) for UK zones. Both are free, open, and need no authentication.
+**Zero config for US, UK & Australia — no API keys required.** Uses the [EIA API](https://www.eia.gov/opendata/) for US zones, the [UK Carbon Intensity API](https://carbonintensity.org.uk/) for UK zones, and [AEMO](https://aemo.com.au/) for Australian NEM zones. All free, open, and need no authentication.
 
-**Global coverage with [Electricity Maps](https://www.electricitymaps.com/)** — 200+ zones worldwide including Europe, Canada, India, Japan, Australia, Latin America, and more. Requires a free API token (50 requests/hour).
+**EU coverage with [ENTSO-E](https://transparency.entsoe.eu/)** — 36 European countries with actual generation data. Requires a free security token.
+
+**Global coverage with [Electricity Maps](https://www.electricitymaps.com/)** — 200+ zones worldwide including Europe, Canada, India, Japan, Latin America, and more. Requires a free API token (50 requests/hour).
+
+**Universal fallback with [Open-Meteo](https://open-meteo.com/)** — estimates carbon intensity from real-time solar irradiance and wind speed for any location worldwide. Free, no API key. Used automatically when no other provider covers a zone.
 
 **Multi-zone support** — provide multiple grid zones (optionally mapped to self-hosted runner labels) and the action picks the zone with the lowest carbon intensity, routing your workload to the greenest available region.
+
+**Carbon savings badge** — each run estimates the CO2 saved by running on clean energy and outputs a Shields.io badge URL for your README.
 
 ## How It Works
 
@@ -223,7 +229,13 @@ Don't know which zones are green? Use `auto:green` — a curated list of zones t
     electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}  # Optional: enables global zones
 ```
 
-The preset expands to: `CISO` (California solar), `BPAT` (Pacific NW hydro), `GB-16` (Scotland wind), `NO-NO1` (Norway hydro), `SE-SE2` (Sweden hydro), `FR` (France nuclear), `CA-QC` (Quebec hydro). US and UK zones always work without extra API keys; global zones require an Electricity Maps token (missing zones are silently skipped).
+The preset expands to 15 curated zones across 5 continents, sorted by time-of-day priority (solar zones rank higher during their local daytime):
+
+- **Americas:** `CISO` (California solar), `BPAT` (Pacific NW hydro), `CA-QC` (Quebec hydro), `CA-BC` (BC hydro), `BR-S` (Brazil South hydro), `UY` (Uruguay wind), `PY` (Paraguay hydro), `CR` (Costa Rica hydro)
+- **Europe:** `GB-16` (Scotland wind), `NO-NO1` (Norway hydro), `SE-SE2` (Sweden hydro), `FR` (France nuclear), `IS` (Iceland hydro)
+- **Oceania:** `NZ-NZN` (New Zealand hydro), `AU-TAS` (Tasmania hydro)
+
+US, UK, and Australian zones always work without extra API keys; EU zones work with an ENTSO-E token or Electricity Maps token (missing zones are silently skipped).
 
 ## Smart Wait (Wait for Green Energy)
 
@@ -293,6 +305,7 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 | `enable_forecast` | No | `false` | Fetch forecast when grid is dirty. UK: free 48h. US: requires `gridstatus_api_key`. Global: requires `electricity_maps_token`. |
 | `runner_provider` | No | — | Runner provider for automatic region routing. Set to `runson` for [RunsOn](https://runs-on.com) AWS-based labels. |
 | `runner_spec` | No | `2cpu-linux-x64` | Runner machine spec for RunsOn (e.g., `4cpu-linux-arm64`). Only used when `runner_provider` is set. |
+| `entsoe_token` | No | — | [ENTSO-E](https://transparency.entsoe.eu/) security token for EU coverage (36 countries). Free registration. Preferred over Electricity Maps for EU zones when set. |
 
 \* One of `grid_zone` or `grid_zones` is required.
 
@@ -308,6 +321,8 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 | `intensity_trend` | Recent trend: `decreasing`, `increasing`, or `stable` |
 | `forecast_green_at` | ISO 8601 timestamp of next predicted green window (UK: free, US: GridStatus key) |
 | `forecast_intensity` | Predicted intensity at the next green window |
+| `co2_saved_grams` | Estimated grams of CO2 saved by running on clean energy vs. global average (450 gCO2eq/kWh) |
+| `carbon_badge_url` | Shields.io badge URL showing estimated CO2 saved. Embed in README: `![carbon](url)` |
 
 ## Forecast & Trend
 
@@ -318,6 +333,10 @@ When the grid is over threshold, the action provides extra context:
 **Forecast (UK):** Predicts when the grid will next be below your threshold, up to 48h ahead. Automatic and free — no API key needed.
 
 **Forecast (US):** Predicts when the grid will be green using solar, wind, and load forecasts from [GridStatus.io](https://www.gridstatus.io). Requires a free GridStatus API key. Supported ISOs: CISO (California), ERCO (Texas), ISNE (New England), MISO, NYIS (New York), PJM, SWPP (SPP).
+
+**Forecast (EU):** ENTSO-E day-ahead generation forecasts estimate when the grid will be green within 24h. Requires `entsoe_token`.
+
+**Forecast (Open-Meteo):** 48h solar irradiance and wind speed forecast for any location with known coordinates. Free, automatic.
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -367,27 +386,69 @@ Uses the [UK Carbon Intensity API](https://carbonintensity.org.uk/) by the Natio
 | `GB-6` | North Wales | `GB-14` | South East England |
 | `GB-7` | South Wales | `GB-15`/`GB-16`/`GB-17` | England/Scotland/Wales |
 
+### Australian Zones (AEMO NEM — No Key Required)
+
+Uses the [AEMO](https://aemo.com.au/) National Electricity Market API for real-time fuel mix data. Free, no registration.
+
+| Zone | Region |
+|------|--------|
+| `AU-NSW` | New South Wales |
+| `AU-QLD` | Queensland |
+| `AU-VIC` | Victoria |
+| `AU-SA` | South Australia |
+| `AU-TAS` | Tasmania |
+
+### EU Zones (ENTSO-E — Free Token Required)
+
+Uses the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for actual generation data across 36 European countries. Calculates carbon intensity from the generation mix using standard emission factors. Requires a free security token (register at ENTSO-E, go to Account Settings → Web API Security Token).
+
+| Zone | Country | Zone | Country |
+|------|---------|------|---------|
+| `DE` | Germany | `FR` | France |
+| `ES` | Spain | `PT` | Portugal |
+| `NL` | Netherlands | `BE` | Belgium |
+| `AT` | Austria | `CH` | Switzerland |
+| `PL` | Poland | `CZ` | Czech Republic |
+| `DK-DK1`/`DK-DK2` | Denmark | `FI` | Finland |
+| `SE-SE1`..`SE-SE4` | Sweden | `NO-NO1`..`NO-NO5` | Norway |
+| `IT-NO`..`IT-SAR` | Italy (6 zones) | `GR` | Greece |
+| `RO` | Romania | `BG` | Bulgaria |
+| `HU` | Hungary | `IE` | Ireland |
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    grid_zone: 'DE'
+    max_carbon_intensity: '200'
+    entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
+```
+
 ### Global Zones (Electricity Maps — Free API Token Required)
 
 Uses [Electricity Maps](https://www.electricitymaps.com/) for 200+ zones worldwide. Direct carbon intensity values in gCO2eq/kWh. Includes forecast and history trend data.
 
 | Zone | Region | Zone | Region |
 |------|--------|------|--------|
-| `DE` | Germany | `FR` | France |
-| `ES` | Spain | `IT-NO` | Northern Italy |
-| `SE-SE1`..`SE-SE4` | Sweden | `NO-NO1`..`NO-NO5` | Norway |
-| `DK-DK1`/`DK-DK2` | Denmark | `NL` | Netherlands |
-| `AU-NSW` | New South Wales | `AU-VIC` | Victoria |
 | `JP-TK` | Tokyo | `IN-NO` | Northern India |
 | `CA-ON` | Ontario | `CA-QC` | Quebec |
 | `BR-S` | Southern Brazil | `NZ-NZN` | New Zealand North |
+| `SG` | Singapore | `KR` | South Korea |
 
 Full zone list at [app.electricitymaps.com/map](https://app.electricitymaps.com/map). Any zone shown on the map can be used.
 
-**Provider auto-detection:** The action automatically selects the right provider based on the zone identifier:
-- `GB`, `GB-1`..`GB-17` → UK Carbon Intensity API (no key needed)
-- Known US balancing authorities (`CISO`, `ERCO`, `PJM`, etc.) → EIA API (no key needed)
-- Everything else → Electricity Maps (requires `electricity_maps_token`)
+### Universal Fallback (Open-Meteo — No Key Required)
+
+For zones not covered by any other provider, the action uses [Open-Meteo](https://open-meteo.com/) to estimate carbon intensity from real-time solar irradiance and wind speed data. This is a rough estimate — it doesn't know the actual grid mix, but indicates renewable potential. Covers 30+ zones across Africa, Middle East, Southeast Asia, South Asia, China, and Eastern Europe.
+
+This provider activates automatically as a fallback. No configuration needed.
+
+**Provider auto-detection:** The action automatically selects the right provider based on the zone identifier (in priority order):
+1. `GB`, `GB-1`..`GB-17` → UK Carbon Intensity API (no key needed)
+2. Known US balancing authorities (`CISO`, `ERCO`, `PJM`, etc.) → EIA API (no key needed)
+3. `AU-NSW`, `AU-QLD`, etc. → AEMO NEM API (no key needed)
+4. EU zones when `entsoe_token` is set → ENTSO-E Transparency Platform
+5. Any zone with `electricity_maps_token` → Electricity Maps
+6. Zones with known coordinates → Open-Meteo weather estimate (automatic fallback)
 
 ## How Carbon Intensity Is Calculated
 
@@ -403,6 +464,49 @@ For US zones, the action fetches the real-time hourly fuel mix from the EIA API 
 For UK zones, the Carbon Intensity API provides pre-calculated intensity values directly.
 
 For global zones, Electricity Maps provides pre-calculated lifecycle carbon intensity values directly in gCO2eq/kWh.
+
+## Carbon Savings Badge
+
+Each run estimates the CO2 saved by running on a clean grid vs. the global average (450 gCO2eq/kWh). Use the `carbon_badge_url` output to add a badge to your README:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    grid_zone: 'CISO'
+    max_carbon_intensity: '200'
+
+- if: steps.carbon.outputs.grid_clean == 'true'
+  run: |
+    echo "CO2 saved: ${{ steps.carbon.outputs.co2_saved_grams }}g"
+    echo "Badge: ${{ steps.carbon.outputs.carbon_badge_url }}"
+```
+
+Embed the badge in your README (the URL updates each run):
+```markdown
+![CO2 Saved](https://img.shields.io/badge/CO2_saved-5g_CO2-brightgreen?style=flat&logo=leaf&logoColor=white)
+```
+
+## Setup Wizard
+
+Validate your configuration before using the action. The setup wizard tests API connectivity and zone codes:
+
+```bash
+# Test common zones (no args)
+python setup_wizard.py
+
+# Test specific zones
+python setup_wizard.py --zone CISO
+python setup_wizard.py --zones "CISO,GB,DE,AU-NSW"
+
+# Test auto:green preset
+python setup_wizard.py --auto-green
+
+# With API keys
+python setup_wizard.py --zones "DE,FR" --electricity-maps-token YOUR_TOKEN
+```
+
+The wizard checks each zone's provider connectivity and prints a summary with recommendations.
 
 ## Rate Limits & API Keys
 
@@ -429,6 +533,28 @@ No API key needed. No documented rate limits. Works out of the box.
 ### Global Zones (Electricity Maps)
 
 Requires a free API token. [Register at portal.electricitymaps.com](https://portal.electricitymaps.com/) — takes 30 seconds. Free tier allows **50 requests/hour**, which covers hourly checks of a single zone with room to spare. Includes carbon intensity, forecast, and history endpoints.
+
+### Australian Zones (AEMO NEM)
+
+No API key needed. No documented rate limits. Works out of the box.
+
+### EU Zones (ENTSO-E)
+
+Requires a free security token. [Register at transparency.entsoe.eu](https://transparency.entsoe.eu/) → Login → Account Settings → Web API Security Token. Rate limit: 400 requests/minute — more than sufficient.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    grid_zone: 'DE'
+    max_carbon_intensity: '200'
+    workflow_id: 'heavy-batch.yml'
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
+```
+
+### Open-Meteo (Universal Fallback)
+
+No API key needed. Rate limit: ~10,000 requests/day. Used automatically as a fallback for zones not covered by other providers. Provides rough estimates based on weather data, not actual grid mix.
 
 ### US Forecasts (GridStatus.io — Optional)
 

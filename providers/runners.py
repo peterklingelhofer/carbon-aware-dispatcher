@@ -123,6 +123,21 @@ ZONE_TO_AWS_REGION = {
     "IT-SAR": "eu-south-1",
     "IE": "eu-west-1",         # Ireland → Ireland
     "GR": "eu-south-1",        # Greece → Milan
+    "IS": "eu-west-1",         # Iceland → Ireland (closest)
+    "EE": "eu-north-1",        # Estonia → Stockholm
+    "LV": "eu-north-1",        # Latvia → Stockholm
+    "LT": "eu-north-1",        # Lithuania → Stockholm
+    "RO": "eu-central-1",      # Romania → Frankfurt
+    "BG": "eu-south-1",        # Bulgaria → Milan
+    "HU": "eu-central-1",      # Hungary → Frankfurt
+    "SK": "eu-central-1",      # Slovakia → Frankfurt
+    "HR": "eu-south-1",        # Croatia → Milan
+    "RS": "eu-south-1",        # Serbia → Milan
+    "SI": "eu-south-1",        # Slovenia → Milan
+    "BA": "eu-south-1",        # Bosnia → Milan
+    "ME": "eu-south-1",        # Montenegro → Milan
+    "MK": "eu-south-1",        # North Macedonia → Milan
+    "AL": "eu-south-1",        # Albania → Milan
 
     # Canada (Electricity Maps)
     "CA-QC": "ca-central-1",   # Quebec → Montreal
@@ -172,6 +187,12 @@ ZONE_TO_AWS_REGION = {
     "AR": "sa-east-1",          # Argentina → São Paulo
     "UY": "sa-east-1",          # Uruguay → São Paulo
     "CO": "sa-east-1",          # Colombia → São Paulo
+    "CR": "us-east-1",          # Costa Rica → N. Virginia (closest)
+    "PA": "us-east-1",          # Panama → N. Virginia
+    "PY": "sa-east-1",          # Paraguay → São Paulo
+    "PE": "sa-east-1",          # Peru → São Paulo
+    "EC": "sa-east-1",          # Ecuador → São Paulo
+    "MX": "us-east-2",          # Mexico → Ohio
 
     # Middle East & Africa
     "IL": "me-south-1",         # Israel → Bahrain

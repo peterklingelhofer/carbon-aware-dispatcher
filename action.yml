@@ -63,6 +63,10 @@ inputs:
     description: 'Runner machine spec for the runner provider (e.g., "4cpu-linux-arm64"). Only used when runner_provider is set. Default: "2cpu-linux-x64".'
     required: false
     default: ''
+  entsoe_token:
+    description: 'Optional ENTSO-E Transparency Platform security token for EU coverage (36 countries). Free registration at https://transparency.entsoe.eu/. Preferred over Electricity Maps for EU zones when set.'
+    required: false
+    default: ''
 
 outputs:
   grid_clean:
@@ -89,6 +93,12 @@ outputs:
   forecast_intensity:
     description: 'Predicted carbon intensity at the next green window in gCO2eq/kWh.'
     value: ${{ steps.grid-check.outputs.forecast_intensity }}
+  co2_saved_grams:
+    description: 'Estimated grams of CO2 saved by running on a clean grid vs. the global average (450 gCO2eq/kWh).'
+    value: ${{ steps.grid-check.outputs.co2_saved_grams }}
+  carbon_badge_url:
+    description: 'Shields.io badge URL showing estimated CO2 saved. Embed in README: ![carbon](url)'
+    value: ${{ steps.grid-check.outputs.carbon_badge_url }}
 
 runs:
   using: 'composite'
@@ -123,3 +133,4 @@ runs:
         RUNNER_PROVIDER: ${{ inputs.runner_provider }}
         RUNNER_SPEC: ${{ inputs.runner_spec }}
         GITHUB_RUN_ID: ${{ github.run_id }}
+        ENTSOE_TOKEN: ${{ inputs.entsoe_token }}

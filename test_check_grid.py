@@ -5,16 +5,22 @@ import tempfile
 from unittest import mock
 
 import pytest
+import requests
 
 import check_grid
 from providers import (
     AUTO_GREEN_ZONES,
+    PROVIDER_AEMO,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
+    PROVIDER_ENTSOE,
+    PROVIDER_OPEN_METEO,
     PROVIDER_UK,
     detect_provider,
+    sort_auto_green_by_time,
+    _time_priority_score,
 )
-from providers import eia, electricity_maps, gridstatus, uk
+from providers import aemo, eia, electricity_maps, entsoe, gridstatus, open_meteo, uk
 from providers.base import api_request, api_request_with_header, compute_trend
 from providers.runners import (
     format_runner_label,
@@ -32,7 +38,7 @@ def _clear_env():
         "ELECTRICITY_MAPS_TOKEN", "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN",
         "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
         "MAX_WAIT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
-        "RUNNER_PROVIDER", "RUNNER_SPEC", "GITHUB_RUN_ID",
+        "RUNNER_PROVIDER", "RUNNER_SPEC", "GITHUB_RUN_ID", "ENTSOE_TOKEN",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -73,9 +79,8 @@ class TestParseZonesInput:
 
     def test_auto_green(self):
         result = parse("auto:green")
-        assert result == list(AUTO_GREEN_ZONES)
         assert len(result) >= 5
-        # Should include a mix of providers
+        # Should include a mix of providers (order may vary by time of day)
         zones = [z["zone"] for z in result]
         assert "CISO" in zones  # US
         assert "GB-16" in zones  # UK
@@ -83,11 +88,13 @@ class TestParseZonesInput:
 
     def test_auto_green_case_insensitive(self):
         result = parse("Auto:Green")
-        assert result == list(AUTO_GREEN_ZONES)
+        zones = {z["zone"] for z in result}
+        assert "CISO" in zones
 
     def test_auto_green_with_whitespace(self):
         result = parse("  auto:green  ")
-        assert result == list(AUTO_GREEN_ZONES)
+        zones = {z["zone"] for z in result}
+        assert "CISO" in zones
 
 
 def parse(s):
@@ -816,7 +823,7 @@ class TestHandleDirtyGrid:
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T18:00:00+00:00"
         assert output_calls["forecast_intensity"] == "50"
-        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "")
+        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "", "")
 
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
@@ -1176,3 +1183,554 @@ class TestRoutingIntegration:
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["cloud_region"] == "eu-north-1"
+
+
+# ---------------------------------------------------------------------------
+# AEMO provider tests
+# ---------------------------------------------------------------------------
+
+class TestAemoDetectProvider:
+    def test_au_nsw(self):
+        assert detect_provider("AU-NSW") == PROVIDER_AEMO
+
+    def test_au_tas(self):
+        assert detect_provider("AU-TAS") == PROVIDER_AEMO
+
+    def test_au_vic(self):
+        assert detect_provider("AU-VIC") == PROVIDER_AEMO
+
+
+class TestAemoFuelMixToIntensity:
+    def test_all_coal(self):
+        data = [{"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 1000}]
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 820
+
+    def test_all_wind(self):
+        data = [{"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 500}]
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+
+    def test_mixed(self):
+        data = [
+            {"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 500},
+            {"REGIONID": "NSW1", "FUELTYPE": "Solar", "GEN_MW": 500},
+        ]
+        # (500*820 + 500*0) / 1000 = 410
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 410
+
+    def test_filters_by_region(self):
+        data = [
+            {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 1000},
+            {"REGIONID": "QLD1", "FUELTYPE": "Black Coal", "GEN_MW": 1000},
+        ]
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+
+    def test_empty_data(self):
+        assert aemo._fuel_mix_to_intensity([], "NSW1") is None
+
+    def test_negative_gen_ignored(self):
+        data = [
+            {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 100},
+            {"REGIONID": "NSW1", "FUELTYPE": "Battery", "GEN_MW": -50},
+        ]
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+
+
+class TestAemoCheckCarbonIntensity:
+    @mock.patch("providers.aemo._fetch_fuel_data")
+    def test_green(self, mock_fetch):
+        mock_fetch.return_value = [
+            {"REGIONID": "TAS1", "FUELTYPE": "Hydro", "GEN_MW": 900},
+            {"REGIONID": "TAS1", "FUELTYPE": "Wind", "GEN_MW": 100},
+        ]
+        is_green, intensity = aemo.check_carbon_intensity("AU-TAS", 250)
+        assert is_green is True
+        assert intensity == 0
+
+    @mock.patch("providers.aemo._fetch_fuel_data")
+    def test_dirty(self, mock_fetch):
+        mock_fetch.return_value = [
+            {"REGIONID": "VIC1", "FUELTYPE": "Brown Coal", "GEN_MW": 800},
+            {"REGIONID": "VIC1", "FUELTYPE": "Wind", "GEN_MW": 200},
+        ]
+        is_green, intensity = aemo.check_carbon_intensity("AU-VIC", 250)
+        assert is_green is False
+        # (800*900 + 200*0) / 1000 = 720
+        assert intensity == 720
+
+    @mock.patch("providers.aemo._fetch_fuel_data")
+    def test_api_error(self, mock_fetch):
+        mock_fetch.return_value = None
+        is_green, intensity = aemo.check_carbon_intensity("AU-NSW", 250)
+        assert is_green is None
+        assert intensity is None
+
+    def test_unknown_zone(self):
+        is_green, intensity = aemo.check_carbon_intensity("AU-UNKNOWN", 250)
+        assert is_green is None
+        assert intensity is None
+
+    def test_forecast_not_available(self):
+        dt, intensity = aemo.get_forecast("AU-NSW", 250)
+        assert dt is None
+        assert intensity is None
+
+
+# ---------------------------------------------------------------------------
+# ENTSO-E provider tests
+# ---------------------------------------------------------------------------
+
+class TestEntsoeDetectProvider:
+    def test_de_with_token(self):
+        assert detect_provider("DE", entsoe_token="my-token") == PROVIDER_ENTSOE
+
+    def test_de_without_token(self):
+        assert detect_provider("DE") == PROVIDER_ELECTRICITY_MAPS
+
+    def test_fr_with_token(self):
+        assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
+
+    def test_non_eu_zone_with_token(self):
+        """Non-EU zone should not use ENTSO-E even with token."""
+        assert detect_provider("CISO", entsoe_token="tok") == PROVIDER_EIA
+
+
+class TestEntsoeParseGenerationXml:
+    def test_basic_parse(self):
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B16</psrType></MktPSRType>
+            <Period><Point><quantity>500.0</quantity></Point></Period>
+        </TimeSeries>
+        <TimeSeries>
+            <MktPSRType><psrType>B04</psrType></MktPSRType>
+            <Period><Point><quantity>300.0</quantity></Point></Period>
+        </TimeSeries>
+        """
+        result = entsoe._parse_generation_xml(xml)
+        assert len(result) == 2
+        assert ("B16", 500.0) in result
+        assert ("B04", 300.0) in result
+
+    def test_zero_quantity_excluded(self):
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B16</psrType></MktPSRType>
+            <Period><Point><quantity>0</quantity></Point></Period>
+        </TimeSeries>
+        """
+        result = entsoe._parse_generation_xml(xml)
+        assert len(result) == 0
+
+    def test_empty_xml(self):
+        result = entsoe._parse_generation_xml("")
+        assert result == []
+
+
+class TestEntsoeCheckCarbonIntensity:
+    @mock.patch("providers.entsoe.requests.get")
+    def test_green(self, mock_get):
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B19</psrType></MktPSRType>
+            <Period><Point><quantity>800</quantity></Point></Period>
+        </TimeSeries>
+        <TimeSeries>
+            <MktPSRType><psrType>B04</psrType></MktPSRType>
+            <Period><Point><quantity>200</quantity></Point></Period>
+        </TimeSeries>
+        """
+        mock_get.return_value = mock.Mock(status_code=200, text=xml)
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
+        assert is_green is True
+        # (800*0 + 200*490) / 1000 = 98
+        assert intensity == 98
+
+    @mock.patch("providers.entsoe.requests.get")
+    def test_dirty(self, mock_get):
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B05</psrType></MktPSRType>
+            <Period><Point><quantity>700</quantity></Point></Period>
+        </TimeSeries>
+        <TimeSeries>
+            <MktPSRType><psrType>B04</psrType></MktPSRType>
+            <Period><Point><quantity>300</quantity></Point></Period>
+        </TimeSeries>
+        """
+        mock_get.return_value = mock.Mock(status_code=200, text=xml)
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
+        assert is_green is False
+        # (700*820 + 300*490) / 1000 = 721
+        assert intensity == 721
+
+    def test_no_token(self):
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "")
+        assert is_green is None
+        assert intensity is None
+
+    def test_unknown_zone(self):
+        is_green, intensity = entsoe.check_carbon_intensity("XX-UNKNOWN", 250, "token")
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.entsoe.requests.get")
+    def test_auth_failure(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "bad-token")
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.entsoe.requests.get")
+    def test_rate_limit(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=429, text="Too Many Requests")
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.entsoe.requests.get")
+    def test_network_error(self, mock_get):
+        mock_get.side_effect = requests.RequestException("timeout")
+        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
+        assert is_green is None
+        assert intensity is None
+
+
+class TestEntsoeForecast:
+    @mock.patch("providers.entsoe.requests.get")
+    def test_forecast_green(self, mock_get):
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B19</psrType></MktPSRType>
+            <Period><Point><quantity>900</quantity></Point></Period>
+        </TimeSeries>
+        <TimeSeries>
+            <MktPSRType><psrType>B04</psrType></MktPSRType>
+            <Period><Point><quantity>100</quantity></Point></Period>
+        </TimeSeries>
+        """
+        mock_get.return_value = mock.Mock(status_code=200, text=xml)
+        dt, intensity = entsoe.get_forecast("DE", 250, "token")
+        assert dt is not None
+        assert intensity == 49  # (900*0 + 100*490) / 1000
+
+    def test_no_token(self):
+        dt, intensity = entsoe.get_forecast("DE", 250, "")
+        assert dt is None
+        assert intensity is None
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo provider tests
+# ---------------------------------------------------------------------------
+
+class TestOpenMeteoEstimateIntensity:
+    def test_high_solar_high_wind(self):
+        # 40% solar reduction * 25% wind reduction = 0.60 * 0.75 = 0.45
+        intensity = open_meteo._estimate_intensity_from_weather(700, 10)
+        assert intensity == round(550 * 0.60 * 0.75)
+
+    def test_no_solar_no_wind(self):
+        # Night, calm — full base intensity
+        intensity = open_meteo._estimate_intensity_from_weather(0, 1)
+        assert intensity == 550
+
+    def test_medium_solar_only(self):
+        intensity = open_meteo._estimate_intensity_from_weather(400, 1)
+        assert intensity == round(550 * 0.80 * 1.0)
+
+    def test_high_wind_only(self):
+        intensity = open_meteo._estimate_intensity_from_weather(0, 9)
+        assert intensity == round(550 * 1.0 * 0.75)
+
+
+class TestOpenMeteoCheckCarbonIntensity:
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_green_zone(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {
+                "current": {
+                    "global_tilted_irradiance": 700,
+                    "wind_speed_10m": 10,
+                }
+            },
+        )
+        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        assert is_green is True
+        assert intensity == round(550 * 0.60 * 0.75)
+
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_dirty_zone(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {
+                "current": {
+                    "global_tilted_irradiance": 0,
+                    "wind_speed_10m": 1,
+                }
+            },
+        )
+        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        assert is_green is False
+        assert intensity == 550
+
+    def test_unknown_zone_no_coords(self):
+        is_green, intensity = open_meteo.check_carbon_intensity("XX-NONE", 300)
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_with_explicit_lat_lon(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {
+                "current": {
+                    "global_tilted_irradiance": 600,
+                    "wind_speed_10m": 5,
+                }
+            },
+        )
+        is_green, intensity = open_meteo.check_carbon_intensity(
+            "CUSTOM", 500, lat=40.0, lon=-74.0
+        )
+        assert is_green is True
+
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_api_error(self, mock_get):
+        mock_get.side_effect = requests.RequestException("timeout")
+        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_non_200_response(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
+        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        assert is_green is None
+        assert intensity is None
+
+
+class TestOpenMeteoForecast:
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_finds_green_window(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {
+                "hourly": {
+                    "time": ["2026-03-10 06:00", "2026-03-10 12:00"],
+                    "global_tilted_irradiance": [0, 700],
+                    "wind_speed_10m": [2, 10],
+                }
+            },
+        )
+        dt, intensity = open_meteo.get_forecast("ZA", 300)
+        assert dt is not None
+        assert "12:00" in dt
+
+    @mock.patch("providers.open_meteo.requests.get")
+    def test_no_green_window(self, mock_get):
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {
+                "hourly": {
+                    "time": ["2026-03-10 06:00"],
+                    "global_tilted_irradiance": [0],
+                    "wind_speed_10m": [1],
+                }
+            },
+        )
+        dt, intensity = open_meteo.get_forecast("ZA", 100)
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+    def test_history_trend_returns_none(self):
+        assert open_meteo.get_history_trend("ZA") is None
+
+
+# ---------------------------------------------------------------------------
+# Time-aware auto:green sorting tests
+# ---------------------------------------------------------------------------
+
+class TestTimePriorityScore:
+    def test_solar_peak(self):
+        zone = {"zone": "CISO", "utc_offset": -8, "type": "solar"}
+        # 12pm local = 20 UTC
+        score = _time_priority_score(zone, 20)
+        assert score == 100
+
+    def test_solar_night(self):
+        zone = {"zone": "CISO", "utc_offset": -8, "type": "solar"}
+        # 2am local = 10 UTC
+        score = _time_priority_score(zone, 10)
+        assert score == 10
+
+    def test_hydro_always_high(self):
+        zone = {"zone": "NO-NO1", "utc_offset": 1, "type": "hydro"}
+        # Any hour, hydro should be consistently high
+        for utc_hour in [0, 6, 12, 18]:
+            score = _time_priority_score(zone, utc_hour)
+            assert score >= 80
+
+    def test_wind_higher_at_night(self):
+        zone = {"zone": "GB-16", "utc_offset": 0, "type": "wind"}
+        night_score = _time_priority_score(zone, 2)   # 2am local
+        day_score = _time_priority_score(zone, 14)     # 2pm local
+        assert night_score > day_score
+
+
+class TestSortAutoGreenByTime:
+    def test_solar_ranked_high_at_noon(self):
+        zones = list(AUTO_GREEN_ZONES)
+        # 20 UTC = noon in California (UTC-8)
+        sorted_zones = sort_auto_green_by_time(zones, 20)
+        zone_names = [z["zone"] for z in sorted_zones]
+        # CISO (solar, UTC-8) should be near the top at noon local time
+        assert zone_names.index("CISO") < 5
+
+    def test_solar_ranked_low_at_night(self):
+        zones = list(AUTO_GREEN_ZONES)
+        # 10 UTC = 2am in California (UTC-8)
+        sorted_zones = sort_auto_green_by_time(zones, 10)
+        zone_names = [z["zone"] for z in sorted_zones]
+        # CISO should be near the bottom at 2am local time
+        assert zone_names.index("CISO") > len(zone_names) // 2
+
+    def test_preserves_all_zones(self):
+        zones = list(AUTO_GREEN_ZONES)
+        sorted_zones = sort_auto_green_by_time(zones, 12)
+        assert len(sorted_zones) == len(zones)
+        assert {z["zone"] for z in sorted_zones} == {z["zone"] for z in zones}
+
+
+# ---------------------------------------------------------------------------
+# Expanded auto:green tests
+# ---------------------------------------------------------------------------
+
+class TestExpandedAutoGreen:
+    def test_has_global_coverage(self):
+        zones = {z["zone"] for z in AUTO_GREEN_ZONES}
+        # Americas
+        assert "CISO" in zones
+        assert "BR-S" in zones
+        assert "CR" in zones
+        # Europe
+        assert "NO-NO1" in zones
+        assert "FR" in zones
+        assert "IS" in zones
+        # Oceania
+        assert "NZ-NZN" in zones
+        assert "AU-TAS" in zones
+
+    def test_all_zones_have_required_fields(self):
+        for zone in AUTO_GREEN_ZONES:
+            assert "zone" in zone
+            assert "runner_label" in zone
+            assert "utc_offset" in zone
+            assert "type" in zone
+            assert zone["type"] in ("solar", "hydro", "wind", "nuclear")
+
+
+# ---------------------------------------------------------------------------
+# Carbon savings estimation tests
+# ---------------------------------------------------------------------------
+
+class TestEstimateCarbonSavings:
+    def test_green_grid_saves_co2(self):
+        # 50 gCO2eq/kWh vs 450 baseline
+        saved, badge_url = check_grid.estimate_carbon_savings(50)
+        assert saved > 0
+        assert badge_url is not None
+        assert "shields.io" in badge_url
+
+    def test_dirty_grid_no_savings(self):
+        # 500 gCO2eq/kWh — worse than 450 baseline
+        saved, badge_url = check_grid.estimate_carbon_savings(500)
+        assert saved == 0
+
+    def test_none_intensity(self):
+        saved, badge_url = check_grid.estimate_carbon_savings(None)
+        assert saved == 0
+        assert badge_url is None
+
+    def test_custom_job_minutes(self):
+        saved_short, _ = check_grid.estimate_carbon_savings(100, job_minutes=15)
+        saved_long, _ = check_grid.estimate_carbon_savings(100, job_minutes=60)
+        assert saved_long > saved_short
+
+    def test_badge_url_format(self):
+        _, badge_url = check_grid.estimate_carbon_savings(100)
+        assert "CO2_saved" in badge_url
+        assert "brightgreen" in badge_url
+
+
+class TestWriteJobSummaryWithCo2:
+    def test_summary_includes_co2_saved(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary("CISO", 50, True, 250, co2_saved=5.0)
+            with open(path) as f:
+                content = f.read()
+            assert "CO2 Saved" in content
+            assert "5" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+
+# ---------------------------------------------------------------------------
+# check_grid.py dispatch routing tests for new providers
+# ---------------------------------------------------------------------------
+
+class TestCheckGridDispatchRouting:
+    @mock.patch("providers.aemo.check_carbon_intensity")
+    def test_routes_to_aemo(self, mock_aemo):
+        mock_aemo.return_value = (True, 100)
+        is_green, intensity = check_grid.check_carbon_intensity(
+            "AU-NSW", 250, PROVIDER_AEMO
+        )
+        assert is_green is True
+        mock_aemo.assert_called_once_with("AU-NSW", 250)
+
+    @mock.patch("providers.entsoe.check_carbon_intensity")
+    def test_routes_to_entsoe(self, mock_entsoe):
+        mock_entsoe.return_value = (True, 80)
+        is_green, intensity = check_grid.check_carbon_intensity(
+            "DE", 250, PROVIDER_ENTSOE, entsoe_token="token"
+        )
+        assert is_green is True
+        mock_entsoe.assert_called_once_with("DE", 250, "token")
+
+    @mock.patch("providers.open_meteo.check_carbon_intensity")
+    def test_routes_to_open_meteo(self, mock_om):
+        mock_om.return_value = (True, 200)
+        is_green, intensity = check_grid.check_carbon_intensity(
+            "ZA", 250, PROVIDER_OPEN_METEO
+        )
+        assert is_green is True
+        mock_om.assert_called_once_with("ZA", 250)
+
+    @mock.patch("providers.aemo.get_forecast")
+    def test_forecast_routes_to_aemo(self, mock_forecast):
+        mock_forecast.return_value = (None, None)
+        check_grid.get_forecast("AU-NSW", 250, PROVIDER_AEMO)
+        mock_forecast.assert_called_once_with("AU-NSW", 250)
+
+    @mock.patch("providers.entsoe.get_forecast")
+    def test_forecast_routes_to_entsoe(self, mock_forecast):
+        mock_forecast.return_value = ("2026-03-10T12:00Z", 90)
+        check_grid.get_forecast("DE", 250, PROVIDER_ENTSOE, entsoe_token="tok")
+        mock_forecast.assert_called_once_with("DE", 250, "tok")
+
+    @mock.patch("providers.open_meteo.get_forecast")
+    def test_forecast_routes_to_open_meteo(self, mock_forecast):
+        mock_forecast.return_value = ("2026-03-10T12:00Z", 200)
+        check_grid.get_forecast("ZA", 250, PROVIDER_OPEN_METEO)
+        mock_forecast.assert_called_once_with("ZA", 250)
+
+    @mock.patch("providers.open_meteo.get_history_trend")
+    def test_trend_routes_to_open_meteo(self, mock_trend):
+        mock_trend.return_value = None
+        check_grid.get_history_trend("ZA", PROVIDER_OPEN_METEO)
+        mock_trend.assert_called_once_with("ZA")
