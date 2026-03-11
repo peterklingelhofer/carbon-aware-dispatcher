@@ -55,6 +55,14 @@ inputs:
     description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts. Global zones require an Electricity Maps token.'
     required: false
     default: 'false'
+  runner_provider:
+    description: 'Runner provider for automatic region-based routing. Set to "runson" to get RunsOn-formatted runner labels with the greenest AWS region. Leave empty to use custom labels from grid_zones.'
+    required: false
+    default: ''
+  runner_spec:
+    description: 'Runner machine spec for the runner provider (e.g., "4cpu-linux-arm64"). Only used when runner_provider is set. Default: "2cpu-linux-x64".'
+    required: false
+    default: ''
 
 outputs:
   grid_clean:
@@ -67,8 +75,11 @@ outputs:
     description: 'The zone that was selected (useful in multi-zone mode).'
     value: ${{ steps.grid-check.outputs.grid_zone }}
   runner_label:
-    description: 'The runner label for the selected zone (if configured in grid_zones).'
+    description: 'The runner label for the selected zone. Auto-formatted when runner_provider is set, otherwise from grid_zones config.'
     value: ${{ steps.grid-check.outputs.runner_label }}
+  cloud_region:
+    description: 'The nearest AWS region for the selected zone (e.g., us-west-1, eu-west-2). Useful for routing jobs to region-aware runner providers.'
+    value: ${{ steps.grid-check.outputs.cloud_region }}
   intensity_trend:
     description: 'Carbon intensity trend from recent history: "decreasing", "increasing", or "stable".'
     value: ${{ steps.grid-check.outputs.intensity_trend }}
@@ -109,3 +120,6 @@ runs:
         ELECTRICITY_MAPS_TOKEN: ${{ inputs.electricity_maps_token }}
         MAX_WAIT: ${{ inputs.max_wait }}
         ENABLE_FORECAST: ${{ inputs.enable_forecast }}
+        RUNNER_PROVIDER: ${{ inputs.runner_provider }}
+        RUNNER_SPEC: ${{ inputs.runner_spec }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
