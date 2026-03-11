@@ -41,8 +41,12 @@ inputs:
     description: 'Optional GridStatus.io API key for US zone forecasts. Enables predicting when the grid will be green. Register free at https://www.gridstatus.io (1M rows/month free).'
     required: false
     default: ''
+  electricity_maps_token:
+    description: 'Optional Electricity Maps API token for global zone coverage (200+ zones). Register free at https://portal.electricitymaps.com/ (50 requests/hour).'
+    required: false
+    default: ''
   enable_forecast:
-    description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts.'
+    description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts. Global zones require an Electricity Maps token.'
     required: false
     default: 'false'
 
@@ -96,4 +100,5 @@ runs:
         TARGET_REPO: ${{ github.repository }}
         TARGET_REF: ${{ inputs.target_ref }}
         FAIL_ON_API_ERROR: ${{ inputs.fail_on_api_error }}
+        ELECTRICITY_MAPS_TOKEN: ${{ inputs.electricity_maps_token }}
         ENABLE_FORECAST: ${{ inputs.enable_forecast }}
