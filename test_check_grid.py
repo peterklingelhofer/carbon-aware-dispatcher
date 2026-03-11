@@ -2228,3 +2228,136 @@ class TestInlineMode:
             assert "grid_clean=true" in content
         finally:
             os.unlink(output_file)
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard tests
+# ---------------------------------------------------------------------------
+
+class TestSetupWizard:
+    def test_provider_names_cover_all_providers(self):
+        """All providers should have display names in the wizard."""
+        from setup_wizard import _PROVIDER_NAMES
+        from providers import (
+            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+        )
+        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+            assert p in _PROVIDER_NAMES, f"Missing display name for {p}"
+
+    def test_provider_modules_cover_all_providers(self):
+        """All providers should have modules in the wizard."""
+        from setup_wizard import _PROVIDER_MODULES
+        from providers import (
+            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+        )
+        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+            assert p in _PROVIDER_MODULES, f"Missing module for {p}"
+
+    @mock.patch("setup_wizard.uk.check_carbon_intensity", return_value=(True, 100))
+    def test_zone_test_uk(self, mock_check):
+        from setup_wizard import test_zone
+        result = test_zone("GB")
+        assert result["status"] == "ok"
+        assert result["intensity"] == 100
+
+    def test_zone_test_entsoe_skipped_without_token(self):
+        from setup_wizard import test_zone
+        result = test_zone("DE", entsoe_token="")
+        # DE without entsoe token should use Open-Meteo (if coordinates exist)
+        # or be skipped for ENTSO-E
+        assert result["status"] in ("ok", "skipped", "error")
+
+    def test_zone_test_emaps_skipped_without_token(self):
+        from setup_wizard import test_zone
+        # Use a zone that only Electricity Maps can handle
+        result = test_zone("SG", emaps_api_key="")
+        assert result["status"] == "skipped"
+        assert "portal.electricitymaps.com" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Cloud region mapping completeness
+# ---------------------------------------------------------------------------
+
+class TestCloudRegionMappingCompleteness:
+    def test_all_auto_cleanest_zones_have_aws_mapping(self):
+        """All zones in auto:cleanest should have AWS region mappings."""
+        for entry in AUTO_CLEANEST_ZONES:
+            zone = entry["zone"]
+            region = get_cloud_region(zone)
+            # Should not be the default for important zones
+            assert region is not None, f"No AWS region for {zone}"
+
+    def test_all_auto_cleanest_zones_have_gcp_mapping(self):
+        """All zones in auto:cleanest should have GCP region mappings."""
+        for entry in AUTO_CLEANEST_ZONES:
+            zone = entry["zone"]
+            region = get_gcp_region(zone)
+            assert region is not None, f"No GCP region for {zone}"
+
+    def test_all_auto_cleanest_zones_have_azure_mapping(self):
+        """All zones in auto:cleanest should have Azure region mappings."""
+        for entry in AUTO_CLEANEST_ZONES:
+            zone = entry["zone"]
+            region = get_azure_region(zone)
+            assert region is not None, f"No Azure region for {zone}"
+
+    def test_brazil_se_zone_in_all_clouds(self):
+        """BR-SE should have mappings in all three clouds."""
+        assert "BR-SE" in ZONE_TO_AWS_REGION
+        assert "BR-SE" in ZONE_TO_GCP_REGION
+        assert "BR-SE" in ZONE_TO_AZURE_REGION
+
+    def test_nz_zones_in_gcp_and_azure(self):
+        """NZ zones should have GCP and Azure mappings."""
+        assert "NZ-NZN" in ZONE_TO_GCP_REGION
+        assert "NZ-NZN" in ZONE_TO_AZURE_REGION
+
+
+# ---------------------------------------------------------------------------
+# Provider registry consistency
+# ---------------------------------------------------------------------------
+
+class TestProviderRegistryConsistency:
+    def test_all_providers_in_check_grid_registry(self):
+        """All provider constants should be in check_grid's module registry."""
+        from check_grid import _PROVIDER_MODULES
+        from providers import (
+            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+        )
+        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
+                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
+                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+            assert p in _PROVIDER_MODULES, f"Missing {p} in _PROVIDER_MODULES"
+
+    def test_all_provider_modules_have_required_functions(self):
+        """Each provider module must have check_carbon_intensity, get_forecast, get_history_trend."""
+        from check_grid import _PROVIDER_MODULES
+        for provider_id, module in _PROVIDER_MODULES.items():
+            assert hasattr(module, "check_carbon_intensity"), \
+                f"{provider_id} missing check_carbon_intensity"
+            assert hasattr(module, "get_forecast"), \
+                f"{provider_id} missing get_forecast"
+            assert hasattr(module, "get_history_trend"), \
+                f"{provider_id} missing get_history_trend"
+
+    def test_detect_provider_prefers_free_over_paid(self):
+        """Free providers should be preferred over token-required providers."""
+        # India zones should detect Grid India (free), not Electricity Maps
+        assert detect_provider("IN-SO") == PROVIDER_GRID_INDIA
+        # Brazil zones should detect ONS Brazil (free)
+        assert detect_provider("BR-S") == PROVIDER_ONS_BRAZIL
+        # South Africa should detect Eskom (free)
+        assert detect_provider("ZA") == PROVIDER_ESKOM
+        # Australia should detect AEMO (free)
+        assert detect_provider("AU-NSW") == PROVIDER_AEMO

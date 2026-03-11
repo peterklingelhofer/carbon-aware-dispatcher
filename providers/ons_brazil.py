@@ -135,11 +135,14 @@ def check_carbon_intensity(zone, max_carbon):
     print(f"Checking carbon intensity for zone: {zone} (ONS Brazil)...")
     data = _fetch_energy_balance()
     if data is None:
+        print(f"  ONS Brazil API may be temporarily unavailable. "
+              f"Data source: https://integra.ons.org.br/")
         return None, None
 
     generation = _parse_energy_balance(data)
     if generation is None:
-        print(f"::warning::Could not parse ONS energy balance for {zone}")
+        print(f"::warning::Could not parse ONS energy balance for {zone}. "
+              f"API format may have changed. Check https://integra.ons.org.br/")
         return None, None
 
     intensity = _calculate_intensity(generation)

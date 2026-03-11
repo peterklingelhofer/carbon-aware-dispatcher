@@ -122,3 +122,11 @@ def get_history_trend(zone, eia_api_key=""):
     # Reverse so oldest is first (API returns newest first)
     intensities.reverse()
     return compute_trend(intensities)
+
+
+def get_forecast(zone, max_carbon, eia_api_key=""):
+    """EIA has no forecast endpoint. Use GridStatus for US zone forecasts.
+
+    Returns (None, None).
+    """
+    return None, None
