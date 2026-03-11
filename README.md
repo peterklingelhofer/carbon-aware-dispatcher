@@ -1,26 +1,37 @@
 # Carbon-Aware Dispatcher
 
-A GitHub Action that delays compute-heavy CI/CD workflows until the energy grid is powered by clean, renewable energy. Runs on a cron schedule as a gatekeeper: checks live carbon intensity data, and dispatches your heavy workflow only when the grid is green.
+![CO2 Saved](https://img.shields.io/badge/CO2_saved-green_CI-brightgreen?style=flat&logo=leaf&logoColor=white) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
-**Zero config for US, UK, Australia, India, Brazil & South Africa: no API keys required.** Uses the [EIA API](https://www.eia.gov/opendata/) for US zones, the [UK Carbon Intensity API](https://carbonintensity.org.uk/) for UK zones, [AEMO](https://aemo.com.au/) for Australia, [Grid India](https://report.grid-india.in/) for India, [ONS](https://integra.ons.org.br/) for Brazil, and [Eskom](https://www.eskom.co.za/) for South Africa. All free, open, and need no authentication.
+Sustainable CI/CD for any platform. Delays compute-heavy workflows until the energy grid is powered by clean, renewable energy. Works with GitHub Actions, GitLab CI, Bitbucket Pipelines, and CircleCI.
 
-**EU coverage with [ENTSO-E](https://transparency.entsoe.eu/):** 36 European countries with actual generation data. Requires a free security token.
+**Zero config:** just add the action with no inputs. Auto-detects your cloud region (AWS, GCP, Azure) and checks the grid. No API keys, no zone codes to look up, no configuration needed.
 
-**Global coverage with [Electricity Maps](https://www.electricitymaps.com/):** 200+ zones worldwide including Europe, Canada, India, Japan, Latin America, and more. Requires a free API token (50 requests/hour).
+### Provider Capabilities
 
-**Universal fallback with [Open-Meteo](https://open-meteo.com/):** estimates carbon intensity from real-time solar irradiance and wind speed for any location worldwide. Free, no API key. Used automatically when no other provider covers a zone.
+| Provider | Coverage | API Key | Real-time | Forecast | Zones |
+|----------|----------|---------|-----------|----------|-------|
+| [EIA](https://www.eia.gov/opendata/) | US (60+ regions) | Free built-in | Fuel mix | Via GridStatus | `CISO`, `ERCO`, `PJM`, `BPAT`... |
+| [UK Carbon Intensity](https://carbonintensity.org.uk/) | UK (18 regions) | None | Direct | 48h free | `GB`, `GB-1`..`GB-17` |
+| [AEMO](https://aemo.com.au/) | Australia (5 states) | None | Fuel mix | - | `AU-NSW`, `AU-SA`, `AU-TAS`... |
+| [Grid India](https://report.grid-india.in/) | India (5 regions) | None | Generation | Solar heuristic | `IN-NO`, `IN-SO`, `IN-WE`... |
+| [ONS Brazil](https://integra.ons.org.br/) | Brazil (5 regions) | None | Energy balance | Hydro heuristic | `BR-S`, `BR-SE`, `BR-NE`... |
+| [Eskom](https://www.eskom.co.za/) | South Africa | None | Estimation | Heuristic | `ZA` |
+| [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | Generation mix | Day-ahead | `DE`, `FR`, `NO-NO1`... |
+| [Electricity Maps](https://www.electricitymaps.com/) | Global (200+ zones) | Free token | Direct | 24h | Any zone on their map |
+| [Open-Meteo](https://open-meteo.com/) | Worldwide (90+ zones) | None | Weather-based | 48h weather | Auto-fallback for any zone |
+| [GridStatus](https://www.gridstatus.io) | US (7 ISOs) | Free token | - | Solar/wind/load | `CISO`, `ERCO`, `PJM`... |
 
-**Multi-zone support:** provide multiple grid zones (optionally mapped to self-hosted runner labels) and the action picks the zone with the lowest carbon intensity, routing your workload to the greenest available region.
+### Key Features
 
-**Carbon savings badge:** each run estimates the CO2 saved by running on clean energy and outputs a Shields.io badge URL for your README.
-
-**Dirty-grid escape presets:** use `auto:escape-coal` to automatically route CI jobs from coal-heavy grids (India, China, Poland, South Africa) to the nearest clean energy region. Zero config.
-
-**Smart queue mode:** set `strategy: queue` and the action finds the optimal green window across all zones within your deadline, instead of just checking now.
-
-**Multi-cloud region recommender:** outputs `cloud_region` (AWS), `gcp_region`, and `azure_region` so you can route jobs to the greenest region on any cloud provider.
-
-**Organization-wide config:** drop a `.github/carbon-policy.yml` in your repo to set defaults for all workflows. Action inputs override policy.
+- **Cloud auto-detection:** detects AWS/GCP/Azure region from environment variables, maps to the nearest grid zone automatically
+- **Multi-zone routing:** checks multiple zones, picks the greenest one, outputs runner labels for all three major clouds
+- **Fallback chains:** if a provider fails, automatically falls back to Open-Meteo weather-based estimation
+- **Smart presets:** `auto:detect`, `auto:green`, `auto:cleanest`, `auto:escape-coal` for zero-config use
+- **Forecast for all providers:** time-of-day heuristics for India (solar peak), Brazil (hydro/thermal), and South Africa even without API forecasts
+- **Queue strategy:** find the optimal green window within your deadline across all zones
+- **Multi-platform:** templates for GitHub Actions, GitLab CI, Bitbucket Pipelines, CircleCI
+- **Carbon savings badge:** Shields.io badge URL showing estimated CO2 saved per run
+- **Org-wide config:** `.github/carbon-policy.yml` sets defaults for all workflows
 
 ## How It Works
 
@@ -36,9 +47,9 @@ A GitHub Action that delays compute-heavy CI/CD workflows until the energy grid 
 - **Data Operations:** Database backups, indexing, large migrations
 - **Any non-urgent batch job** that can wait for clean energy
 
-## Easiest Start: Zero Config, Any Country (3 Lines)
+## Easiest Start: Zero Config (No Inputs Needed)
 
-Don't know your grid zone? Don't have any API keys? Just use `auto:cleanest`:
+Just add the action. No zone, no API key, no configuration:
 
 ```yaml
 name: Carbon-Aware Build
@@ -53,8 +64,6 @@ jobs:
     steps:
       - uses: peterklingelhofer/carbon-aware-dispatcher@v1
         id: carbon
-        with:
-          grid_zones: 'auto:cleanest'
 
       - if: steps.carbon.outputs.grid_clean == 'true'
         uses: actions/checkout@v4
@@ -63,7 +72,13 @@ jobs:
         run: echo "Running on clean energy in ${{ steps.carbon.outputs.grid_zone }}!"
 ```
 
-That's it: **no API keys, no secrets, one file.** The action checks 17 zones across 8 free providers worldwide and picks the cleanest one.
+That's it: **no inputs, no API keys, no secrets, one file.** The action auto-detects your cloud region or checks 17+ zones across 8 free providers worldwide.
+
+You can also be explicit with presets:
+- `auto:detect`: detects your cloud region from env vars (AWS/GCP/Azure)
+- `auto:cleanest`: checks all free-provider zones, picks the cleanest
+- `auto:green`: 10 curated zones that are frequently powered by clean energy (free providers only)
+- `auto:green:full`: 21 zones including token-requiring EU/Canada/NZ zones
 
 ### Escape from Dirty Grids
 
@@ -343,8 +358,8 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `grid_zone` | No* | none | Single zone, or `auto:green` for curated green zones. US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`, Global: [Electricity Maps zone](https://app.electricitymaps.com/map). |
-| `grid_zones` | No* | none | Comma-separated zones, optionally with runner labels. Or `auto:green`. |
+| `grid_zone` | No | `auto:detect` | Single zone, or a preset (`auto:detect`, `auto:green`, `auto:cleanest`). US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`, Global: [Electricity Maps zone](https://app.electricitymaps.com/map). If omitted, auto-detects cloud region. |
+| `grid_zones` | No | `auto:detect` | Comma-separated zones, optionally with runner labels. Or a preset. If omitted, auto-detects cloud region. |
 | `eia_api_key` | No | none | Optional EIA API key for higher rate limits. [Register free](https://www.eia.gov/opendata/register.php). Built-in `DEMO_KEY` works for basic use. |
 | `gridstatus_api_key` | No | none | Optional [GridStatus.io](https://www.gridstatus.io) API key for US zone forecasts. [Register free](https://www.gridstatus.io) (1M rows/month). |
 | `max_carbon_intensity` | No | `250` | Maximum gCO2eq/kWh to allow dispatch |
@@ -362,7 +377,7 @@ No `workflow_id`, `github_token`, or second workflow file needed. The action set
 | `deadline_hours` | No | `24` | Hours to look ahead for green windows when `strategy=queue`. |
 | `carbon_policy_path` | No | `.github/carbon-policy.yml` | Path to org-wide carbon policy file. Policy values are defaults; action inputs override. |
 
-\* One of `grid_zone` or `grid_zones` is required.
+If no zone inputs are provided, the action uses `auto:detect`: it detects your cloud region from environment variables and checks the nearest grid zone, or falls back to `auto:cleanest` if no cloud region is detected.
 
 ## Outputs
 
@@ -395,7 +410,13 @@ When the grid is over threshold, the action provides extra context:
 
 **Forecast (EU):** ENTSO-E day-ahead generation forecasts estimate when the grid will be green within 24h. Requires `entsoe_token`.
 
-**Forecast (Open-Meteo):** 48h solar irradiance and wind speed forecast for any location with known coordinates. Free, automatic.
+**Forecast (India):** Time-of-day heuristic based on solar generation patterns. India's grid gets significantly cleaner during solar peak (10am-4pm IST). Southern grid (IN-SO) is cleanest due to higher renewable penetration. Automatic, no key needed.
+
+**Forecast (Brazil):** Hydro/thermal dispatch heuristic. Brazil's grid is cleanest off-peak (22:00-16:00 BRT) when hydro dominates. Evening peak (17:00-21:00) uses more thermal. Automatic, no key needed.
+
+**Forecast (South Africa):** Heuristic based on SA's coal-dominant grid. Midday (10am-4pm SAST) is slightly cleaner due to solar, but rarely below 650 gCO2eq/kWh. Recommends `auto:escape-coal:ZA` for green scheduling.
+
+**Forecast (Open-Meteo):** 48h solar irradiance and wind speed forecast for any location with known coordinates (90+ zones). Free, automatic.
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -529,11 +550,11 @@ Full zone list at [app.electricitymaps.com/map](https://app.electricitymaps.com/
 
 ### Universal Fallback (Open-Meteo: No Key Required)
 
-For zones not covered by any other provider, the action uses [Open-Meteo](https://open-meteo.com/) to estimate carbon intensity from real-time solar irradiance and wind speed data. This is a rough estimate: it doesn't know the actual grid mix, but indicates renewable potential. Covers 30+ zones across Africa, Middle East, Southeast Asia, South Asia, China, and Eastern Europe.
+For zones not covered by any other provider, the action uses [Open-Meteo](https://open-meteo.com/) to estimate carbon intensity from real-time solar irradiance and wind speed data. This is a rough estimate: it doesn't know the actual grid mix, but indicates renewable potential. Covers 90+ zones across Europe, Americas, Asia-Pacific, Africa, and Middle East.
 
 This provider activates automatically as a fallback. No configuration needed.
 
-**Provider auto-detection:** The action automatically selects the right provider based on the zone identifier (in priority order):
+**Provider auto-detection:** The action automatically selects the best provider for each zone (in priority order):
 1. `GB`, `GB-1`..`GB-17` -> UK Carbon Intensity API (no key needed)
 2. Known US balancing authorities (`CISO`, `ERCO`, `PJM`, etc.) -> EIA API (no key needed)
 3. `AU-NSW`, `AU-QLD`, etc. -> AEMO NEM API (no key needed)
@@ -541,8 +562,10 @@ This provider activates automatically as a fallback. No configuration needed.
 5. `BR-S`, `BR-NE`, etc. -> ONS Brazil API (no key needed)
 6. `ZA` -> Eskom South Africa (no key needed)
 7. EU zones when `entsoe_token` is set -> ENTSO-E Transparency Platform
-8. Any zone with `electricity_maps_token` -> Electricity Maps
-9. Zones with known coordinates -> Open-Meteo weather estimate (automatic fallback)
+8. Zones with known coordinates -> Open-Meteo weather estimate (automatic fallback)
+9. Any zone with `electricity_maps_token` -> Electricity Maps (catch-all)
+
+If the primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation for any zone with known coordinates.
 
 ## How Carbon Intensity Is Calculated
 
@@ -770,6 +793,46 @@ The default `max_carbon_intensity` is `250` gCO2eq/kWh. Here's what typical valu
 | India, South Africa | 600–900 | Use `auto:escape-coal:IN` or `auto:escape-coal:ZA` |
 
 If your region never goes below your threshold, use **multi-zone mode** or **`auto:green`** to route work to a cleaner region.
+
+## Other CI Platforms (GitLab, Bitbucket, CircleCI)
+
+The core Python script works on any CI platform. Ready-to-use templates are in the [`ci-templates/`](ci-templates/) directory:
+
+### GitLab CI
+
+```yaml
+# .gitlab-ci.yml
+include:
+  - local: 'ci-templates/gitlab-ci.yml'
+
+my-heavy-job:
+  extends: .carbon-aware-job
+  script:
+    - echo "Running on clean energy!"
+```
+
+Set `GRID_ZONE` and `MAX_CARBON` as CI/CD variables. See [`ci-templates/gitlab-ci.yml`](ci-templates/gitlab-ci.yml) for the full template.
+
+### Bitbucket Pipelines
+
+See [`ci-templates/bitbucket-pipelines.yml`](ci-templates/bitbucket-pipelines.yml); it uses artifacts to pass the carbon check result between steps.
+
+### CircleCI
+
+See [`ci-templates/circleci-config.yml`](ci-templates/circleci-config.yml); it uses workspaces to share the carbon check result between jobs.
+
+All templates support the same environment variables: `GRID_ZONE`, `MAX_CARBON`, `ELECTRICITY_MAPS_TOKEN`, `ENTSOE_TOKEN`, `EIA_API_KEY`.
+
+## Example Workflows
+
+Ready-to-copy workflow files in the [`examples/`](examples/) directory:
+
+| Example | Description |
+|---------|-------------|
+| [`zero-config.yml`](examples/zero-config.yml) | Simplest setup, no inputs needed |
+| [`multi-cloud-routing.yml`](examples/multi-cloud-routing.yml) | Route jobs to greenest AWS/GCP/Azure region |
+| [`queue-strategy.yml`](examples/queue-strategy.yml) | Find optimal green window within a deadline |
+| [`escape-coal.yml`](examples/escape-coal.yml) | Escape dirty grids (India, China, Poland, SA) |
 
 ## Troubleshooting
 

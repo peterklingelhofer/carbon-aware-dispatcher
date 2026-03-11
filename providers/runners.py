@@ -6,7 +6,12 @@ runner labels that downstream jobs can use in their `runs-on:` field.
 Currently supported providers:
   - runson: RunsOn (AWS), full per-job region selection via labels
   - custom: User-provided labels via grid_zones input (always works)
+
+Also provides cloud auto-detection: detects the runner's cloud region from
+environment variables and maps it to the nearest grid zone for zero-config use.
 """
+
+import os
 
 # ---------------------------------------------------------------------------
 # Zone -> cloud region mapping
@@ -507,3 +512,184 @@ def format_runner_label(zone, provider, run_id="", runner_spec=""):
 
     # No known provider: return None (caller uses user-provided label or zone)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Reverse mapping: AWS region -> best grid zone for auto-detection
+# ---------------------------------------------------------------------------
+# Maps AWS regions to the best grid zone(s) for carbon-aware scheduling.
+# Preference: zones with free providers first, then token-requiring.
+AWS_REGION_TO_ZONE = {
+    "us-west-1": "CISO",           # California
+    "us-west-2": "BPAT",           # Oregon (hydro-rich)
+    "us-east-1": "PJM",            # N. Virginia
+    "us-east-2": "MISO",           # Ohio
+    "ca-central-1": "CA-ON",       # Montreal/Toronto
+    "ca-west-1": "CA-AB",          # Calgary
+    "eu-west-1": "IE",             # Ireland
+    "eu-west-2": "GB",             # London
+    "eu-west-3": "FR",             # Paris
+    "eu-central-1": "DE",          # Frankfurt
+    "eu-central-2": "CH",          # Zurich
+    "eu-north-1": "SE-SE3",        # Stockholm
+    "eu-south-1": "IT-NO",         # Milan
+    "eu-south-2": "ES",            # Spain
+    "ap-northeast-1": "JP-TK",     # Tokyo
+    "ap-northeast-2": "KR",        # Seoul
+    "ap-northeast-3": "JP-KN",     # Osaka
+    "ap-southeast-1": "SG",        # Singapore
+    "ap-southeast-2": "AU-NSW",    # Sydney
+    "ap-south-1": "IN-WE",         # Mumbai
+    "ap-south-2": "IN-SO",         # Hyderabad
+    "ap-east-1": "HK",             # Hong Kong
+    "sa-east-1": "BR-SE",          # São Paulo
+    "me-south-1": "AE",            # Bahrain
+    "me-central-1": "AE",          # UAE
+    "af-south-1": "ZA",            # Cape Town
+}
+
+GCP_REGION_TO_ZONE = {
+    "us-west1": "BPAT",            # Oregon
+    "us-west2": "CISO",            # Los Angeles
+    "us-west3": "CISO",            # Salt Lake City
+    "us-west4": "CISO",            # Las Vegas
+    "us-central1": "MISO",         # Iowa
+    "us-east1": "SOCO",            # South Carolina
+    "us-east4": "PJM",             # N. Virginia
+    "us-east5": "PJM",             # Columbus
+    "us-south1": "ERCO",           # Dallas
+    "northamerica-northeast1": "CA-QC",  # Montreal
+    "northamerica-northeast2": "CA-ON",  # Toronto
+    "europe-west1": "BE",          # Belgium
+    "europe-west2": "GB",          # London
+    "europe-west3": "DE",          # Frankfurt
+    "europe-west4": "NL",          # Netherlands
+    "europe-west6": "CH",          # Zurich
+    "europe-west8": "IT-NO",       # Milan
+    "europe-west9": "FR",          # Paris
+    "europe-north1": "FI",         # Finland
+    "europe-central2": "PL",       # Warsaw
+    "europe-southwest1": "ES",     # Madrid
+    "asia-northeast1": "JP-TK",    # Tokyo
+    "asia-northeast2": "JP-KN",    # Osaka
+    "asia-northeast3": "KR",       # Seoul
+    "asia-southeast1": "SG",       # Singapore
+    "asia-southeast2": "ID",       # Jakarta
+    "asia-south1": "IN-WE",        # Mumbai
+    "asia-south2": "IN-SO",        # Delhi
+    "asia-east1": "TW",            # Taiwan
+    "asia-east2": "HK",            # Hong Kong
+    "australia-southeast1": "AU-NSW",  # Sydney
+    "australia-southeast2": "AU-VIC",  # Melbourne
+    "southamerica-east1": "BR-SE",    # São Paulo
+    "southamerica-west1": "CL-SEN",   # Santiago
+    "me-west1": "IL",              # Tel Aviv
+    "me-central1": "AE",           # Doha
+    "africa-south1": "ZA",         # Johannesburg
+}
+
+AZURE_REGION_TO_ZONE = {
+    "westus": "CISO",
+    "westus2": "BPAT",
+    "westus3": "CISO",
+    "eastus": "PJM",
+    "eastus2": "PJM",
+    "centralus": "MISO",
+    "southcentralus": "ERCO",
+    "northcentralus": "MISO",
+    "canadacentral": "CA-ON",
+    "canadaeast": "CA-QC",
+    "uksouth": "GB",
+    "ukwest": "GB",
+    "northeurope": "IE",
+    "westeurope": "NL",
+    "francecentral": "FR",
+    "germanywestcentral": "DE",
+    "switzerlandnorth": "CH",
+    "norwayeast": "NO-NO1",
+    "swedencentral": "SE-SE3",
+    "polandcentral": "PL",
+    "italynorth": "IT-NO",
+    "spaincentral": "ES",
+    "japaneast": "JP-TK",
+    "japanwest": "JP-KN",
+    "koreacentral": "KR",
+    "southeastasia": "SG",
+    "eastasia": "HK",
+    "centralindia": "IN-WE",
+    "southindia": "IN-SO",
+    "australiaeast": "AU-NSW",
+    "australiasoutheast": "AU-VIC",
+    "brazilsouth": "BR-SE",
+    "southafricanorth": "ZA",
+    "uaenorth": "AE",
+    "israelcentral": "IL",
+}
+
+
+def detect_cloud_zone():
+    """Auto-detect the runner's grid zone from cloud environment variables.
+
+    Checks (in order):
+    1. GitHub Actions: RUNNER_ENVIRONMENT + cloud metadata hints
+    2. AWS: AWS_REGION or AWS_DEFAULT_REGION
+    3. GCP: GOOGLE_CLOUD_REGION or CLOUDSDK_COMPUTE_REGION
+    4. Azure: AZURE_REGION or REGION_NAME
+    5. Generic: CLOUD_REGION env var (user-set)
+
+    Returns (zone, source_description) or (None, None) if not detected.
+    """
+    # Check for explicit user override first
+    explicit = os.environ.get("CLOUD_REGION_OVERRIDE", "")
+    if explicit:
+        # Try all reverse maps
+        zone = (AWS_REGION_TO_ZONE.get(explicit)
+                or GCP_REGION_TO_ZONE.get(explicit)
+                or AZURE_REGION_TO_ZONE.get(explicit))
+        if zone:
+            return zone, f"CLOUD_REGION_OVERRIDE={explicit}"
+
+    # AWS environment (Lambda, EC2, ECS, CodeBuild, etc.)
+    aws_region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "")
+    if aws_region:
+        zone = AWS_REGION_TO_ZONE.get(aws_region)
+        if zone:
+            return zone, f"AWS region {aws_region}"
+
+    # GCP environment (Cloud Build, Cloud Run, GCE, etc.)
+    gcp_region = (os.environ.get("GOOGLE_CLOUD_REGION")
+                  or os.environ.get("CLOUDSDK_COMPUTE_REGION")
+                  or os.environ.get("CLOUD_RUN_REGION", ""))
+    if gcp_region:
+        zone = GCP_REGION_TO_ZONE.get(gcp_region)
+        if zone:
+            return zone, f"GCP region {gcp_region}"
+
+    # Azure environment (Azure DevOps, Azure Functions, etc.)
+    azure_region = (os.environ.get("AZURE_REGION")
+                    or os.environ.get("REGION_NAME")
+                    or os.environ.get("WEBSITE_SITE_NAME_REGION", ""))
+    if azure_region:
+        # Azure regions may have display names; normalize
+        normalized = azure_region.lower().replace(" ", "")
+        zone = AZURE_REGION_TO_ZONE.get(normalized)
+        if zone:
+            return zone, f"Azure region {azure_region}"
+
+    # GitHub Actions: detect from runner name hints
+    # GitHub-hosted runners are in Azure US regions by default
+    runner_name = os.environ.get("RUNNER_NAME", "")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and not aws_region and not gcp_region:
+        # GitHub-hosted runners are typically in US East (Azure eastus)
+        # Self-hosted runners may have region hints in their name
+        if runner_name:
+            name_lower = runner_name.lower()
+            for keyword, zone in [
+                ("europe", "DE"), ("eu-", "DE"), ("london", "GB"),
+                ("asia", "SG"), ("australia", "AU-NSW"), ("india", "IN-WE"),
+                ("brazil", "BR-SE"), ("canada", "CA-ON"), ("japan", "JP-TK"),
+            ]:
+                if keyword in name_lower:
+                    return zone, f"GitHub runner name '{runner_name}'"
+
+    return None, None

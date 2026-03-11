@@ -1,0 +1,81 @@
+# Carbon-Aware CI for Bitbucket Pipelines
+#
+# Add this as a step before your heavy build jobs.
+# Set repository variables in Bitbucket Settings > Repository Variables:
+#   GRID_ZONE: Grid zone to check (default: auto:detect)
+#   MAX_CARBON: Max gCO2eq/kWh threshold (default: 250)
+#   ELECTRICITY_MAPS_TOKEN: Optional, for global coverage
+#   ENTSOE_TOKEN: Optional, for EU coverage
+#
+# Usage in bitbucket-pipelines.yml:
+#
+#   pipelines:
+#     custom:
+#       carbon-aware-build:
+#         - step:
+#             name: Check Grid Carbon Intensity
+#             image: python:3.11-slim
+#             script:
+#               - pip install -q requests==2.32.*
+#               - python carbon_check_ci.py
+#             artifacts:
+#               - carbon_result.txt
+#         - step:
+#             name: Build (only if grid is clean)
+#             script:
+#               - |
+#                 if [ "$(cat carbon_result.txt)" = "true" ]; then
+#                   echo "Grid is clean! Running build..."
+#                   # Your build commands here
+#                 else
+#                   echo "Grid is dirty. Skipping build."
+#                 fi
+
+# You can also schedule this pipeline to run hourly via Bitbucket Schedules.
+
+pipelines:
+  custom:
+    carbon-aware-build:
+      - step:
+          name: Check Grid Carbon Intensity
+          image: python:3.11-slim
+          script:
+            - pip install -q requests==2.32.*
+            - |
+              python -c "
+              import os, sys
+              sys.path.insert(0, '.')
+              from check_grid import parse_zones_input, check_carbon_intensity
+              from providers import detect_provider
+
+              zone_str = os.environ.get('GRID_ZONE', 'auto:detect')
+              max_carbon = float(os.environ.get('MAX_CARBON', '250'))
+              entsoe_token = os.environ.get('ENTSOE_TOKEN', '')
+
+              zones = parse_zones_input(zone_str)
+              zone = zones[0]['zone'] if zones else 'CISO'
+              provider = detect_provider(zone, entsoe_token)
+              is_green, intensity = check_carbon_intensity(
+                  zone, max_carbon, provider,
+                  eia_api_key=os.environ.get('EIA_API_KEY', ''),
+                  emaps_api_key=os.environ.get('ELECTRICITY_MAPS_TOKEN', ''),
+                  entsoe_token=entsoe_token,
+              )
+              result = 'true' if is_green else 'false'
+              with open('carbon_result.txt', 'w') as f:
+                  f.write(result)
+              print(f'Grid clean: {result} ({intensity} gCO2eq/kWh)')
+              "
+          artifacts:
+            - carbon_result.txt
+      - step:
+          name: Build (carbon-aware)
+          script:
+            - |
+              if [ "$(cat carbon_result.txt)" = "true" ]; then
+                echo "Grid is clean! Running build on green energy..."
+                # Add your build commands here
+              else
+                echo "Grid is dirty. Skipping heavy build."
+                exit 0
+              fi

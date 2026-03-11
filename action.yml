@@ -7,14 +7,15 @@ branding:
 
 inputs:
   grid_zone:
-    description: 'Single zone identifier. US: EIA BA codes (CISO, ERCO, PJM). UK: GB, GB-1..GB-17. Global: any Electricity Maps zone. Presets: "auto:green", "auto:cleanest" (zero-config), "auto:escape-coal" (dirty-grid routing), or "auto:escape-coal:IN" (escape from specific zone).'
+    description: 'Single zone identifier. US: EIA BA codes (CISO, ERCO, PJM). UK: GB, GB-1..GB-17. Global: any Electricity Maps zone. Presets: "auto:detect" (detects cloud region), "auto:green", "auto:cleanest" (zero-config), "auto:escape-coal" (dirty-grid routing), or "auto:escape-coal:IN" (escape from specific zone). If omitted, auto-detects your cloud region or falls back to auto:cleanest.'
     required: false
   grid_zones:
     description: >-
       Comma-separated list of zones, optionally with runner labels.
       Examples: "CISO,ERCO,PJM" or "CISO:runner-cal,GB:runner-uk".
-      Presets: "auto:green", "auto:cleanest", "auto:escape-coal", "auto:escape-coal:IN".
+      Presets: "auto:detect", "auto:green", "auto:cleanest", "auto:escape-coal", "auto:escape-coal:IN".
       The action picks the zone with the lowest carbon intensity under the threshold.
+      If omitted entirely, auto-detects your cloud region or falls back to auto:cleanest.
     required: false
   eia_api_key:
     description: 'Optional EIA API key for US zones. The built-in DEMO_KEY works but has lower rate limits. Register free at https://www.eia.gov/opendata/'

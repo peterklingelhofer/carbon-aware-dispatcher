@@ -158,8 +158,49 @@ def get_history_trend(zone):
 
 
 def get_forecast(zone, max_carbon):
-    """Eskom forecast: not available via the public API.
+    """Estimate future green windows from South Africa's known generation patterns.
 
-    Returns (None, None).
+    SA's grid is ~85% coal with small contributions from nuclear, wind, and solar.
+    Solar and wind reduce intensity slightly during daytime (10am-4pm SAST).
+    Typical range: 650-800 gCO2eq/kWh. Rarely below 600.
+    SAST = UTC+2.
+
+    Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    return None, None
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    sast = timezone(timedelta(hours=2))
+    now_sast = now_utc.astimezone(sast)
+    local_hour = now_sast.hour
+
+    # SA grid intensity by time of day (approximate):
+    # Midday (10-16): ~650 gCO2eq/kWh (solar generation helps)
+    # Off-peak night (22-06): ~700 gCO2eq/kWh (lower demand, but all thermal)
+    # Evening peak (17-21): ~780 gCO2eq/kWh (peak demand, all thermal + diesel)
+    midday_intensity = 650
+    offpeak_intensity = 700
+    peak_intensity = 780
+
+    # Find next window below threshold
+    for hours_ahead in range(1, 49):
+        future = now_sast + timedelta(hours=hours_ahead)
+        future_hour = future.hour
+
+        if 10 <= future_hour <= 16:
+            est_intensity = midday_intensity
+        elif 17 <= future_hour <= 21:
+            est_intensity = peak_intensity
+        else:
+            est_intensity = offpeak_intensity
+
+        if est_intensity <= max_carbon:
+            future_utc = future.astimezone(timezone.utc)
+            dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
+            print(f"  Forecast: SA grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                  f"(heuristic: SA grid is ~85% coal)")
+            return dt_str, est_intensity
+
+    print(f"  Forecast: SA grid unlikely to go below {max_carbon} gCO2eq/kWh. "
+          f"Consider using auto:escape-coal:ZA to route to clean alternatives.")
+    return "none_in_forecast", None
