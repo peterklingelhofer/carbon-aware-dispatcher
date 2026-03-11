@@ -1,0 +1,109 @@
+# Reusable Carbon-Aware Workflow
+#
+# Other repos can call this with zero setup:
+#
+#   jobs:
+#     green-check:
+#       uses: peterklingelhofer/carbon-aware-dispatcher/.github/workflows/carbon-check.yml@v1
+#       with:
+#         max_carbon_intensity: '200'
+#
+#     build:
+#       needs: green-check
+#       if: needs.green-check.outputs.grid_clean == 'true'
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v4
+#         - run: echo "Building on clean energy in ${{ needs.green-check.outputs.grid_zone }}!"
+
+name: Carbon-Aware Check (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      grid_zones:
+        description: 'Zones to check. Presets: auto:detect, auto:green, auto:cleanest, auto:escape-coal'
+        type: string
+        required: false
+        default: ''
+      max_carbon_intensity:
+        description: 'Maximum gCO2eq/kWh allowed'
+        type: string
+        required: false
+        default: '250'
+      strategy:
+        description: 'check (default) or queue'
+        type: string
+        required: false
+        default: 'check'
+      deadline_hours:
+        description: 'Hours to search ahead (queue strategy)'
+        type: string
+        required: false
+        default: '24'
+      max_wait:
+        description: 'Minutes to wait for green window'
+        type: string
+        required: false
+        default: '0'
+    secrets:
+      electricity_maps_token:
+        required: false
+      entsoe_token:
+        required: false
+      eia_api_key:
+        required: false
+    outputs:
+      grid_clean:
+        description: 'Whether the grid is clean (true/false)'
+        value: ${{ jobs.check.outputs.grid_clean }}
+      grid_zone:
+        description: 'Selected grid zone'
+        value: ${{ jobs.check.outputs.grid_zone }}
+      carbon_intensity:
+        description: 'Carbon intensity in gCO2eq/kWh'
+        value: ${{ jobs.check.outputs.carbon_intensity }}
+      runner_label:
+        description: 'Runner label for selected zone'
+        value: ${{ jobs.check.outputs.runner_label }}
+      cloud_region:
+        description: 'AWS region for selected zone'
+        value: ${{ jobs.check.outputs.cloud_region }}
+      gcp_region:
+        description: 'GCP region for selected zone'
+        value: ${{ jobs.check.outputs.gcp_region }}
+      azure_region:
+        description: 'Azure region for selected zone'
+        value: ${{ jobs.check.outputs.azure_region }}
+      co2_saved_grams:
+        description: 'Estimated CO2 saved in grams'
+        value: ${{ jobs.check.outputs.co2_saved_grams }}
+      optimal_dispatch_at:
+        description: 'Optimal dispatch time (queue strategy)'
+        value: ${{ jobs.check.outputs.optimal_dispatch_at }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      grid_clean: ${{ steps.carbon.outputs.grid_clean }}
+      grid_zone: ${{ steps.carbon.outputs.grid_zone }}
+      carbon_intensity: ${{ steps.carbon.outputs.carbon_intensity }}
+      runner_label: ${{ steps.carbon.outputs.runner_label }}
+      cloud_region: ${{ steps.carbon.outputs.cloud_region }}
+      gcp_region: ${{ steps.carbon.outputs.gcp_region }}
+      azure_region: ${{ steps.carbon.outputs.azure_region }}
+      co2_saved_grams: ${{ steps.carbon.outputs.co2_saved_grams }}
+      optimal_dispatch_at: ${{ steps.carbon.outputs.optimal_dispatch_at }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: ${{ inputs.grid_zones }}
+          max_carbon_intensity: ${{ inputs.max_carbon_intensity }}
+          strategy: ${{ inputs.strategy }}
+          deadline_hours: ${{ inputs.deadline_hours }}
+          max_wait: ${{ inputs.max_wait }}
+          electricity_maps_token: ${{ secrets.electricity_maps_token }}
+          entsoe_token: ${{ secrets.entsoe_token }}
+          eia_api_key: ${{ secrets.eia_api_key }}

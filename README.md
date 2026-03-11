@@ -26,12 +26,16 @@ Sustainable CI/CD for any platform. Delays compute-heavy workflows until the ene
 - **Cloud auto-detection** — detects AWS/GCP/Azure region from environment variables, maps to the nearest grid zone automatically
 - **Multi-zone routing** — checks multiple zones, picks the greenest one, outputs runner labels for all three major clouds
 - **Fallback chains** — if a provider fails, automatically falls back to Open-Meteo weather-based estimation
-- **Smart presets** — `auto:detect`, `auto:green`, `auto:cleanest`, `auto:escape-coal` for zero-config use
+- **Smart presets** — `auto:detect`, `auto:nearest`, `auto:green`, `auto:cleanest`, `auto:escape-coal` for zero-config use
 - **Forecast for all providers** — time-of-day heuristics for India (solar peak), Brazil (hydro/thermal), and South Africa even without API forecasts
 - **Queue strategy** — find the optimal green window within your deadline across all zones
 - **Multi-platform** — templates for GitHub Actions, GitLab CI, Bitbucket Pipelines, CircleCI
 - **Carbon savings badge** — Shields.io badge URL showing estimated CO2 saved per run
+- **Cron schedule optimizer** — when the grid is dirty, suggests the optimal cron schedule based on zone energy type
+- **Reusable workflow** — other repos can call the carbon check with zero setup via `workflow_call`
+- **One-liner setup** — `curl | bash` script to add carbon-aware CI to any repo in seconds
 - **Org-wide config** — `.github/carbon-policy.yml` sets defaults for all workflows
+- **Fast installs via uv** — uses [uv](https://github.com/astral-sh/uv) for near-instant dependency installation in CI
 
 ## How It Works
 
@@ -76,6 +80,7 @@ That's it — **no inputs, no API keys, no secrets, one file.** The action auto-
 
 You can also be explicit with presets:
 - `auto:detect` — detects your cloud region from env vars (AWS/GCP/Azure)
+- `auto:nearest` — detects your timezone and picks the geographically closest green zones
 - `auto:cleanest` — checks all free-provider zones, picks the cleanest
 - `auto:green` — 10 curated zones that are frequently powered by clean energy (free providers only)
 - `auto:green:full` — 21 zones including token-requiring EU/Canada/NZ zones
@@ -93,6 +98,38 @@ In India, China, Poland, or South Africa? Use `auto:escape-coal` to route your j
     # grid_zones: 'auto:escape-coal:CN'  # China → NZ, Tasmania, Pacific NW
     # grid_zones: 'auto:escape-coal:PL'  # Poland → Norway, Sweden, France
     # grid_zones: 'auto:escape-coal:ZA'  # South Africa → Iceland, Norway
+```
+
+### One-Liner Setup
+
+Add carbon-aware CI to any repo with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/main/setup.sh | bash
+```
+
+Options: `--threshold 200`, `--zones "auto:green"`, `--strategy queue`, `--cron "0 6 * * *"`. Run `setup.sh --help` for details.
+
+### Reusable Workflow (Easiest Cross-Repo Adoption)
+
+Other repos can call the carbon check without copying any files:
+
+```yaml
+jobs:
+  green-check:
+    uses: peterklingelhofer/carbon-aware-dispatcher/.github/workflows/carbon-check.yml@v1
+    with:
+      max_carbon_intensity: '200'
+    secrets:
+      electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}
+
+  build:
+    needs: green-check
+    if: needs.green-check.outputs.grid_clean == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Building on clean energy in ${{ needs.green-check.outputs.grid_zone }}!"
 ```
 
 ## Quick Start (US)

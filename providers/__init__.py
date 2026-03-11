@@ -205,6 +205,56 @@ AUTO_ESCAPE_COAL_ZONES = [
 ]
 
 
+# auto:nearest — Map UTC offsets to the closest green zones.
+# Used when auto:nearest detects TZ env var or system timezone.
+NEAREST_ZONES_BY_OFFSET = {
+    # UTC-10 to -9: Hawaii/Alaska → US West
+    -10: ["CISO", "BPAT", "SCL"],
+    -9: ["CISO", "BPAT", "SCL"],
+    # UTC-8 to -7: US Pacific / Mountain → US West
+    -8: ["CISO", "BPAT", "SCL"],
+    -7: ["CISO", "BPAT", "SCL"],
+    # UTC-6: US Central / Mexico → US West + South
+    -6: ["CISO", "BPAT", "ISNE", "NYIS"],
+    # UTC-5: US Eastern / Colombia / Peru → US East + Quebec
+    -5: ["NYIS", "ISNE", "BPAT", "BR-S"],
+    # UTC-4: Canada Atlantic / Venezuela / Bolivia
+    -4: ["NYIS", "ISNE", "BR-S", "BR-NE"],
+    # UTC-3: Brazil / Argentina / Uruguay
+    -3: ["BR-S", "BR-NE", "NYIS", "ISNE"],
+    # UTC-2 to -1: Mid-Atlantic
+    -2: ["BR-S", "BR-NE", "IS", "GB-16"],
+    -1: ["IS", "GB-16", "GB", "BR-NE"],
+    # UTC+0: UK / Iceland / West Africa
+    0: ["GB-16", "GB", "IS", "CISO"],
+    # UTC+1: Western/Central Europe
+    1: ["GB-16", "GB", "IS", "CISO", "IN-SO"],
+    # UTC+2: Eastern Europe / South Africa
+    2: ["GB-16", "GB", "IS", "IN-SO"],
+    # UTC+3: East Africa / Middle East / Russia West
+    3: ["IN-SO", "GB-16", "GB", "IS"],
+    # UTC+4: Gulf / Russia
+    4: ["IN-SO", "IN-WE", "GB-16", "AU-TAS"],
+    # UTC+5 to 5.5: Pakistan / India
+    5: ["IN-SO", "IN-WE", "AU-TAS", "AU-SA"],
+    5.5: ["IN-SO", "IN-WE", "AU-TAS", "AU-SA"],
+    # UTC+6 to 7: Bangladesh / SE Asia
+    6: ["IN-SO", "AU-TAS", "AU-SA", "AU-VIC"],
+    7: ["AU-TAS", "AU-SA", "AU-VIC", "IN-SO"],
+    # UTC+8: China / Singapore / Australia West
+    8: ["AU-TAS", "AU-SA", "AU-VIC", "IN-SO"],
+    # UTC+9 to 9.5: Japan / Korea / Australia Central
+    9: ["AU-TAS", "AU-SA", "AU-VIC", "AU-NSW"],
+    9.5: ["AU-SA", "AU-TAS", "AU-VIC"],
+    # UTC+10 to 11: Australia East / Pacific
+    10: ["AU-TAS", "AU-VIC", "AU-SA", "AU-NSW"],
+    11: ["AU-TAS", "AU-VIC", "AU-NSW"],
+    # UTC+12 to 13: NZ / Pacific Islands
+    12: ["AU-TAS", "AU-VIC", "AU-SA"],
+    13: ["AU-TAS", "AU-VIC", "AU-SA"],
+}
+
+
 def _time_priority_score(zone_entry, utc_hour):
     """Score a zone's likelihood of being green at the given UTC hour.
 

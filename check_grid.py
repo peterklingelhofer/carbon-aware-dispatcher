@@ -13,6 +13,7 @@ from providers import (
     AUTO_GREEN_ZONES,
     AUTO_GREEN_ZONES_FULL,
     ESCAPE_COAL_MAPPINGS,
+    NEAREST_ZONES_BY_OFFSET,
     PROVIDER_AEMO,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
@@ -252,6 +253,51 @@ def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
     return best_zone, best_intensity, best_label, skipped
 
 
+def _detect_utc_offset():
+    """Detect the UTC offset from environment or system timezone.
+
+    Checks TZ env var first, then falls back to system local time offset.
+    Returns a numeric offset (e.g., -8, 5.5) or None.
+    """
+    import math
+
+    # Try TZ env var (common on CI runners)
+    tz_env = os.environ.get("TZ", "")
+    if tz_env:
+        # Handle common offset formats: UTC+5, UTC-8, GMT+5:30, Etc/GMT-5
+        for prefix in ("UTC", "GMT", "Etc/GMT"):
+            if tz_env.upper().startswith(prefix.upper()):
+                rest = tz_env[len(prefix):]
+                if not rest:
+                    return 0
+                try:
+                    # Handle +5:30 format
+                    if ":" in rest:
+                        parts = rest.split(":")
+                        hours = int(parts[0])
+                        minutes = int(parts[1]) if len(parts) > 1 else 0
+                        sign = -1 if hours < 0 else 1
+                        # Etc/GMT offsets are inverted (Etc/GMT-5 = UTC+5)
+                        if prefix.upper() == "ETC/GMT":
+                            return -(hours + sign * minutes / 60)
+                        return hours + sign * minutes / 60
+                    offset = float(rest)
+                    if prefix.upper() == "ETC/GMT":
+                        return -offset
+                    return offset
+                except (ValueError, IndexError):
+                    pass
+
+    # Fall back to system local time
+    try:
+        local_offset_seconds = datetime.now().astimezone().utcoffset().total_seconds()
+        offset_hours = local_offset_seconds / 3600
+        # Round to nearest 0.5 (handles India's +5:30, etc.)
+        return math.floor(offset_hours * 2 + 0.5) / 2
+    except (AttributeError, TypeError):
+        return None
+
+
 def expand_auto_zones(zones_str):
     """Expand auto presets into curated zone lists.
 
@@ -274,6 +320,16 @@ def expand_auto_zones(zones_str):
             return [{"zone": zone, "runner_label": None}]
         print("::notice::Could not auto-detect cloud region. "
               "Falling back to auto:cleanest.")
+        return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
+
+    if normalized == "auto:nearest":
+        offset = _detect_utc_offset()
+        if offset is not None:
+            zones = NEAREST_ZONES_BY_OFFSET.get(offset)
+            if zones:
+                print(f"auto:nearest: UTC offset {offset:+g} → checking {', '.join(zones)}")
+                return [{"zone": z, "runner_label": None} for z in zones]
+        print("::notice::Could not detect timezone. Falling back to auto:cleanest.")
         return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
 
     if normalized == "auto:green":
@@ -394,6 +450,53 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     )
 
     return saved, badge_url
+
+
+def suggest_green_cron(zone):
+    """Suggest the optimal cron schedule for a zone based on its energy type.
+
+    Returns a cron expression string (e.g., '0 18 * * *') and a human
+    description, or (None, None) if no suggestion is available.
+    """
+    from providers import (
+        AUTO_GREEN_ZONES, AUTO_GREEN_ZONES_FULL, AUTO_CLEANEST_ZONES,
+    )
+
+    # Find zone metadata from our curated lists
+    zone_meta = None
+    for zone_list in (AUTO_GREEN_ZONES, AUTO_GREEN_ZONES_FULL, AUTO_CLEANEST_ZONES):
+        for entry in zone_list:
+            if entry["zone"] == zone:
+                zone_meta = entry
+                break
+        if zone_meta:
+            break
+
+    if not zone_meta:
+        return None, None
+
+    energy_type = zone_meta.get("type", "unknown")
+    utc_offset = zone_meta.get("utc_offset", 0)
+
+    if energy_type == "solar":
+        # Best during local noon (12pm local = 12 - offset UTC)
+        best_utc_hour = int((12 - utc_offset) % 24)
+        cron = f"0 {best_utc_hour} * * *"
+        desc = f"daily at {best_utc_hour}:00 UTC (solar peak ~12pm local in {zone})"
+    elif energy_type == "wind":
+        # Wind is stronger at night; target 2am local
+        best_utc_hour = int((2 - utc_offset) % 24)
+        cron = f"0 {best_utc_hour} * * *"
+        desc = f"daily at {best_utc_hour}:00 UTC (wind peak ~2am local in {zone})"
+    elif energy_type in ("hydro", "nuclear"):
+        # Always-on, but off-peak demand = higher renewable share; target 3am local
+        best_utc_hour = int((3 - utc_offset) % 24)
+        cron = f"0 {best_utc_hour} * * *"
+        desc = f"daily at {best_utc_hour}:00 UTC (off-peak ~3am local in {zone})"
+    else:
+        return None, None
+
+    return cron, desc
 
 
 def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_run_id):
@@ -519,6 +622,12 @@ def handle_dirty_grid(zone, max_carbon, intensity, enable_forecast,
         elif forecast_at == "none_in_forecast":
             set_output("forecast_green_at", "none_in_forecast")
             print("\n  No green window found in forecast horizon.")
+
+    # Suggest optimal cron schedule
+    cron, cron_desc = suggest_green_cron(zone)
+    if cron:
+        set_output("suggested_cron", cron)
+        print(f"  Suggested cron schedule: '{cron}' ({cron_desc})")
 
     return trend, forecast_at, forecast_intensity
 
