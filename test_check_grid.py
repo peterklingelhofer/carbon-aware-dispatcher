@@ -8,6 +8,7 @@ import pytest
 
 import check_grid
 from providers import (
+    AUTO_GREEN_ZONES,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_UK,
@@ -24,7 +25,7 @@ def _clear_env():
         "GRID_ZONE", "GRID_ZONES", "EIA_API_KEY", "GRID_STATUS_API_KEY",
         "ELECTRICITY_MAPS_TOKEN", "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN",
         "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
-        "GITHUB_OUTPUT",
+        "MAX_WAIT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -62,6 +63,24 @@ class TestParseZonesInput:
     def test_trailing_commas(self):
         result = parse("CISO,,ERCO,")
         assert len(result) == 2
+
+    def test_auto_green(self):
+        result = parse("auto:green")
+        assert result == list(AUTO_GREEN_ZONES)
+        assert len(result) >= 5
+        # Should include a mix of providers
+        zones = [z["zone"] for z in result]
+        assert "CISO" in zones  # US
+        assert "GB-16" in zones  # UK
+        assert "NO-NO1" in zones  # Global
+
+    def test_auto_green_case_insensitive(self):
+        result = parse("Auto:Green")
+        assert result == list(AUTO_GREEN_ZONES)
+
+    def test_auto_green_with_whitespace(self):
+        result = parse("  auto:green  ")
+        assert result == list(AUTO_GREEN_ZONES)
 
 
 def parse(s):
@@ -509,7 +528,6 @@ class TestGridstatusGetForecast:
             "2026-03-10T18:00:00+00:00": 10000,
         }
         dt, intensity = gridstatus.get_forecast("CISO", 250, "key")
-        # At 18:00: 10000/10000 = 100% renewable -> 0 intensity
         assert dt == "2026-03-10T18:00:00+00:00"
         assert intensity == 0
 
@@ -630,17 +648,18 @@ class TestCheckMultipleZones:
             {"zone": "NYIS", "runner_label": "label-b"},
             {"zone": "ERCO", "runner_label": "label-c"},
         ]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone == "NYIS"
         assert intensity == 50
         assert label == "label-b"
+        assert skipped == []
 
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_dirty(self, _mock_detect, mock_check):
         mock_check.side_effect = [(False, 400), (False, 500)]
         zones = [{"zone": "ERCO"}, {"zone": "PJM"}]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
 
     @mock.patch("check_grid.check_carbon_intensity")
@@ -648,8 +667,38 @@ class TestCheckMultipleZones:
     def test_all_errors(self, _mock_detect, mock_check):
         mock_check.side_effect = [(None, None), (None, None)]
         zones = [{"zone": "CISO"}, {"zone": "ERCO"}]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
+        assert len(skipped) == 2
+
+    def test_skips_emaps_zones_without_token(self):
+        """Zones needing Electricity Maps token are skipped with warning."""
+        zones = [{"zone": "DE"}, {"zone": "FR"}]
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+            zones, 250, emaps_api_key=""
+        )
+        assert zone is None
+        assert len(skipped) == 2
+        assert skipped[0] == ("DE", "no electricity_maps_token")
+        assert skipped[1] == ("FR", "no electricity_maps_token")
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    def test_mixed_providers_skip_and_check(self, mock_check):
+        """Mix of EIA and Electricity Maps zones, no token: EIA checked, global skipped."""
+        mock_check.return_value = (True, 100)
+        zones = [
+            {"zone": "CISO", "runner_label": "us"},
+            {"zone": "DE", "runner_label": "eu"},
+        ]
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+            zones, 250, emaps_api_key=""
+        )
+        assert zone == "CISO"
+        assert intensity == 100
+        assert len(skipped) == 1
+        assert skipped[0][0] == "DE"
+        # check_carbon_intensity should only be called for CISO
+        assert mock_check.call_count == 1
 
 
 class TestTriggerWorkflow:
@@ -801,3 +850,148 @@ class TestHandleDirtyGrid:
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T14:00Z"
         mock_forecast.assert_called_once()
+
+    @mock.patch("check_grid.get_forecast")
+    @mock.patch("check_grid.get_history_trend")
+    @mock.patch("check_grid.set_output")
+    def test_returns_trend_and_forecast(self, mock_output, mock_trend, mock_forecast):
+        """handle_dirty_grid returns (trend, forecast_at, forecast_intensity)."""
+        mock_trend.return_value = "decreasing"
+        mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
+
+        result = check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
+        assert result == ("decreasing", "2026-03-10T14:00Z", 90)
+
+
+class TestWriteJobSummary:
+    def test_writes_summary_green(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary("CISO", 45, True, 200)
+            with open(path) as f:
+                content = f.read()
+            assert "Carbon-Aware Dispatcher" in content
+            assert "CISO" in content
+            assert "45" in content
+            assert "clean" in content.lower()
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+    def test_writes_summary_dirty_with_forecast(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary(
+                "PJM", 380, False, 200,
+                trend="decreasing",
+                forecast_at="2026-03-10T14:00Z",
+                forecast_intensity=150,
+            )
+            with open(path) as f:
+                content = f.read()
+            assert "dirty" in content.lower()
+            assert "380" in content
+            assert "decreasing" in content
+            assert "2026-03-10T14:00Z" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+    def test_writes_summary_with_skipped_zones(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary(
+                "CISO", 100, True, 200,
+                skipped=[("DE", "no electricity_maps_token")],
+            )
+            with open(path) as f:
+                content = f.read()
+            assert "DE" in content
+            assert "no electricity_maps_token" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+    def test_no_summary_without_env(self):
+        """Does nothing if GITHUB_STEP_SUMMARY is not set."""
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        # Should not raise
+        check_grid.write_job_summary("CISO", 45, True, 200)
+
+
+class TestSmartWaitSingle:
+    @mock.patch("check_grid.get_forecast")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid._time.sleep")
+    def test_becomes_green_after_wait(self, mock_sleep, mock_check, mock_forecast):
+        """Grid goes green on second check."""
+        mock_check.return_value = (True, 100)
+        mock_forecast.return_value = (None, None)
+
+        is_green, intensity, waited = check_grid.smart_wait_single(
+            "CISO", 250, 10, PROVIDER_EIA
+        )
+        assert is_green is True
+        assert intensity == 100
+        mock_sleep.assert_called_once()
+
+    @mock.patch("check_grid.get_forecast")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid._time.sleep")
+    @mock.patch("check_grid._time.time")
+    def test_stays_dirty_after_max_wait(self, mock_time, mock_sleep, mock_check, mock_forecast):
+        """Grid stays dirty — returns after max_wait exceeded."""
+        # Simulate time passing: start at 0, then exceed deadline
+        mock_time.side_effect = [0, 0, 601, 601]  # start, loop check, loop check (past deadline), final
+        mock_check.return_value = (False, 400)
+        mock_forecast.return_value = (None, None)
+
+        is_green, intensity, waited = check_grid.smart_wait_single(
+            "CISO", 250, 10, PROVIDER_EIA
+        )
+        assert is_green is False
+        assert intensity == 400
+
+
+class TestSmartWaitMulti:
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid._time.sleep")
+    def test_zone_goes_green(self, mock_sleep, mock_multi):
+        """A zone becomes green during wait."""
+        mock_multi.return_value = ("CISO", 50, "us-west", [])
+
+        zone, intensity, label, waited, skipped = check_grid.smart_wait_multi(
+            [{"zone": "CISO"}, {"zone": "ERCO"}], 250, 10
+        )
+        assert zone == "CISO"
+        assert intensity == 50
+        mock_sleep.assert_called_once()
+
+
+class TestInlineMode:
+    """Test that inline mode (no workflow_id) doesn't require token/repo."""
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_inline_mode_green(self, mock_summary, mock_output, mock_check):
+        """Inline mode sets outputs but doesn't dispatch."""
+        mock_check.return_value = (True, 50)
+
+        os.environ["GRID_ZONE"] = "GB"
+        os.environ["WORKFLOW_ID"] = ""
+        os.environ.pop("GITHUB_TOKEN", None)
+        os.environ.pop("TARGET_REPO", None)
+
+        # Should not raise (no required env check for token/repo)
+        check_grid.main()
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["grid_clean"] == "true"
+        assert output_calls["carbon_intensity"] == "50"

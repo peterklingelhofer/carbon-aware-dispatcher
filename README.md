@@ -13,7 +13,7 @@ A GitHub Action that delays compute-heavy CI/CD workflows until the energy grid 
 1. Action runs on a cron schedule (e.g., hourly)
 2. Fetches real-time fuel mix data and calculates carbon intensity
 3. If intensity is below your threshold, dispatches your heavy workflow
-4. If the grid is dirty, reports the trend and forecast, then exits cleanly
+4. If the grid is dirty, optionally waits for a green window (`max_wait`), reports the trend and forecast, then exits cleanly
 
 ## Use Cases
 
@@ -112,20 +112,88 @@ Check multiple zones and pick the cleanest one. You can mix US and UK zones. Pai
 
 The selected runner label is available via `${{ steps.carbon-check.outputs.runner_label }}`.
 
+## Auto-Green Mode (Zero-Config Global Routing)
+
+Don't know which zones are green? Use `auto:green` — a curated list of zones that are frequently powered by clean energy, spanning multiple time zones so at least one is likely green at any given time:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon-check
+  with:
+    grid_zones: 'auto:green'
+    max_carbon_intensity: '200'
+    workflow_id: 'heavy-batch.yml'
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}  # Optional: enables global zones
+```
+
+The preset expands to: `CISO` (California solar), `BPAT` (Pacific NW hydro), `GB-16` (Scotland wind), `NO-NO1` (Norway hydro), `SE-SE2` (Sweden hydro), `FR` (France nuclear), `CA-QC` (Quebec hydro). US and UK zones always work without extra API keys; global zones require an Electricity Maps token (missing zones are silently skipped).
+
+## Smart Wait (Wait for Green Energy)
+
+Instead of just checking once and exiting, the action can wait for a green window within a time limit. It uses forecast data to sleep efficiently:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    grid_zone: 'CISO'
+    max_carbon_intensity: '200'
+    workflow_id: 'heavy-batch.yml'
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    max_wait: '120'   # Wait up to 2 hours for green energy
+    enable_forecast: 'true'
+    gridstatus_api_key: ${{ secrets.GRIDSTATUS_API_KEY }}
+```
+
+If the grid is dirty at 8am but the forecast shows California going green at 10am (solar ramp-up), the action will sleep until then and dispatch automatically — no need for repeated cron runs.
+
+**Important:** GitHub Actions bills for wait time. Each minute of waiting counts as a billable minute. Max: 360 minutes (6 hours).
+
+## Inline Mode (Single-File Workflow)
+
+Don't want two separate workflow files? Omit `workflow_id` to use inline mode — the action just checks the grid and sets outputs, and you use conditional steps in the same workflow:
+
+```yaml
+name: Carbon-Aware Build
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zone: 'CISO'
+          max_carbon_intensity: '200'
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        run: echo "Running on clean energy! (${{ steps.carbon.outputs.carbon_intensity }} gCO2eq/kWh)"
+```
+
+No `workflow_id`, `github_token`, or second workflow file needed. The action sets `grid_clean`, `carbon_intensity`, and other outputs for your steps to use.
+
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `grid_zone` | No* | — | Single zone (US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`, Global: [Electricity Maps zone](https://app.electricitymaps.com/map)) |
-| `grid_zones` | No* | — | Comma-separated zones, optionally with runner labels |
+| `grid_zone` | No* | — | Single zone, or `auto:green` for curated green zones. US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`, Global: [Electricity Maps zone](https://app.electricitymaps.com/map). |
+| `grid_zones` | No* | — | Comma-separated zones, optionally with runner labels. Or `auto:green`. |
 | `eia_api_key` | No | — | Optional EIA API key for higher rate limits. [Register free](https://www.eia.gov/opendata/register.php). Built-in `DEMO_KEY` works for basic use. |
 | `gridstatus_api_key` | No | — | Optional [GridStatus.io](https://www.gridstatus.io) API key for US zone forecasts. [Register free](https://www.gridstatus.io) (1M rows/month). |
 | `max_carbon_intensity` | No | `250` | Maximum gCO2eq/kWh to allow dispatch |
-| `workflow_id` | Yes | — | Filename of the workflow to dispatch |
-| `github_token` | Yes | — | GitHub token with Actions write permission |
+| `workflow_id` | No | — | Filename of the workflow to dispatch. Omit for inline mode (just set outputs). |
+| `github_token` | No | — | GitHub token with Actions write permission. Required when `workflow_id` is set. |
 | `target_ref` | No | `main` | Git ref to dispatch the workflow on |
 | `fail_on_api_error` | No | `false` | Fail the action on API errors instead of skipping |
 | `electricity_maps_token` | No | — | [Electricity Maps](https://portal.electricitymaps.com/) API token for global zones (200+ zones, 50 req/hr free). |
+| `max_wait` | No | `0` | Minutes to wait for green energy (0 = check once). Uses forecasts to sleep efficiently. Max 360 (6h). Billable time. |
 | `enable_forecast` | No | `false` | Fetch forecast when grid is dirty. UK: free 48h. US: requires `gridstatus_api_key`. Global: requires `electricity_maps_token`. |
 
 \* One of `grid_zone` or `grid_zones` is required.
@@ -299,6 +367,35 @@ Data centers consume **2.7% of Europe's energy** and the carbon footprint of CI/
 ### The Bottom Line
 
 Carbon-aware scheduling is not theoretical — it delivers **20–50% carbon reductions** with minimal complexity. This action implements the simplest effective approach: check the grid, dispatch if clean, wait if not. No infrastructure changes required.
+
+## Choosing a Threshold
+
+The default `max_carbon_intensity` is `250` gCO2eq/kWh. Here's what typical values look like by region to help you choose:
+
+| Region | Typical Range | Suggested Threshold |
+|--------|--------------|-------------------|
+| Norway, Quebec, Iceland | 10–30 | `50` |
+| France, Sweden, Ontario | 30–80 | `100` |
+| California (midday solar) | 0–150 | `150`–`200` |
+| UK | 100–300 | `200` |
+| Germany, US average | 200–500 | `300` |
+| Poland, India, Australia | 400–800 | `500` (or use multi-zone) |
+
+If your region never goes below your threshold, use **multi-zone mode** or **`auto:green`** to route work to a cleaner region.
+
+## Troubleshooting
+
+**`forecast_green_at = none_in_forecast`** — The grid isn't expected to go below your threshold within the forecast horizon (48h for UK, varies for others). Consider raising your threshold or using multi-zone mode.
+
+**`carbon_intensity = unknown`** — The API couldn't be reached. Check your API key and network. Set `fail_on_api_error: 'true'` to make these failures visible instead of silently skipping.
+
+**EIA rate limiting** — If you see `429` errors, you're hitting the DEMO_KEY limit (~30 req/hr). [Register a free EIA API key](https://www.eia.gov/opendata/register.php) for 1,000 req/hr.
+
+**Electricity Maps zone not found** — Zone codes are case-sensitive and use the format shown on [app.electricitymaps.com/map](https://app.electricitymaps.com/map) (e.g., `DE`, `FR`, `AU-NSW`, `NO-NO1`).
+
+**Multi-zone zones silently skipped** — If a zone requires an API key that isn't set (e.g., `DE` without `electricity_maps_token`), it's skipped with a warning. Check the action logs for "Skipping zone" messages.
+
+**All timestamps are UTC** — The `forecast_green_at` output is in ISO 8601 UTC format. Convert to your local timezone as needed.
 
 ## License
 

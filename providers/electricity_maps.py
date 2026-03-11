@@ -17,8 +17,9 @@ def check_carbon_intensity(zone, max_carbon, emaps_api_key):
     Returns (is_green, intensity) or (None, None) on error.
     """
     if not emaps_api_key:
-        print("::error::Electricity Maps API key required for zone "
-              f"'{zone}'. Set electricity_maps_token input.")
+        print(f"::error::Electricity Maps API token required for zone '{zone}'. "
+              "Get a free token in 30 seconds at https://portal.electricitymaps.com/ "
+              "and set the electricity_maps_token input.")
         return None, None
 
     url = f"{EMAPS_API_BASE}/carbon-intensity/latest?zone={zone}"

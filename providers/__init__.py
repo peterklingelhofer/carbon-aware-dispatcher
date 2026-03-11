@@ -47,6 +47,23 @@ EIA_BALANCING_AUTHORITIES = {
 }
 
 
+# Curated list of zones that are frequently powered by clean energy.
+# Spans multiple time zones so at least one is likely green at any given time.
+# US/UK zones work without API keys; global zones need an Electricity Maps token.
+AUTO_GREEN_ZONES = [
+    # US (EIA — no key needed)
+    {"zone": "CISO", "runner_label": "us-west"},       # California — solar peak midday
+    {"zone": "BPAT", "runner_label": "us-northwest"},   # Pacific NW — hydroelectric
+    # UK (Carbon Intensity API — no key needed)
+    {"zone": "GB-16", "runner_label": "uk-scotland"},   # Scotland — wind
+    # Global (Electricity Maps — free token needed)
+    {"zone": "NO-NO1", "runner_label": "eu-norway"},    # Norway — hydroelectric
+    {"zone": "SE-SE2", "runner_label": "eu-sweden"},    # Sweden — hydro + nuclear
+    {"zone": "FR", "runner_label": "eu-france"},        # France — nuclear
+    {"zone": "CA-QC", "runner_label": "ca-quebec"},     # Quebec — hydroelectric
+]
+
+
 def detect_provider(zone):
     """Auto-detect the provider based on zone identifier."""
     if zone in UK_REGION_IDS:
