@@ -11,6 +11,7 @@ from providers import (
     AUTO_CLEANEST_ZONES,
     AUTO_ESCAPE_COAL_ZONES,
     AUTO_GREEN_ZONES,
+    AUTO_GREEN_ZONES_FULL,
     ESCAPE_COAL_MAPPINGS,
     PROVIDER_AEMO,
     PROVIDER_EIA,
@@ -92,7 +93,11 @@ def _get_extra_args(provider, api_keys):
 
 def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
                            emaps_api_key="", entsoe_token=""):
-    """Check carbon intensity using the appropriate provider."""
+    """Check carbon intensity using the appropriate provider.
+
+    If the primary provider fails and Open-Meteo has coordinates for the zone,
+    automatically falls back to Open-Meteo weather-based estimation.
+    """
     module = _PROVIDER_MODULES.get(provider)
     if module is None:
         print(f"::warning::Unknown provider '{provider}' for zone '{zone}'")
@@ -102,7 +107,16 @@ def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
         "emaps_api_key": emaps_api_key,
         "entsoe_token": entsoe_token,
     })
-    return module.check_carbon_intensity(zone, max_carbon, *extra)
+    result = module.check_carbon_intensity(zone, max_carbon, *extra)
+
+    # Fallback: if primary provider failed, try Open-Meteo estimation
+    if result == (None, None) and provider != PROVIDER_OPEN_METEO:
+        from providers.open_meteo import ZONE_COORDINATES
+        if zone in ZONE_COORDINATES:
+            print(f"  Falling back to Open-Meteo estimate for zone {zone}...")
+            result = open_meteo.check_carbon_intensity(zone, max_carbon)
+
+    return result
 
 
 def get_forecast(zone, max_carbon, provider, gridstatus_api_key="",
@@ -139,9 +153,48 @@ def get_history_trend(zone, provider, eia_api_key="", emaps_api_key="",
     return module.get_history_trend(zone, *extra)
 
 
+def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
+    """Emit upfront warnings about missing tokens for zones that need them.
+
+    Tells users exactly what tokens to add and what zones they unlock.
+    Only warns once per missing token type.
+    """
+    from providers.open_meteo import ZONE_COORDINATES
+
+    needs_emaps = []
+    needs_entsoe = []
+
+    for entry in zones_config:
+        zone = entry["zone"]
+        provider = detect_provider(zone, entsoe_token)
+        if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
+            if zone not in ZONE_COORDINATES:
+                needs_emaps.append(zone)
+        # Also warn if ENTSO-E zones would work with a token but aren't
+        if not entsoe_token:
+            from providers.entsoe import ENTSOE_AREA_CODES
+            if zone in ENTSOE_AREA_CODES and provider != PROVIDER_ENTSOE:
+                needs_entsoe.append(zone)
+
+    if needs_emaps:
+        zones_str = ", ".join(needs_emaps[:5])
+        extra = f" (+{len(needs_emaps) - 5} more)" if len(needs_emaps) > 5 else ""
+        print(f"::notice::Zones [{zones_str}{extra}] need electricity_maps_token. "
+              f"Get free at https://portal.electricitymaps.com/")
+
+    if needs_entsoe:
+        zones_str = ", ".join(needs_entsoe[:5])
+        extra = f" (+{len(needs_entsoe) - 5} more)" if len(needs_entsoe) > 5 else ""
+        print(f"::notice::Zones [{zones_str}{extra}] would use ENTSO-E with entsoe_token. "
+              f"Get free at https://transparency.entsoe.eu/")
+
+
 def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
                          emaps_api_key="", entsoe_token=""):
     """Check carbon intensity for multiple zones, return the best green option.
+
+    Checks free-provider zones first (to avoid exhausting paid API rate limits),
+    then token-requiring zones. Falls back to Open-Meteo for zones without tokens.
 
     Returns (best_zone, best_intensity, best_runner_label, skipped) where
     skipped is a list of (zone, reason) for zones that could not be checked.
@@ -151,20 +204,36 @@ def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
     best_label = None
     skipped = []
 
-    for entry in zones_config:
+    # Sort: free providers first, then token-requiring ones.
+    # This avoids exhausting Electricity Maps rate limits (50 req/hr)
+    # when free providers could have answered the question.
+    from providers.open_meteo import ZONE_COORDINATES
+
+    def _provider_cost(entry):
+        provider = detect_provider(entry["zone"], entsoe_token)
+        if provider in (PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO,
+                        PROVIDER_GRID_INDIA, PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM):
+            return 0  # Free, no rate limit concern
+        if provider == PROVIDER_OPEN_METEO:
+            return 1  # Free, high rate limit
+        if provider == PROVIDER_ENTSOE:
+            return 2  # Free token, 400 req/min
+        return 3      # Electricity Maps: 50 req/hr
+
+    sorted_zones = sorted(zones_config, key=_provider_cost)
+
+    for entry in sorted_zones:
         zone = entry["zone"]
         label = entry.get("runner_label")
         provider = detect_provider(zone, entsoe_token)
 
         # Fall back to Open-Meteo if no Electricity Maps token
         if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
-            from providers.open_meteo import ZONE_COORDINATES
             if zone in ZONE_COORDINATES:
                 provider = PROVIDER_OPEN_METEO
                 print(f"  Zone {zone}: no electricity_maps_token, using Open-Meteo estimate")
             else:
                 reason = "no electricity_maps_token"
-                print(f"::warning::Skipping zone {zone}: {reason}")
                 skipped.append((zone, reason))
                 continue
 
@@ -199,6 +268,9 @@ def expand_auto_zones(zones_str):
 
     if normalized == "auto:green":
         return sort_auto_green_by_time(list(AUTO_GREEN_ZONES), utc_hour)
+
+    if normalized == "auto:green:full":
+        return sort_auto_green_by_time(list(AUTO_GREEN_ZONES_FULL), utc_hour)
 
     if normalized == "auto:cleanest":
         return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
@@ -697,6 +769,9 @@ def main():
     if raw_input.startswith("auto:"):
         zone_names = [z["zone"] for z in zones_config]
         print(f"{raw_input} expanded to {len(zones_config)} zones: {', '.join(zone_names)}")
+
+    # Emit upfront warnings about missing tokens
+    _emit_token_warnings(zones_config, emaps_api_key, entsoe_token)
 
     print(f"Carbon intensity threshold: {max_carbon} gCO2eq/kWh")
     if strategy == "queue":

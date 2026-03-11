@@ -65,31 +65,56 @@ EIA_BALANCING_AUTHORITIES = {
 }
 
 
-# Curated list of zones that are frequently powered by clean energy.
+# auto:green — Curated green-energy zones that work WITHOUT any API keys.
+# All zones here use free providers (EIA, UK, AEMO, Grid India, ONS Brazil).
 # Spans multiple time zones so at least one is likely green at any given time.
-# US/UK zones work without API keys; global zones need an Electricity Maps token.
 AUTO_GREEN_ZONES = [
     # US (EIA — no key needed)
     #                                                     utc_offset  energy_type
     {"zone": "CISO", "runner_label": "us-west",           "utc_offset": -8, "type": "solar"},
     {"zone": "BPAT", "runner_label": "us-northwest",      "utc_offset": -8, "type": "hydro"},
+    {"zone": "SCL", "runner_label": "us-seattle",         "utc_offset": -8, "type": "hydro"},
     # UK (Carbon Intensity API — no key needed)
     {"zone": "GB-16", "runner_label": "uk-scotland",      "utc_offset": 0,  "type": "wind"},
-    # Europe (Electricity Maps — free token needed)
+    {"zone": "GB", "runner_label": "uk-national",         "utc_offset": 0,  "type": "wind"},
+    # Australia (AEMO — no key needed)
+    {"zone": "AU-TAS", "runner_label": "oc-tasmania",     "utc_offset": 10, "type": "hydro"},
+    {"zone": "AU-SA", "runner_label": "au-south",         "utc_offset": 9.5, "type": "wind"},
+    # India (Grid India — no key needed)
+    {"zone": "IN-SO", "runner_label": "in-south",         "utc_offset": 5.5, "type": "solar"},
+    # Brazil (ONS — no key needed)
+    {"zone": "BR-S", "runner_label": "br-south",          "utc_offset": -3, "type": "hydro"},
+    {"zone": "BR-NE", "runner_label": "br-northeast",     "utc_offset": -3, "type": "wind"},
+]
+
+# auto:green:full — Extended green-energy zones INCLUDING token-requiring zones.
+# Requires electricity_maps_token or entsoe_token for non-free zones.
+# Use this when you have API tokens configured for maximum global coverage.
+AUTO_GREEN_ZONES_FULL = [
+    # All free zones from auto:green
+    {"zone": "CISO", "runner_label": "us-west",           "utc_offset": -8, "type": "solar"},
+    {"zone": "BPAT", "runner_label": "us-northwest",      "utc_offset": -8, "type": "hydro"},
+    {"zone": "SCL", "runner_label": "us-seattle",         "utc_offset": -8, "type": "hydro"},
+    {"zone": "GB-16", "runner_label": "uk-scotland",      "utc_offset": 0,  "type": "wind"},
+    {"zone": "GB", "runner_label": "uk-national",         "utc_offset": 0,  "type": "wind"},
+    {"zone": "AU-TAS", "runner_label": "oc-tasmania",     "utc_offset": 10, "type": "hydro"},
+    {"zone": "AU-SA", "runner_label": "au-south",         "utc_offset": 9.5, "type": "wind"},
+    {"zone": "IN-SO", "runner_label": "in-south",         "utc_offset": 5.5, "type": "solar"},
+    {"zone": "BR-S", "runner_label": "br-south",          "utc_offset": -3, "type": "hydro"},
+    {"zone": "BR-NE", "runner_label": "br-northeast",     "utc_offset": -3, "type": "wind"},
+    # Europe (ENTSO-E or Electricity Maps — token needed)
     {"zone": "NO-NO1", "runner_label": "eu-norway",       "utc_offset": 1,  "type": "hydro"},
     {"zone": "SE-SE2", "runner_label": "eu-sweden",       "utc_offset": 1,  "type": "hydro"},
     {"zone": "FR", "runner_label": "eu-france",           "utc_offset": 1,  "type": "nuclear"},
     {"zone": "IS", "runner_label": "eu-iceland",          "utc_offset": 0,  "type": "hydro"},
-    # Americas (Electricity Maps — free token needed)
+    # Americas (Electricity Maps — token needed)
     {"zone": "CA-QC", "runner_label": "ca-quebec",        "utc_offset": -5, "type": "hydro"},
     {"zone": "CA-BC", "runner_label": "ca-bc",            "utc_offset": -8, "type": "hydro"},
-    {"zone": "BR-S", "runner_label": "br-south",          "utc_offset": -3, "type": "hydro"},
     {"zone": "UY", "runner_label": "sa-uruguay",          "utc_offset": -3, "type": "wind"},
     {"zone": "PY", "runner_label": "sa-paraguay",         "utc_offset": -4, "type": "hydro"},
     {"zone": "CR", "runner_label": "ca-costarica",        "utc_offset": -6, "type": "hydro"},
-    # Oceania (Electricity Maps — free token needed)
+    # Oceania (Electricity Maps — token needed)
     {"zone": "NZ-NZN", "runner_label": "oc-newzealand",   "utc_offset": 12, "type": "hydro"},
-    {"zone": "AU-TAS", "runner_label": "oc-tasmania",     "utc_offset": 10, "type": "hydro"},
 ]
 
 # auto:cleanest — ALL free-provider zones for zero-config global routing.
@@ -115,8 +140,8 @@ AUTO_CLEANEST_ZONES = [
     # Brazil (ONS — no key needed)
     {"zone": "BR-S", "runner_label": None, "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": None, "utc_offset": -3, "type": "wind"},
-    # South Africa (Eskom — no key needed, but typically dirty)
-    {"zone": "ZA", "runner_label": None, "utc_offset": 2, "type": "coal"},
+    # Note: ZA (South Africa) intentionally excluded — ~85% coal, ~750 gCO2eq/kWh.
+    # Use auto:escape-coal:ZA to route away from SA's dirty grid.
     # Open-Meteo estimates (no key needed) — clean regions globally
     {"zone": "IS", "runner_label": None, "utc_offset": 0, "type": "hydro"},
     {"zone": "KE", "runner_label": None, "utc_offset": 3, "type": "hydro"},

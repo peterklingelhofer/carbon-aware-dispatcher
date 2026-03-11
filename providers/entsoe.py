@@ -69,14 +69,14 @@ ENTSOE_AREA_CODES = {
 # ENTSO-E production type codes → emission factors (gCO2eq/kWh)
 # B01-B20 are the standard ENTSO-E PSR type codes
 ENTSOE_EMISSION_FACTORS = {
-    "B01": 900,   # Biomass
-    "B02": 200,   # Fossil Brown coal/Lignite — using 900 but labeled conservatively
-    "B03": 0,     # Fossil Coal-derived gas (mapped to 490 like gas)
+    "B01": 900,   # Biomass (lifecycle: growth, harvest, transport, combustion)
+    "B02": 900,   # Fossil Brown coal/Lignite — very carbon-intensive
+    "B03": 490,   # Fossil Coal-derived gas (similar to natural gas)
     "B04": 490,   # Fossil Gas
     "B05": 820,   # Fossil Hard coal
     "B06": 650,   # Fossil Oil
     "B07": 650,   # Fossil Oil shale
-    "B08": 200,   # Fossil Peat
+    "B08": 340,   # Fossil Peat (between coal and gas)
     "B09": 0,     # Geothermal
     "B10": 0,     # Hydro Pumped Storage
     "B11": 0,     # Hydro Run-of-river
@@ -90,9 +90,6 @@ ENTSOE_EMISSION_FACTORS = {
     "B19": 0,     # Wind Onshore
     "B20": 200,   # Other
 }
-
-# Correct the lignite factor
-ENTSOE_EMISSION_FACTORS["B02"] = 900  # Lignite is very carbon-intensive
 
 
 def _parse_generation_xml(xml_text):

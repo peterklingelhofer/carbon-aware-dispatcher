@@ -94,11 +94,19 @@ class TestParseZonesInput:
     def test_auto_green(self):
         result = parse("auto:green")
         assert len(result) >= 5
-        # Should include a mix of providers (order may vary by time of day)
+        # auto:green now only includes free-provider zones
         zones = [z["zone"] for z in result]
-        assert "CISO" in zones  # US
-        assert "GB-16" in zones  # UK
-        assert "NO-NO1" in zones  # Global
+        assert "CISO" in zones  # US (EIA)
+        assert "GB-16" in zones  # UK (free)
+        assert "AU-TAS" in zones  # Australia (AEMO)
+        assert "BR-S" in zones  # Brazil (ONS)
+
+    def test_auto_green_full(self):
+        result = parse("auto:green:full")
+        zones = [z["zone"] for z in result]
+        assert "CISO" in zones  # Free
+        assert "NO-NO1" in zones  # Token-requiring
+        assert "CA-QC" in zones  # Token-requiring
 
     def test_auto_green_case_insensitive(self):
         result = parse("Auto:Green")
@@ -699,24 +707,38 @@ class TestCheckMultipleZones:
         assert zone is None
         assert len(skipped) == 2
 
-    def test_skips_emaps_zones_without_token(self):
-        """Zones needing Electricity Maps token are skipped with warning."""
-        zones = [{"zone": "DE"}, {"zone": "FR"}]
+    def test_skips_emaps_zones_without_token_or_coordinates(self):
+        """Zones needing Electricity Maps token with no Open-Meteo fallback are skipped."""
+        # Use fake zones that have no coordinates and no free provider
+        zones = [{"zone": "XX-FAKE1"}, {"zone": "XX-FAKE2"}]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(
             zones, 250, emaps_api_key=""
         )
         assert zone is None
         assert len(skipped) == 2
-        assert skipped[0] == ("DE", "no electricity_maps_token")
-        assert skipped[1] == ("FR", "no electricity_maps_token")
+        assert skipped[0] == ("XX-FAKE1", "no electricity_maps_token")
+        assert skipped[1] == ("XX-FAKE2", "no electricity_maps_token")
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    def test_emaps_zones_fallback_to_open_meteo(self, mock_check):
+        """Zones with Open-Meteo coordinates fall back instead of being skipped."""
+        mock_check.return_value = (True, 200)
+        zones = [{"zone": "DE", "runner_label": "eu"}]
+        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+            zones, 250, emaps_api_key=""
+        )
+        # DE has Open-Meteo coordinates, so it should be checked (not skipped)
+        assert zone == "DE"
+        assert len(skipped) == 0
+        assert mock_check.call_count == 1
 
     @mock.patch("check_grid.check_carbon_intensity")
     def test_mixed_providers_skip_and_check(self, mock_check):
-        """Mix of EIA and Electricity Maps zones, no token: EIA checked, global skipped."""
+        """Mix of EIA and unknown zones, no token: EIA checked, unknown skipped."""
         mock_check.return_value = (True, 100)
         zones = [
             {"zone": "CISO", "runner_label": "us"},
-            {"zone": "DE", "runner_label": "eu"},
+            {"zone": "XX-NOPE", "runner_label": "eu"},
         ]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(
             zones, 250, emaps_api_key=""
@@ -724,7 +746,7 @@ class TestCheckMultipleZones:
         assert zone == "CISO"
         assert intensity == 100
         assert len(skipped) == 1
-        assert skipped[0][0] == "DE"
+        assert skipped[0][0] == "XX-NOPE"
         # check_carbon_intensity should only be called for CISO
         assert mock_check.call_count == 1
 
@@ -1298,7 +1320,8 @@ class TestEntsoeDetectProvider:
         assert detect_provider("DE", entsoe_token="my-token") == PROVIDER_ENTSOE
 
     def test_de_without_token(self):
-        assert detect_provider("DE") == PROVIDER_ELECTRICITY_MAPS
+        # DE now has Open-Meteo coordinates, so it falls back there instead of Electricity Maps
+        assert detect_provider("DE") == PROVIDER_OPEN_METEO
 
     def test_fr_with_token(self):
         assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
@@ -1622,18 +1645,37 @@ class TestSortAutoGreenByTime:
 
 class TestExpandedAutoGreen:
     def test_has_global_coverage(self):
+        """auto:green includes free-provider zones across multiple continents."""
         zones = {z["zone"] for z in AUTO_GREEN_ZONES}
-        # Americas
+        # Americas (EIA — free)
         assert "CISO" in zones
-        assert "BR-S" in zones
-        assert "CR" in zones
-        # Europe
-        assert "NO-NO1" in zones
-        assert "FR" in zones
-        assert "IS" in zones
-        # Oceania
-        assert "NZ-NZN" in zones
+        assert "BPAT" in zones
+        # UK (free)
+        assert "GB-16" in zones
+        # Australia (AEMO — free)
         assert "AU-TAS" in zones
+        # India (Grid India — free)
+        assert "IN-SO" in zones
+        # Brazil (ONS — free)
+        assert "BR-S" in zones
+
+    def test_auto_green_only_free_providers(self):
+        """auto:green should NOT include zones requiring API tokens."""
+        zones = {z["zone"] for z in AUTO_GREEN_ZONES}
+        # These require Electricity Maps or ENTSO-E tokens
+        assert "NO-NO1" not in zones
+        assert "FR" not in zones
+        assert "CA-QC" not in zones
+        assert "NZ-NZN" not in zones
+
+    def test_auto_green_full_includes_token_zones(self):
+        """auto:green:full includes both free and token-requiring zones."""
+        from providers import AUTO_GREEN_ZONES_FULL
+        zones = {z["zone"] for z in AUTO_GREEN_ZONES_FULL}
+        assert "CISO" in zones      # Free
+        assert "NO-NO1" in zones    # Token-requiring
+        assert "CA-QC" in zones     # Token-requiring
+        assert "NZ-NZN" in zones    # Token-requiring
 
     def test_all_zones_have_required_fields(self):
         for zone in AUTO_GREEN_ZONES:
@@ -1983,7 +2025,8 @@ class TestAutoCleanestPreset:
         assert "AU-TAS" in zone_names  # AEMO
         assert "IN-SO" in zone_names  # Grid India
         assert "BR-S" in zone_names  # ONS Brazil
-        assert "ZA" in zone_names  # Eskom
+        # ZA intentionally excluded — ~85% coal (~750 gCO2eq/kWh)
+        assert "ZA" not in zone_names
 
     def test_auto_cleanest_case_insensitive(self):
         result = check_grid.expand_auto_zones("AUTO:CLEANEST")
@@ -2277,10 +2320,17 @@ class TestSetupWizard:
 
     def test_zone_test_emaps_skipped_without_token(self):
         from setup_wizard import test_zone
-        # Use a zone that only Electricity Maps can handle
-        result = test_zone("SG", emaps_api_key="")
+        # Use a fake zone that only Electricity Maps can handle (no coordinates)
+        result = test_zone("XX-NOCOORDS", emaps_api_key="")
         assert result["status"] == "skipped"
         assert "portal.electricitymaps.com" in result["error"]
+
+    @mock.patch("setup_wizard.open_meteo.check_carbon_intensity", return_value=(True, 300))
+    def test_zone_with_open_meteo_fallback(self, mock_check):
+        from setup_wizard import test_zone
+        # SG has Open-Meteo coordinates, should work without emaps token
+        result = test_zone("SG", emaps_api_key="")
+        assert result["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -2361,3 +2411,62 @@ class TestProviderRegistryConsistency:
         assert detect_provider("ZA") == PROVIDER_ESKOM
         # Australia should detect AEMO (free)
         assert detect_provider("AU-NSW") == PROVIDER_AEMO
+
+    def test_eu_zones_fallback_to_open_meteo_without_token(self):
+        """EU zones with coordinates should detect Open-Meteo without ENTSO-E token."""
+        assert detect_provider("DE") == PROVIDER_OPEN_METEO
+        assert detect_provider("FR") == PROVIDER_OPEN_METEO
+        assert detect_provider("NO-NO1") == PROVIDER_OPEN_METEO
+
+    def test_eu_zones_prefer_entsoe_with_token(self):
+        """EU zones should prefer ENTSO-E when token is available."""
+        assert detect_provider("DE", entsoe_token="tok") == PROVIDER_ENTSOE
+        assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
+
+
+# ---------------------------------------------------------------------------
+# Fallback chain tests
+# ---------------------------------------------------------------------------
+
+class TestFallbackChain:
+    @mock.patch("check_grid.open_meteo.check_carbon_intensity", return_value=(True, 200))
+    @mock.patch("check_grid.eia.check_carbon_intensity", return_value=(None, None))
+    def test_eia_failure_falls_back_to_open_meteo(self, mock_eia, mock_meteo):
+        """When EIA fails for a zone with Open-Meteo coordinates, fallback works."""
+        # CISO doesn't have Open-Meteo coords (it's EIA), so let's test with
+        # a zone that would hit EIA but also has coords — not realistic for EIA.
+        # Instead test the generic fallback path.
+        from providers.open_meteo import ZONE_COORDINATES
+        # Temporarily add coords for test
+        ZONE_COORDINATES["CISO"] = (37.8, -122.4)
+        try:
+            is_green, intensity = check_grid.check_carbon_intensity(
+                "CISO", 250, PROVIDER_EIA, eia_api_key=""
+            )
+            assert is_green is True
+            assert intensity == 200
+            mock_meteo.assert_called_once()
+        finally:
+            del ZONE_COORDINATES["CISO"]
+
+    @mock.patch("check_grid.uk.check_carbon_intensity", return_value=(True, 150))
+    def test_no_fallback_when_primary_succeeds(self, mock_uk):
+        """Fallback should NOT trigger when primary provider succeeds."""
+        with mock.patch("check_grid.open_meteo.check_carbon_intensity") as mock_meteo:
+            is_green, intensity = check_grid.check_carbon_intensity(
+                "GB", 250, PROVIDER_UK
+            )
+            assert is_green is True
+            assert intensity == 150
+            mock_meteo.assert_not_called()
+
+    @mock.patch("check_grid.open_meteo.check_carbon_intensity")
+    def test_no_double_fallback_for_open_meteo(self, mock_meteo):
+        """Open-Meteo itself should not trigger fallback to Open-Meteo."""
+        mock_meteo.return_value = (None, None)
+        is_green, intensity = check_grid.check_carbon_intensity(
+            "IS", 250, PROVIDER_OPEN_METEO
+        )
+        assert is_green is None
+        # Should only be called once (primary), not twice (no self-fallback)
+        assert mock_meteo.call_count == 1

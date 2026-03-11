@@ -22,40 +22,138 @@ OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 # This enables Open-Meteo as a fallback when no API key is available.
 # Add coordinates for any zone that might need fallback coverage.
 ZONE_COORDINATES = {
-    # Africa
-    "ZA": (-33.9, 18.4),       # South Africa (Cape Town)
-    "KE": (-1.3, 36.8),        # Kenya (Nairobi)
-    "NG": (6.5, 3.4),          # Nigeria (Lagos)
-    "EG": (30.0, 31.2),        # Egypt (Cairo)
-    "MA": (33.6, -7.6),        # Morocco (Casablanca)
-    "GH": (5.6, -0.2),         # Ghana (Accra)
-    "TZ": (-6.8, 39.3),        # Tanzania (Dar es Salaam)
-    "ET": (9.0, 38.7),         # Ethiopia (Addis Ababa)
-    # Middle East
-    "AE": (25.2, 55.3),        # UAE (Dubai)
-    "SA": (24.7, 46.7),        # Saudi Arabia (Riyadh) — note: not AU-SA
-    "IL": (32.1, 34.8),        # Israel (Tel Aviv)
-    "TR": (41.0, 29.0),        # Turkey (Istanbul)
-    # Central Asia
-    "KZ": (51.1, 71.4),        # Kazakhstan (Astana)
-    "UZ": (41.3, 69.3),        # Uzbekistan (Tashkent)
-    # Southeast Asia
-    "TH": (13.8, 100.5),       # Thailand (Bangkok)
-    "VN": (21.0, 105.9),       # Vietnam (Hanoi)
-    "PH": (14.6, 121.0),       # Philippines (Manila)
-    "ID": (-6.2, 106.8),       # Indonesia (Jakarta)
-    "MY": (3.1, 101.7),        # Malaysia (KL)
+    # -----------------------------------------------------------------------
+    # Europe — fallback when ENTSO-E/Electricity Maps tokens are unavailable.
+    # Coordinates are for the main population/grid center of each zone.
+    # -----------------------------------------------------------------------
+    "NO-NO1": (59.9, 10.7),    # Norway Oslo
+    "NO-NO2": (60.4, 5.3),     # Norway Bergen
+    "NO-NO3": (63.4, 10.4),    # Norway Trondheim
+    "NO-NO4": (69.6, 18.9),    # Norway Tromsø
+    "NO-NO5": (61.5, 6.8),     # Norway Sognefjord
+    "SE-SE1": (67.0, 20.2),    # Sweden North
+    "SE-SE2": (63.8, 20.3),    # Sweden Mid-North
+    "SE-SE3": (59.3, 18.1),    # Sweden Stockholm
+    "SE-SE4": (55.6, 13.0),    # Sweden Malmö
+    "DK-DK1": (56.2, 9.5),     # Denmark West (Jutland)
+    "DK-DK2": (55.7, 12.6),    # Denmark East (Zealand)
+    "FI": (60.2, 24.9),        # Finland Helsinki
+    "EE": (59.4, 24.7),        # Estonia Tallinn
+    "LV": (56.9, 24.1),        # Latvia Riga
+    "LT": (54.7, 25.3),        # Lithuania Vilnius
+    "FR": (48.9, 2.3),         # France Paris
+    "DE": (52.5, 13.4),        # Germany Berlin
+    "NL": (52.4, 4.9),         # Netherlands Amsterdam
+    "BE": (50.8, 4.4),         # Belgium Brussels
+    "AT": (48.2, 16.4),        # Austria Vienna
+    "CH": (47.4, 8.5),         # Switzerland Zurich
+    "PL": (52.2, 21.0),        # Poland Warsaw
+    "CZ": (50.1, 14.4),        # Czech Republic Prague
+    "ES": (40.4, -3.7),        # Spain Madrid
+    "PT": (38.7, -9.1),        # Portugal Lisbon
+    "IT-NO": (45.5, 9.2),      # Italy North (Milan)
+    "IT-CNO": (43.8, 11.3),    # Italy Centre-North (Florence)
+    "IT-CSO": (41.9, 12.5),    # Italy Centre-South (Rome)
+    "IT-SO": (40.9, 14.3),     # Italy South (Naples)
+    "IT-SIC": (37.5, 15.1),    # Italy Sicily (Catania)
+    "IT-SAR": (39.2, 9.1),     # Italy Sardinia (Cagliari)
+    "IE": (53.3, -6.3),        # Ireland Dublin
+    "IS": (64.1, -21.9),       # Iceland Reykjavik
+    "GR": (37.98, 23.7),       # Greece Athens
+    "RO": (44.4, 26.1),        # Romania Bucharest
+    "BG": (42.7, 23.3),        # Bulgaria Sofia
+    "HU": (47.5, 19.0),        # Hungary Budapest
+    "SK": (48.1, 17.1),        # Slovakia Bratislava
+    "HR": (45.8, 16.0),        # Croatia Zagreb
+    "RS": (44.8, 20.5),        # Serbia Belgrade
+    "SI": (46.1, 14.5),        # Slovenia Ljubljana
+    "BA": (43.9, 18.4),        # Bosnia Sarajevo
+    "ME": (42.4, 19.3),        # Montenegro Podgorica
+    "MK": (42.0, 21.4),        # North Macedonia Skopje
+    "AL": (41.3, 19.8),        # Albania Tirana
+
+    # -----------------------------------------------------------------------
+    # Americas — Canada, Latin America (Electricity Maps fallback)
+    # -----------------------------------------------------------------------
+    "CA-QC": (45.5, -73.6),    # Quebec Montreal
+    "CA-ON": (43.7, -79.4),    # Ontario Toronto
+    "CA-BC": (49.3, -123.1),   # British Columbia Vancouver
+    "CA-AB": (51.0, -114.1),   # Alberta Calgary
+    "CA-SK": (50.4, -104.6),   # Saskatchewan Regina
+    "CA-MB": (49.9, -97.1),    # Manitoba Winnipeg
+    "CA-NB": (45.9, -66.6),    # New Brunswick Fredericton
+    "CA-NS": (44.6, -63.6),    # Nova Scotia Halifax
+    "UY": (-34.9, -56.2),      # Uruguay Montevideo
+    "PY": (-25.3, -57.6),      # Paraguay Asunción
+    "CR": (9.9, -84.1),        # Costa Rica San José
+    "CL-SEN": (-33.4, -70.7),  # Chile Santiago
+    "AR": (-34.6, -58.4),      # Argentina Buenos Aires
+    "CO": (4.7, -74.1),        # Colombia Bogotá
+    "PA": (9.0, -79.5),        # Panama City
+    "PE": (-12.0, -77.0),      # Peru Lima
+    "EC": (-0.2, -78.5),       # Ecuador Quito
+    "MX": (19.4, -99.1),       # Mexico City
+
+    # -----------------------------------------------------------------------
+    # Asia-Pacific — Japan, Korea, Southeast Asia, Oceania
+    # -----------------------------------------------------------------------
+    "JP-TK": (35.7, 139.7),    # Japan Tokyo
+    "JP-CB": (35.2, 137.0),    # Japan Chubu
+    "JP-KN": (34.7, 135.5),    # Japan Kansai (Osaka)
+    "JP-KY": (33.6, 130.4),    # Japan Kyushu (Fukuoka)
+    "KR": (37.6, 127.0),       # South Korea Seoul
+    "NZ-NZN": (-36.8, 174.8),  # New Zealand North (Auckland)
+    "NZ-NZS": (-43.5, 172.6),  # New Zealand South (Christchurch)
+    "SG": (1.3, 103.8),        # Singapore
+    "TW": (25.0, 121.5),       # Taiwan Taipei
+    "HK": (22.3, 114.2),       # Hong Kong
+    "TH": (13.8, 100.5),       # Thailand Bangkok
+    "VN": (21.0, 105.9),       # Vietnam Hanoi
+    "PH": (14.6, 121.0),       # Philippines Manila
+    "ID": (-6.2, 106.8),       # Indonesia Jakarta
+    "MY": (3.1, 101.7),        # Malaysia KL
+
+    # -----------------------------------------------------------------------
     # South Asia
-    "PK": (24.9, 67.0),        # Pakistan (Karachi)
-    "BD": (23.8, 90.4),        # Bangladesh (Dhaka)
-    "LK": (6.9, 79.9),         # Sri Lanka (Colombo)
+    # -----------------------------------------------------------------------
+    "PK": (24.9, 67.0),        # Pakistan Karachi
+    "BD": (23.8, 90.4),        # Bangladesh Dhaka
+    "LK": (6.9, 79.9),         # Sri Lanka Colombo
+
+    # -----------------------------------------------------------------------
     # China
+    # -----------------------------------------------------------------------
     "CN-BJ": (39.9, 116.4),    # Beijing
     "CN-SH": (31.2, 121.5),    # Shanghai
     "CN-GD": (23.1, 113.3),    # Guangdong
-    # Eastern Europe / Central Asia
-    "UA": (50.4, 30.5),        # Ukraine (Kyiv)
-    "GE": (41.7, 44.8),        # Georgia (Tbilisi)
+
+    # -----------------------------------------------------------------------
+    # Africa
+    # -----------------------------------------------------------------------
+    "ZA": (-33.9, 18.4),       # South Africa Cape Town
+    "KE": (-1.3, 36.8),        # Kenya Nairobi
+    "NG": (6.5, 3.4),          # Nigeria Lagos
+    "EG": (30.0, 31.2),        # Egypt Cairo
+    "MA": (33.6, -7.6),        # Morocco Casablanca
+    "GH": (5.6, -0.2),         # Ghana Accra
+    "TZ": (-6.8, 39.3),        # Tanzania Dar es Salaam
+    "ET": (9.0, 38.7),         # Ethiopia Addis Ababa
+
+    # -----------------------------------------------------------------------
+    # Middle East & Central Asia
+    # -----------------------------------------------------------------------
+    "AE": (25.2, 55.3),        # UAE Dubai
+    "SA": (24.7, 46.7),        # Saudi Arabia Riyadh — note: not AU-SA
+    "IL": (32.1, 34.8),        # Israel Tel Aviv
+    "TR": (41.0, 29.0),        # Turkey Istanbul
+    "KZ": (51.1, 71.4),        # Kazakhstan Astana
+    "UZ": (41.3, 69.3),        # Uzbekistan Tashkent
+
+    # -----------------------------------------------------------------------
+    # Eastern Europe
+    # -----------------------------------------------------------------------
+    "UA": (50.4, 30.5),        # Ukraine Kyiv
+    "GE": (41.7, 44.8),        # Georgia Tbilisi
 }
 
 # Solar irradiance thresholds (W/m²)
