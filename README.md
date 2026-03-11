@@ -2,7 +2,9 @@
 
 A GitHub Action that delays compute-heavy CI/CD workflows until the energy grid is powered by clean, renewable energy. Runs on a cron schedule as a gatekeeper — checks live carbon intensity data, and dispatches your heavy workflow only when the grid is green.
 
-**Zero config — no API keys required.** Uses the [EIA API](https://www.eia.gov/opendata/) for US zones and the [UK Carbon Intensity API](https://carbonintensity.org.uk/) for UK zones. Both are free, open, and need no authentication.
+**Zero config for US & UK — no API keys required.** Uses the [EIA API](https://www.eia.gov/opendata/) for US zones and the [UK Carbon Intensity API](https://carbonintensity.org.uk/) for UK zones. Both are free, open, and need no authentication.
+
+**Global coverage with [Electricity Maps](https://www.electricitymaps.com/)** — 200+ zones worldwide including Europe, Canada, India, Japan, Australia, Latin America, and more. Requires a free API token (50 requests/hour).
 
 **Multi-zone support** — provide multiple grid zones (optionally mapped to self-hosted runner labels) and the action picks the zone with the lowest carbon intensity, routing your workload to the greenest available region.
 
@@ -65,6 +67,22 @@ jobs:
 
 That's it — no API keys, no secrets to configure.
 
+## Quick Start (Global — Electricity Maps)
+
+For zones outside US and UK (Europe, Asia, Australia, etc.), use [Electricity Maps](https://www.electricitymaps.com/):
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    grid_zone: 'DE'                    # Germany (any Electricity Maps zone code)
+    max_carbon_intensity: '200'
+    workflow_id: 'heavy-batch.yml'
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}
+```
+
+Register free at [portal.electricitymaps.com](https://portal.electricitymaps.com/) — 50 requests/hour on the free tier.
+
 ## Quick Start (UK)
 
 ```yaml
@@ -98,7 +116,7 @@ The selected runner label is available via `${{ steps.carbon-check.outputs.runne
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `grid_zone` | No* | — | Single zone (US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`) |
+| `grid_zone` | No* | — | Single zone (US: EIA BA code, UK: `GB`/`GB-1`..`GB-17`, Global: [Electricity Maps zone](https://app.electricitymaps.com/map)) |
 | `grid_zones` | No* | — | Comma-separated zones, optionally with runner labels |
 | `eia_api_key` | No | — | Optional EIA API key for higher rate limits. [Register free](https://www.eia.gov/opendata/register.php). Built-in `DEMO_KEY` works for basic use. |
 | `gridstatus_api_key` | No | — | Optional [GridStatus.io](https://www.gridstatus.io) API key for US zone forecasts. [Register free](https://www.gridstatus.io) (1M rows/month). |
@@ -107,7 +125,8 @@ The selected runner label is available via `${{ steps.carbon-check.outputs.runne
 | `github_token` | Yes | — | GitHub token with Actions write permission |
 | `target_ref` | No | `main` | Git ref to dispatch the workflow on |
 | `fail_on_api_error` | No | `false` | Fail the action on API errors instead of skipping |
-| `enable_forecast` | No | `false` | Fetch forecast when grid is dirty. UK: free 48h. US: requires `gridstatus_api_key`. |
+| `electricity_maps_token` | No | — | [Electricity Maps](https://portal.electricitymaps.com/) API token for global zones (200+ zones, 50 req/hr free). |
+| `enable_forecast` | No | `false` | Fetch forecast when grid is dirty. UK: free 48h. US: requires `gridstatus_api_key`. Global: requires `electricity_maps_token`. |
 
 \* One of `grid_zone` or `grid_zones` is required.
 
@@ -181,6 +200,28 @@ Uses the [UK Carbon Intensity API](https://carbonintensity.org.uk/) by the Natio
 | `GB-6` | North Wales | `GB-14` | South East England |
 | `GB-7` | South Wales | `GB-15`/`GB-16`/`GB-17` | England/Scotland/Wales |
 
+### Global Zones (Electricity Maps — Free API Token Required)
+
+Uses [Electricity Maps](https://www.electricitymaps.com/) for 200+ zones worldwide. Direct carbon intensity values in gCO2eq/kWh. Includes forecast and history trend data.
+
+| Zone | Region | Zone | Region |
+|------|--------|------|--------|
+| `DE` | Germany | `FR` | France |
+| `ES` | Spain | `IT-NO` | Northern Italy |
+| `SE-SE1`..`SE-SE4` | Sweden | `NO-NO1`..`NO-NO5` | Norway |
+| `DK-DK1`/`DK-DK2` | Denmark | `NL` | Netherlands |
+| `AU-NSW` | New South Wales | `AU-VIC` | Victoria |
+| `JP-TK` | Tokyo | `IN-NO` | Northern India |
+| `CA-ON` | Ontario | `CA-QC` | Quebec |
+| `BR-S` | Southern Brazil | `NZ-NZN` | New Zealand North |
+
+Full zone list at [app.electricitymaps.com/map](https://app.electricitymaps.com/map). Any zone shown on the map can be used.
+
+**Provider auto-detection:** The action automatically selects the right provider based on the zone identifier:
+- `GB`, `GB-1`..`GB-17` → UK Carbon Intensity API (no key needed)
+- Known US balancing authorities (`CISO`, `ERCO`, `PJM`, etc.) → EIA API (no key needed)
+- Everything else → Electricity Maps (requires `electricity_maps_token`)
+
 ## How Carbon Intensity Is Calculated
 
 For US zones, the action fetches the real-time hourly fuel mix from the EIA API and calculates carbon intensity using standard lifecycle emission factors:
@@ -193,6 +234,8 @@ For US zones, the action fetches the real-time hourly fuel mix from the EIA API 
 | Other | 200 | Hydro/Geo | 0 |
 
 For UK zones, the Carbon Intensity API provides pre-calculated intensity values directly.
+
+For global zones, Electricity Maps provides pre-calculated lifecycle carbon intensity values directly in gCO2eq/kWh.
 
 ## Rate Limits & API Keys
 
@@ -215,6 +258,10 @@ The action works **without any API key** using the EIA's built-in `DEMO_KEY`, bu
 ### UK Zones (Carbon Intensity API)
 
 No API key needed. No documented rate limits. Works out of the box.
+
+### Global Zones (Electricity Maps)
+
+Requires a free API token. [Register at portal.electricitymaps.com](https://portal.electricitymaps.com/) — takes 30 seconds. Free tier allows **50 requests/hour**, which covers hourly checks of a single zone with room to spare. Includes carbon intensity, forecast, and history endpoints.
 
 ### US Forecasts (GridStatus.io — Optional)
 

@@ -1,4 +1,4 @@
-"""Tests for check_grid.py."""
+"""Tests for carbon-aware dispatcher."""
 
 import os
 import tempfile
@@ -7,6 +7,14 @@ from unittest import mock
 import pytest
 
 import check_grid
+from providers import (
+    PROVIDER_EIA,
+    PROVIDER_ELECTRICITY_MAPS,
+    PROVIDER_UK,
+    detect_provider,
+)
+from providers import eia, electricity_maps, gridstatus, uk
+from providers.base import api_request, api_request_with_header, compute_trend
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +22,9 @@ def _clear_env():
     """Ensure test env vars don't leak between tests."""
     keys = [
         "GRID_ZONE", "GRID_ZONES", "EIA_API_KEY", "GRID_STATUS_API_KEY",
-        "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN", "TARGET_REPO",
-        "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST", "GITHUB_OUTPUT",
+        "ELECTRICITY_MAPS_TOKEN", "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN",
+        "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
+        "GITHUB_OUTPUT",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -61,75 +70,75 @@ def parse(s):
 
 class TestDetectProvider:
     def test_uk_national(self):
-        assert check_grid.detect_provider("GB") == check_grid.PROVIDER_UK
+        assert detect_provider("GB") == PROVIDER_UK
 
     def test_uk_region(self):
-        assert check_grid.detect_provider("GB-13") == check_grid.PROVIDER_UK
+        assert detect_provider("GB-13") == PROVIDER_UK
 
     def test_uk_national_alias(self):
-        assert check_grid.detect_provider("GB-national") == check_grid.PROVIDER_UK
+        assert detect_provider("GB-national") == PROVIDER_UK
 
     def test_eia_zone(self):
-        assert check_grid.detect_provider("CISO") == check_grid.PROVIDER_EIA
+        assert detect_provider("CISO") == PROVIDER_EIA
 
     def test_eia_us_zone(self):
-        assert check_grid.detect_provider("ERCO") == check_grid.PROVIDER_EIA
+        assert detect_provider("ERCO") == PROVIDER_EIA
 
-    def test_eia_unknown_zone(self):
-        assert check_grid.detect_provider("XX-UNKNOWN") == check_grid.PROVIDER_EIA
+    def test_unknown_zone_uses_electricity_maps(self):
+        assert detect_provider("XX-UNKNOWN") == PROVIDER_ELECTRICITY_MAPS
 
 
 class TestApiRequest:
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_success_no_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {"data": "value"},
         )
-        result = check_grid.api_request("https://example.com")
+        result = api_request("https://example.com")
         assert result == {"data": "value"}
         call_headers = mock_get.call_args[1].get("headers", {})
         assert "auth-token" not in call_headers
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_success_with_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {"ok": True},
         )
-        result = check_grid.api_request("https://example.com", "my-token")
+        result = api_request("https://example.com", "my-token")
         assert result == {"ok": True}
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("auth-token") == "my-token"
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_retries_on_500(self, mock_get):
         fail = mock.Mock(status_code=500, text="Server Error")
         success = mock.Mock(status_code=200, json=lambda: {"ok": True})
         mock_get.side_effect = [fail, success]
-        result = check_grid.api_request("https://example.com")
+        result = api_request("https://example.com")
         assert result == {"ok": True}
         assert mock_get.call_count == 2
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_returns_none_on_all_failures(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
-        result = check_grid.api_request("https://example.com")
+        result = api_request("https://example.com")
         assert result is None
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_auth_error_no_retry(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=403, text="Forbidden")
-        result = check_grid.api_request("https://example.com")
+        result = api_request("https://example.com")
         assert result is None
         assert mock_get.call_count == 1
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_invalid_json(self, mock_get):
         resp = mock.Mock(status_code=200, text="not json")
         resp.json.side_effect = ValueError("bad")
         mock_get.return_value = resp
-        result = check_grid.api_request("https://example.com")
+        result = api_request("https://example.com")
         assert result is None
 
 
@@ -138,58 +147,58 @@ class TestApiRequest:
 # ---------------------------------------------------------------------------
 
 class TestUkCheckCarbonIntensity:
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_national_green(self, mock_api):
         mock_api.return_value = {
             "data": [{"from": "2026-03-10T00:00Z", "to": "2026-03-10T00:30Z",
                        "intensity": {"forecast": 100, "actual": 95, "index": "low"}}]
         }
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB", 250)
         assert is_green is True
         assert intensity == 100
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_national_dirty(self, mock_api):
         mock_api.return_value = {
             "data": [{"intensity": {"forecast": 400, "actual": 410, "index": "high"}}]
         }
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB", 250)
         assert is_green is False
         assert intensity == 400
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_regional_green(self, mock_api):
         mock_api.return_value = {
             "data": [{"data": [{"intensity": {"forecast": 50, "index": "very low"}}]}]
         }
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB-16", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB-16", 250)
         assert is_green is True
         assert intensity == 50
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_api_error(self, mock_api):
         mock_api.return_value = None
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB", 250)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_unknown_zone(self, mock_api):
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB-99", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB-99", 250)
         assert is_green is None
         assert intensity is None
         mock_api.assert_not_called()
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_malformed_response(self, mock_api):
         mock_api.return_value = {"data": [{}]}
-        is_green, intensity = check_grid.uk_check_carbon_intensity("GB", 250)
+        is_green, intensity = uk.check_carbon_intensity("GB", 250)
         assert is_green is None
         assert intensity is None
 
 
 class TestUkGetForecast:
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_finds_green_window(self, mock_api):
         mock_api.return_value = {
             "data": [
@@ -197,11 +206,11 @@ class TestUkGetForecast:
                 {"from": "2026-03-10T06:00Z", "intensity": {"forecast": 120}},
             ]
         }
-        dt, intensity = check_grid.uk_get_forecast("GB", 200)
+        dt, intensity = uk.get_forecast("GB", 200)
         assert dt == "2026-03-10T06:00Z"
         assert intensity == 120
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_no_green_window(self, mock_api):
         mock_api.return_value = {
             "data": [
@@ -209,20 +218,20 @@ class TestUkGetForecast:
                 {"from": "2026-03-10T06:00Z", "intensity": {"forecast": 350}},
             ]
         }
-        dt, intensity = check_grid.uk_get_forecast("GB", 200)
+        dt, intensity = uk.get_forecast("GB", 200)
         assert dt == "none_in_forecast"
         assert intensity is None
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_api_error(self, mock_api):
         mock_api.return_value = None
-        dt, intensity = check_grid.uk_get_forecast("GB", 200)
+        dt, intensity = uk.get_forecast("GB", 200)
         assert dt is None
         assert intensity is None
 
 
 class TestUkGetHistoryTrend:
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_decreasing(self, mock_api):
         mock_api.return_value = {
             "data": [
@@ -231,12 +240,12 @@ class TestUkGetHistoryTrend:
                 {"intensity": {"forecast": 280}}, {"intensity": {"forecast": 260}},
             ]
         }
-        assert check_grid.uk_get_history_trend("GB") == "decreasing"
+        assert uk.get_history_trend("GB") == "decreasing"
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.uk.api_request")
     def test_api_error(self, mock_api):
         mock_api.return_value = None
-        assert check_grid.uk_get_history_trend("GB") is None
+        assert uk.get_history_trend("GB") is None
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +255,11 @@ class TestUkGetHistoryTrend:
 class TestEiaFuelMixToIntensity:
     def test_all_gas(self):
         data = [{"fueltype": "NG", "value": 100}]
-        assert check_grid._eia_fuel_mix_to_intensity(data) == 490
+        assert eia._fuel_mix_to_intensity(data) == 490
 
     def test_all_wind(self):
         data = [{"fueltype": "WND", "value": 100}]
-        assert check_grid._eia_fuel_mix_to_intensity(data) == 0
+        assert eia._fuel_mix_to_intensity(data) == 0
 
     def test_mixed(self):
         data = [
@@ -258,32 +267,32 @@ class TestEiaFuelMixToIntensity:
             {"fueltype": "WND", "value": 50},   # 50 * 0 = 0
         ]
         # 24500 / 100 = 245
-        assert check_grid._eia_fuel_mix_to_intensity(data) == 245
+        assert eia._fuel_mix_to_intensity(data) == 245
 
     def test_negative_values_ignored(self):
         data = [
             {"fueltype": "NG", "value": 100},
             {"fueltype": "SUN", "value": -10},  # Negative (consuming), ignored
         ]
-        assert check_grid._eia_fuel_mix_to_intensity(data) == 490
+        assert eia._fuel_mix_to_intensity(data) == 490
 
     def test_none_values_ignored(self):
         data = [
             {"fueltype": "NG", "value": 100},
             {"fueltype": "SUN", "value": None},
         ]
-        assert check_grid._eia_fuel_mix_to_intensity(data) == 490
+        assert eia._fuel_mix_to_intensity(data) == 490
 
     def test_empty_data(self):
-        assert check_grid._eia_fuel_mix_to_intensity([]) is None
+        assert eia._fuel_mix_to_intensity([]) is None
 
     def test_all_zero(self):
         data = [{"fueltype": "NG", "value": 0}]
-        assert check_grid._eia_fuel_mix_to_intensity(data) is None
+        assert eia._fuel_mix_to_intensity(data) is None
 
 
 class TestEiaCheckCarbonIntensity:
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_green_grid(self, mock_api):
         mock_api.return_value = {
             "response": {
@@ -294,12 +303,12 @@ class TestEiaCheckCarbonIntensity:
                 ]
             }
         }
-        is_green, intensity = check_grid.eia_check_carbon_intensity("CISO", 250)
+        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
         assert is_green is True
         # (100*490) / (500+300+100) = 49000/900 = 54
         assert intensity == 54
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_dirty_grid(self, mock_api):
         mock_api.return_value = {
             "response": {
@@ -309,50 +318,45 @@ class TestEiaCheckCarbonIntensity:
                 ]
             }
         }
-        is_green, intensity = check_grid.eia_check_carbon_intensity("ERCO", 250)
+        is_green, intensity = eia.check_carbon_intensity("ERCO", 250)
         assert is_green is False
         # (500*820 + 500*490) / 1000 = 655
         assert intensity == 655
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_api_error(self, mock_api):
         mock_api.return_value = None
-        is_green, intensity = check_grid.eia_check_carbon_intensity("CISO", 250)
+        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_empty_data(self, mock_api):
         mock_api.return_value = {"response": {"data": []}}
-        is_green, intensity = check_grid.eia_check_carbon_intensity("CISO", 250)
+        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_uses_demo_key_by_default(self, mock_api):
         mock_api.return_value = {"response": {"data": []}}
-        check_grid.eia_check_carbon_intensity("CISO", 250)
+        eia.check_carbon_intensity("CISO", 250)
         call_url = mock_api.call_args[0][0]
         assert "DEMO_KEY" in call_url
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_uses_custom_key(self, mock_api):
         mock_api.return_value = {"response": {"data": []}}
-        check_grid.eia_check_carbon_intensity("CISO", 250, eia_api_key="my-key")
+        eia.check_carbon_intensity("CISO", 250, eia_api_key="my-key")
         call_url = mock_api.call_args[0][0]
         assert "my-key" in call_url
         assert "DEMO_KEY" not in call_url
 
 
 class TestEiaGetHistoryTrend:
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_decreasing(self, mock_api):
-        # 6 hours of data with varying fuel mixes to create decreasing intensity
-        # Newer hours have more wind (clean), older have more gas (dirty)
         rows = []
-        # API returns newest first; we need 6 periods
-        # Period 06 (newest): mostly wind -> low intensity
-        # Period 01 (oldest): mostly gas -> high intensity
         gas_amounts = [100, 150, 200, 300, 350, 400]  # newest to oldest
         wind_amounts = [400, 350, 300, 200, 150, 100]
         for i in range(6):
@@ -361,13 +365,111 @@ class TestEiaGetHistoryTrend:
             rows.append({"period": period, "fueltype": "WND", "value": wind_amounts[i]})
 
         mock_api.return_value = {"response": {"data": rows}}
-        result = check_grid.eia_get_history_trend("CISO")
+        result = eia.get_history_trend("CISO")
         assert result == "decreasing"
 
-    @mock.patch("check_grid.api_request")
+    @mock.patch("providers.eia.api_request")
     def test_api_error(self, mock_api):
         mock_api.return_value = None
-        assert check_grid.eia_get_history_trend("CISO") is None
+        assert eia.get_history_trend("CISO") is None
+
+
+# ---------------------------------------------------------------------------
+# Electricity Maps tests
+# ---------------------------------------------------------------------------
+
+class TestElectricityMapsCheckCarbonIntensity:
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_green(self, mock_api):
+        mock_api.return_value = {"carbonIntensity": 85.3}
+        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
+        assert is_green is True
+        assert intensity == 85
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_dirty(self, mock_api):
+        mock_api.return_value = {"carbonIntensity": 450.7}
+        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
+        assert is_green is False
+        assert intensity == 451
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_api_error(self, mock_api):
+        mock_api.return_value = None
+        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
+        assert is_green is None
+        assert intensity is None
+
+    def test_no_api_key(self):
+        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "")
+        assert is_green is None
+        assert intensity is None
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_no_intensity_in_response(self, mock_api):
+        mock_api.return_value = {"zone": "DE"}
+        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
+        assert is_green is None
+        assert intensity is None
+
+
+class TestElectricityMapsGetForecast:
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_finds_green_window(self, mock_api):
+        mock_api.return_value = {
+            "forecast": [
+                {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
+                {"carbonIntensity": 80, "datetime": "2026-03-10T14:00Z"},
+            ]
+        }
+        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
+        assert dt == "2026-03-10T14:00Z"
+        assert intensity == 80
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_no_green_window(self, mock_api):
+        mock_api.return_value = {
+            "forecast": [
+                {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
+                {"carbonIntensity": 350, "datetime": "2026-03-10T14:00Z"},
+            ]
+        }
+        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_api_error(self, mock_api):
+        mock_api.return_value = None
+        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
+        assert dt is None
+        assert intensity is None
+
+    def test_no_api_key(self):
+        dt, intensity = electricity_maps.get_forecast("DE", 200, "")
+        assert dt is None
+        assert intensity is None
+
+
+class TestElectricityMapsGetHistoryTrend:
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_decreasing(self, mock_api):
+        mock_api.return_value = {
+            "history": [
+                {"carbonIntensity": 400}, {"carbonIntensity": 380},
+                {"carbonIntensity": 360}, {"carbonIntensity": 300},
+                {"carbonIntensity": 280}, {"carbonIntensity": 260},
+            ]
+        }
+        assert electricity_maps.get_history_trend("DE", "key") == "decreasing"
+
+    @mock.patch("providers.electricity_maps.api_request_with_header")
+    def test_api_error(self, mock_api):
+        mock_api.return_value = None
+        assert electricity_maps.get_history_trend("DE", "key") is None
+
+    def test_no_api_key(self):
+        assert electricity_maps.get_history_trend("DE", "") is None
 
 
 # ---------------------------------------------------------------------------
@@ -375,28 +477,28 @@ class TestEiaGetHistoryTrend:
 # ---------------------------------------------------------------------------
 
 class TestGridstatusApiRequest:
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_success(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {"data": [{"interval_start_utc": "2026-03-10T12:00:00+00:00"}]},
         )
-        result = check_grid.gridstatus_api_request("https://api.gridstatus.io/v1/test", "my-key")
+        result = api_request_with_header("https://api.gridstatus.io/v1/test", "x-api-key", "my-key")
         assert result is not None
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("x-api-key") == "my-key"
 
-    @mock.patch("check_grid.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_auth_error(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
-        result = check_grid.gridstatus_api_request("https://api.gridstatus.io/v1/test", "bad-key")
+        result = api_request_with_header("https://api.gridstatus.io/v1/test", "x-api-key", "bad-key")
         assert result is None
         assert mock_get.call_count == 1
 
 
 class TestGridstatusGetForecast:
-    @mock.patch("check_grid._gridstatus_get_load_forecast")
-    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    @mock.patch("providers.gridstatus._get_load_forecast")
+    @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_finds_green_window(self, mock_renew, mock_load):
         mock_renew.return_value = {
             "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
@@ -406,13 +508,13 @@ class TestGridstatusGetForecast:
             "2026-03-10T12:00:00+00:00": 10000,
             "2026-03-10T18:00:00+00:00": 10000,
         }
-        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 250, "key")
+        dt, intensity = gridstatus.get_forecast("CISO", 250, "key")
         # At 18:00: 10000/10000 = 100% renewable -> 0 intensity
         assert dt == "2026-03-10T18:00:00+00:00"
         assert intensity == 0
 
-    @mock.patch("check_grid._gridstatus_get_load_forecast")
-    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    @mock.patch("providers.gridstatus._get_load_forecast")
+    @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_no_green_window(self, mock_renew, mock_load):
         mock_renew.return_value = {
             "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
@@ -420,34 +522,33 @@ class TestGridstatusGetForecast:
         mock_load.return_value = {
             "2026-03-10T12:00:00+00:00": 10000,
         }
-        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 100, "key")
-        # 150/10000 = 1.5% renewable -> 542 intensity, > 100 threshold
+        dt, intensity = gridstatus.get_forecast("CISO", 100, "key")
         assert dt == "none_in_forecast"
         assert intensity is None
 
-    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_no_renewable_data(self, mock_renew):
         mock_renew.return_value = {}
-        dt, intensity = check_grid.gridstatus_get_forecast("CISO", 250, "key")
+        dt, intensity = gridstatus.get_forecast("CISO", 250, "key")
         assert dt is None
         assert intensity is None
 
     def test_unsupported_zone(self):
-        dt, intensity = check_grid.gridstatus_get_forecast("BPAT", 250, "key")
+        dt, intensity = gridstatus.get_forecast("BPAT", 250, "key")
         assert dt is None
         assert intensity is None
 
-    @mock.patch("check_grid._gridstatus_get_load_forecast")
-    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    @mock.patch("providers.gridstatus._get_load_forecast")
+    @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_no_key_returns_none(self, mock_renew, mock_load):
         """get_forecast returns None for US zones without GridStatus key."""
-        dt, intensity = check_grid.get_forecast("CISO", "", 250, check_grid.PROVIDER_EIA, "")
+        dt, intensity = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "")
         assert dt is None
         assert intensity is None
         mock_renew.assert_not_called()
 
-    @mock.patch("check_grid._gridstatus_get_load_forecast")
-    @mock.patch("check_grid._gridstatus_get_renewable_forecast")
+    @mock.patch("providers.gridstatus._get_load_forecast")
+    @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_get_forecast_with_key(self, mock_renew, mock_load):
         """get_forecast calls gridstatus when key is provided."""
         mock_renew.return_value = {
@@ -457,14 +558,14 @@ class TestGridstatusGetForecast:
             "2026-03-10T18:00:00+00:00": 10000,
         }
         dt, intensity = check_grid.get_forecast(
-            "CISO", "", 250, check_grid.PROVIDER_EIA, "my-gridstatus-key"
+            "CISO", 250, PROVIDER_EIA, "my-gridstatus-key"
         )
         assert dt == "2026-03-10T18:00:00+00:00"
         assert intensity == 0
 
 
 class TestGridstatusRenewableForecast:
-    @mock.patch("check_grid._gridstatus_query_dataset")
+    @mock.patch("providers.gridstatus._query_dataset")
     def test_single_dataset_with_location_filter(self, mock_query):
         """CAISO-style: single dataset with location filter."""
         mock_query.return_value = [
@@ -473,13 +574,13 @@ class TestGridstatusRenewableForecast:
             {"interval_start_utc": "2026-03-10T18:00:00+00:00", "location": "NP15",
              "solar_mw": 2000, "wind_mw": 500},
         ]
-        iso_config = check_grid.GRIDSTATUS_ISO_MAP["CISO"]
-        result = check_grid._gridstatus_get_renewable_forecast(iso_config, "key", "2026-03-10")
+        iso_config = gridstatus.GRIDSTATUS_ISO_MAP["CISO"]
+        result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
         assert "2026-03-10T18:00:00+00:00" in result
         assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 8000
         assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 1500
 
-    @mock.patch("check_grid._gridstatus_query_dataset")
+    @mock.patch("providers.gridstatus._query_dataset")
     def test_separate_solar_wind_datasets(self, mock_query):
         """PJM-style: separate solar and wind datasets."""
         mock_query.side_effect = [
@@ -488,8 +589,8 @@ class TestGridstatusRenewableForecast:
             # wind
             [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "wind_forecast": 2000}],
         ]
-        iso_config = check_grid.GRIDSTATUS_ISO_MAP["PJM"]
-        result = check_grid._gridstatus_get_renewable_forecast(iso_config, "key", "2026-03-10")
+        iso_config = gridstatus.GRIDSTATUS_ISO_MAP["PJM"]
+        result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
         assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 3000
         assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 2000
 
@@ -501,23 +602,23 @@ class TestGridstatusRenewableForecast:
 class TestComputeTrend:
     def test_decreasing(self):
         points = [400, 380, 360, 300, 280, 260]
-        assert check_grid._compute_trend(points) == "decreasing"
+        assert compute_trend(points) == "decreasing"
 
     def test_increasing(self):
         points = [100, 120, 130, 200, 250, 300]
-        assert check_grid._compute_trend(points) == "increasing"
+        assert compute_trend(points) == "increasing"
 
     def test_stable(self):
         points = [200, 200, 200, 200, 200, 200]
-        assert check_grid._compute_trend(points) == "stable"
+        assert compute_trend(points) == "stable"
 
     def test_insufficient_data(self):
-        assert check_grid._compute_trend([100, 200]) is None
+        assert compute_trend([100, 200]) is None
 
 
 class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.detect_provider", return_value=check_grid.PROVIDER_EIA)
+    @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_picks_greenest(self, _mock_detect, mock_check):
         mock_check.side_effect = [
             (True, 200),   # zone A
@@ -529,25 +630,25 @@ class TestCheckMultipleZones:
             {"zone": "NYIS", "runner_label": "label-b"},
             {"zone": "ERCO", "runner_label": "label-c"},
         ]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, "", 250)
+        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
         assert zone == "NYIS"
         assert intensity == 50
         assert label == "label-b"
 
     @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.detect_provider", return_value=check_grid.PROVIDER_EIA)
+    @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_dirty(self, _mock_detect, mock_check):
         mock_check.side_effect = [(False, 400), (False, 500)]
         zones = [{"zone": "ERCO"}, {"zone": "PJM"}]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, "", 250)
+        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
 
     @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.detect_provider", return_value=check_grid.PROVIDER_EIA)
+    @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_errors(self, _mock_detect, mock_check):
         mock_check.side_effect = [(None, None), (None, None)]
         zones = [{"zone": "CISO"}, {"zone": "ERCO"}]
-        zone, intensity, label = check_grid.check_multiple_zones(zones, "", 250)
+        zone, intensity, label = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
 
 
@@ -621,7 +722,7 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "decreasing"
         mock_forecast.return_value = ("2026-03-10T06:00Z", 120)
 
-        check_grid.handle_dirty_grid("GB", "", 250, 400, enable_forecast=False)
+        check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["grid_clean"] == "false"
@@ -638,7 +739,7 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "increasing"
         mock_forecast.return_value = (None, None)
 
-        check_grid.handle_dirty_grid("CISO", "", 250, 400, enable_forecast=True)
+        check_grid.handle_dirty_grid("CISO", 250, 400, enable_forecast=True)
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["grid_clean"] == "false"
@@ -653,13 +754,13 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "decreasing"
         mock_forecast.return_value = ("2026-03-10T18:00:00+00:00", 50)
 
-        check_grid.handle_dirty_grid("CISO", "", 250, 400, enable_forecast=True,
+        check_grid.handle_dirty_grid("CISO", 250, 400, enable_forecast=True,
                                      gridstatus_api_key="gs-key")
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T18:00:00+00:00"
         assert output_calls["forecast_intensity"] == "50"
-        mock_forecast.assert_called_once_with("CISO", "", 250, check_grid.PROVIDER_EIA, "gs-key")
+        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "")
 
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
@@ -668,7 +769,7 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = None
         mock_forecast.return_value = (None, None)
 
-        check_grid.handle_dirty_grid("GB", "", 250, None, enable_forecast=False)
+        check_grid.handle_dirty_grid("GB", 250, None, enable_forecast=False)
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["carbon_intensity"] == "unknown"
@@ -680,8 +781,23 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "stable"
         mock_forecast.return_value = ("none_in_forecast", None)
 
-        check_grid.handle_dirty_grid("GB", "", 250, 400, enable_forecast=False)
+        check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "none_in_forecast"
         assert "forecast_intensity" not in output_calls
+
+    @mock.patch("check_grid.get_forecast")
+    @mock.patch("check_grid.get_history_trend")
+    @mock.patch("check_grid.set_output")
+    def test_electricity_maps_always_gets_forecast(self, mock_output, mock_trend, mock_forecast):
+        """Electricity Maps zones get forecast even without enable_forecast."""
+        mock_trend.return_value = "stable"
+        mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
+
+        check_grid.handle_dirty_grid("DE", 250, 400, enable_forecast=False,
+                                     emaps_api_key="em-key")
+
+        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
+        assert output_calls["forecast_green_at"] == "2026-03-10T14:00Z"
+        mock_forecast.assert_called_once()
