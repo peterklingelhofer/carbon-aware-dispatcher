@@ -31,7 +31,7 @@ stages:
     GRID_ZONE: "auto:detect"
     MAX_CARBON: "250"
   before_script:
-    - pip install -q requests==2.32.*
+    - pip install -q uv && uv pip install --system -q requests==2.32.*
   script:
     - |
       python -c "

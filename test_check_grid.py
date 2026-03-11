@@ -2672,3 +2672,129 @@ class TestEskomForecastHeuristic:
         if dt is not None and dt != "none_in_forecast":
             assert intensity is not None
             assert intensity <= 800
+
+
+# ---------------------------------------------------------------------------
+# auto:nearest preset tests
+# ---------------------------------------------------------------------------
+
+class TestAutoNearestPreset:
+    def test_nearest_with_tz_utc(self):
+        """TZ=UTC should resolve to UTC+0 zones."""
+        with mock.patch.dict(os.environ, {"TZ": "UTC+0"}):
+            zones = check_grid.expand_auto_zones("auto:nearest")
+            zone_ids = [z["zone"] for z in zones]
+            assert "GB-16" in zone_ids or "GB" in zone_ids
+
+    def test_nearest_with_tz_offset_positive(self):
+        """TZ=UTC+5.5 should resolve to India zones."""
+        with mock.patch.dict(os.environ, {"TZ": "UTC+5.5"}):
+            zones = check_grid.expand_auto_zones("auto:nearest")
+            zone_ids = [z["zone"] for z in zones]
+            assert "IN-SO" in zone_ids
+
+    def test_nearest_with_tz_offset_negative(self):
+        """TZ=UTC-8 should resolve to US West zones."""
+        with mock.patch.dict(os.environ, {"TZ": "UTC-8"}):
+            zones = check_grid.expand_auto_zones("auto:nearest")
+            zone_ids = [z["zone"] for z in zones]
+            assert "CISO" in zone_ids
+
+    def test_nearest_fallback_to_cleanest(self):
+        """No TZ env var falls back to system timezone (which resolves to some zones)."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TZ", None)
+            zones = check_grid.expand_auto_zones("auto:nearest")
+            assert len(zones) > 0
+
+    def test_nearest_etc_gmt_inverted(self):
+        """Etc/GMT-5 means UTC+5 (inverted sign)."""
+        with mock.patch.dict(os.environ, {"TZ": "Etc/GMT-5"}):
+            zones = check_grid.expand_auto_zones("auto:nearest")
+            zone_ids = [z["zone"] for z in zones]
+            assert "IN-SO" in zone_ids or "IN-WE" in zone_ids
+
+
+class TestDetectUtcOffset:
+    def test_utc_zero(self):
+        with mock.patch.dict(os.environ, {"TZ": "UTC"}):
+            assert check_grid._detect_utc_offset() == 0
+
+    def test_utc_plus_offset(self):
+        with mock.patch.dict(os.environ, {"TZ": "UTC+5.5"}):
+            assert check_grid._detect_utc_offset() == 5.5
+
+    def test_utc_minus_offset(self):
+        with mock.patch.dict(os.environ, {"TZ": "UTC-8"}):
+            assert check_grid._detect_utc_offset() == -8
+
+    def test_gmt_offset(self):
+        with mock.patch.dict(os.environ, {"TZ": "GMT+3"}):
+            assert check_grid._detect_utc_offset() == 3
+
+    def test_etc_gmt_inverted(self):
+        """Etc/GMT offsets are inverted: Etc/GMT-5 = UTC+5."""
+        with mock.patch.dict(os.environ, {"TZ": "Etc/GMT-5"}):
+            assert check_grid._detect_utc_offset() == 5
+
+    def test_system_fallback(self):
+        """With no TZ env, should fall back to system time."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TZ", None)
+            offset = check_grid._detect_utc_offset()
+            assert offset is not None
+            assert -12 <= offset <= 14
+
+
+# ---------------------------------------------------------------------------
+# Cron schedule optimizer tests
+# ---------------------------------------------------------------------------
+
+class TestSuggestGreenCron:
+    def test_solar_zone(self):
+        """Solar zones should suggest midday cron."""
+        cron, desc = check_grid.suggest_green_cron("CISO")
+        assert cron is not None
+        assert "solar peak" in desc
+
+    def test_hydro_zone(self):
+        """Hydro zones should suggest off-peak cron."""
+        cron, desc = check_grid.suggest_green_cron("BPAT")
+        assert cron is not None
+        assert "off-peak" in desc
+
+    def test_wind_zone(self):
+        """Wind zones should suggest nighttime cron."""
+        cron, desc = check_grid.suggest_green_cron("GB-16")
+        assert cron is not None
+        assert "wind peak" in desc
+
+    def test_unknown_zone_returns_none(self):
+        """Unknown zone should return None."""
+        cron, desc = check_grid.suggest_green_cron("UNKNOWN-ZONE-XYZ")
+        assert cron is None
+        assert desc is None
+
+    def test_cron_format_valid(self):
+        """Cron expression should have 5 fields."""
+        cron, _ = check_grid.suggest_green_cron("CISO")
+        parts = cron.split()
+        assert len(parts) == 5
+        assert parts[0] == "0"  # minute
+        assert 0 <= int(parts[1]) <= 23  # hour
+
+
+# ---------------------------------------------------------------------------
+# NEAREST_ZONES_BY_OFFSET coverage tests
+# ---------------------------------------------------------------------------
+
+class TestNearestZonesMapping:
+    def test_all_major_offsets_covered(self):
+        from providers import NEAREST_ZONES_BY_OFFSET
+        for offset in range(-10, 14):
+            assert offset in NEAREST_ZONES_BY_OFFSET, f"Missing offset {offset}"
+
+    def test_half_hour_offsets(self):
+        from providers import NEAREST_ZONES_BY_OFFSET
+        assert 5.5 in NEAREST_ZONES_BY_OFFSET  # India
+        assert 9.5 in NEAREST_ZONES_BY_OFFSET  # Australia Central
