@@ -220,6 +220,173 @@ DEFAULT_AWS_REGION = "us-east-1"
 # Default RunsOn runner spec
 DEFAULT_RUNSON_SPEC = "2cpu-linux-x64"
 
+# ---------------------------------------------------------------------------
+# Zone -> GCP region mapping
+# ---------------------------------------------------------------------------
+ZONE_TO_GCP_REGION = {
+    # US
+    "CISO": "us-west1",        # Oregon (closest to California)
+    "BANC": "us-west1",
+    "LDWP": "us-west2",        # Los Angeles
+    "BPAT": "us-west1",        # Oregon
+    "SCL": "us-west1",
+    "PSEI": "us-west1",
+    "PJM": "us-east4",         # Northern Virginia
+    "NYIS": "us-east4",
+    "ISNE": "us-east4",
+    "ERCO": "us-south1",       # Dallas
+    "MISO": "us-central1",     # Iowa
+    "SWPP": "us-central1",
+    "TVA": "us-east4",
+    "SOCO": "us-east4",
+    "SRP": "us-west3",         # Salt Lake City
+    "AZPS": "us-west3",
+    # Canada
+    "IESO": "northamerica-northeast2",  # Toronto
+    "AESO": "northamerica-northeast1",  # Montreal
+    "CA-QC": "northamerica-northeast1",
+    "CA-ON": "northamerica-northeast2",
+    "CA-BC": "us-west1",
+    "CA-AB": "northamerica-northeast1",
+    # UK
+    "GB": "europe-west2",      # London
+    "GB-national": "europe-west2",
+    "GB-16": "europe-west2",
+    # Europe
+    "NO-NO1": "europe-north1",  # Finland (closest to Nordics)
+    "SE-SE2": "europe-north1",
+    "FI": "europe-north1",
+    "FR": "europe-west9",       # Paris
+    "DE": "europe-west3",       # Frankfurt
+    "NL": "europe-west4",       # Netherlands
+    "BE": "europe-west1",       # Belgium
+    "CH": "europe-west6",       # Zurich
+    "PL": "europe-central2",    # Warsaw
+    "ES": "europe-southwest1",  # Madrid
+    "PT": "europe-southwest1",
+    "IT-NO": "europe-west8",    # Milan
+    "IE": "europe-west1",
+    "IS": "europe-north1",      # Closest to Iceland
+    # Asia-Pacific
+    "JP-TK": "asia-northeast1", # Tokyo
+    "JP-KN": "asia-northeast2", # Osaka
+    "KR": "asia-northeast3",    # Seoul
+    "IN-NO": "asia-south1",     # Mumbai
+    "IN-SO": "asia-south2",     # Delhi
+    "IN-WE": "asia-south1",
+    "IN-EA": "asia-south1",
+    "IN-NE": "asia-south1",
+    "AU-NSW": "australia-southeast1",  # Sydney
+    "AU-VIC": "australia-southeast2",  # Melbourne
+    "AU-QLD": "australia-southeast1",
+    "AU-SA": "australia-southeast2",
+    "AU-TAS": "australia-southeast2",
+    "SG": "asia-southeast1",    # Singapore
+    "TW": "asia-east1",         # Taiwan
+    "HK": "asia-east2",         # Hong Kong
+    # Latin America
+    "BR-S": "southamerica-east1",   # Sao Paulo
+    "BR-CS": "southamerica-east1",
+    "BR-NE": "southamerica-east1",
+    "BR-N": "southamerica-east1",
+    "CL-SEN": "southamerica-west1", # Santiago
+    "AR": "southamerica-east1",
+    "UY": "southamerica-east1",
+    "CR": "us-east4",
+    "PY": "southamerica-east1",
+    # Africa & Middle East
+    "ZA": "africa-south1",      # Johannesburg (coming soon)
+    "IL": "me-west1",           # Tel Aviv
+    "AE": "me-central1",        # Doha
+    # Open-Meteo fallback zones
+    "KE": "africa-south1",
+    "NG": "europe-west3",       # Closest
+}
+
+DEFAULT_GCP_REGION = "us-central1"
+
+# ---------------------------------------------------------------------------
+# Zone -> Azure region mapping
+# ---------------------------------------------------------------------------
+ZONE_TO_AZURE_REGION = {
+    # US
+    "CISO": "westus2",
+    "BANC": "westus2",
+    "LDWP": "westus2",
+    "BPAT": "westus2",
+    "SCL": "westus2",
+    "PSEI": "westus2",
+    "PJM": "eastus",
+    "NYIS": "eastus",
+    "ISNE": "eastus",
+    "ERCO": "southcentralus",
+    "MISO": "centralus",
+    "SWPP": "centralus",
+    "TVA": "eastus",
+    "SOCO": "eastus",
+    "SRP": "westus3",
+    "AZPS": "westus3",
+    # Canada
+    "IESO": "canadacentral",
+    "AESO": "canadacentral",
+    "CA-QC": "canadaeast",
+    "CA-ON": "canadacentral",
+    "CA-BC": "westus2",
+    "CA-AB": "canadacentral",
+    # UK
+    "GB": "uksouth",
+    "GB-national": "uksouth",
+    "GB-16": "uksouth",
+    # Europe
+    "NO-NO1": "norwayeast",
+    "SE-SE2": "swedencentral",
+    "FI": "swedencentral",
+    "FR": "francecentral",
+    "DE": "germanywestcentral",
+    "NL": "westeurope",
+    "BE": "westeurope",
+    "CH": "switzerlandnorth",
+    "PL": "polandcentral",
+    "ES": "spaincentral",
+    "PT": "spaincentral",
+    "IT-NO": "italynorth",
+    "IE": "northeurope",
+    "IS": "northeurope",
+    # Asia-Pacific
+    "JP-TK": "japaneast",
+    "JP-KN": "japanwest",
+    "KR": "koreacentral",
+    "IN-NO": "centralindia",
+    "IN-SO": "southindia",
+    "IN-WE": "centralindia",
+    "IN-EA": "centralindia",
+    "IN-NE": "centralindia",
+    "AU-NSW": "australiaeast",
+    "AU-VIC": "australiasoutheast",
+    "AU-QLD": "australiaeast",
+    "AU-SA": "australiasoutheast",
+    "AU-TAS": "australiasoutheast",
+    "SG": "southeastasia",
+    "TW": "eastasia",
+    "HK": "eastasia",
+    # Latin America
+    "BR-S": "brazilsouth",
+    "BR-CS": "brazilsouth",
+    "BR-NE": "brazilsouth",
+    "BR-N": "brazilsouth",
+    "UY": "brazilsouth",
+    "AR": "brazilsouth",
+    "CR": "eastus",
+    "PY": "brazilsouth",
+    # Africa & Middle East
+    "ZA": "southafricanorth",
+    "IL": "israelcentral",
+    "AE": "uaenorth",
+    "KE": "southafricanorth",
+}
+
+DEFAULT_AZURE_REGION = "eastus"
+
 
 def get_cloud_region(zone):
     """Get the nearest AWS region for a grid zone.
@@ -227,6 +394,22 @@ def get_cloud_region(zone):
     Returns an AWS region string (e.g., 'us-west-1') or the default.
     """
     return ZONE_TO_AWS_REGION.get(zone, DEFAULT_AWS_REGION)
+
+
+def get_gcp_region(zone):
+    """Get the nearest GCP region for a grid zone.
+
+    Returns a GCP region string (e.g., 'us-west1') or the default.
+    """
+    return ZONE_TO_GCP_REGION.get(zone, DEFAULT_GCP_REGION)
+
+
+def get_azure_region(zone):
+    """Get the nearest Azure region for a grid zone.
+
+    Returns an Azure region string (e.g., 'westus2') or the default.
+    """
+    return ZONE_TO_AZURE_REGION.get(zone, DEFAULT_AZURE_REGION)
 
 
 def format_runson_label(zone, run_id, runner_spec=None):

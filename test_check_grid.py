@@ -9,24 +9,37 @@ import requests
 
 import check_grid
 from providers import (
+    AUTO_CLEANEST_ZONES,
+    AUTO_ESCAPE_COAL_ZONES,
     AUTO_GREEN_ZONES,
+    ESCAPE_COAL_MAPPINGS,
     PROVIDER_AEMO,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENTSOE,
+    PROVIDER_ESKOM,
+    PROVIDER_GRID_INDIA,
+    PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
     PROVIDER_UK,
     detect_provider,
     sort_auto_green_by_time,
     _time_priority_score,
 )
-from providers import aemo, eia, electricity_maps, entsoe, gridstatus, open_meteo, uk
+from providers import (
+    aemo, eia, electricity_maps, entsoe, eskom,
+    grid_india, gridstatus, ons_brazil, open_meteo, uk,
+)
 from providers.base import api_request, api_request_with_header, compute_trend
 from providers.runners import (
     format_runner_label,
     format_runson_label,
+    get_azure_region,
     get_cloud_region,
+    get_gcp_region,
     ZONE_TO_AWS_REGION,
+    ZONE_TO_GCP_REGION,
+    ZONE_TO_AZURE_REGION,
 )
 
 
@@ -39,6 +52,7 @@ def _clear_env():
         "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
         "MAX_WAIT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
         "RUNNER_PROVIDER", "RUNNER_SPEC", "GITHUB_RUN_ID", "ENTSOE_TOKEN",
+        "STRATEGY", "DEADLINE_HOURS", "CARBON_POLICY_PATH",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -1734,3 +1748,483 @@ class TestCheckGridDispatchRouting:
         mock_trend.return_value = None
         check_grid.get_history_trend("ZA", PROVIDER_OPEN_METEO)
         mock_trend.assert_called_once_with("ZA")
+
+    # --- New provider routing tests ---
+
+    @mock.patch("providers.grid_india.check_carbon_intensity")
+    def test_check_routes_to_grid_india(self, mock_check):
+        mock_check.return_value = (True, 300)
+        check_grid.check_carbon_intensity("IN-NO", 500, PROVIDER_GRID_INDIA)
+        mock_check.assert_called_once_with("IN-NO", 500)
+
+    @mock.patch("providers.ons_brazil.check_carbon_intensity")
+    def test_check_routes_to_ons_brazil(self, mock_check):
+        mock_check.return_value = (True, 100)
+        check_grid.check_carbon_intensity("BR-S", 250, PROVIDER_ONS_BRAZIL)
+        mock_check.assert_called_once_with("BR-S", 250)
+
+    @mock.patch("providers.eskom.check_carbon_intensity")
+    def test_check_routes_to_eskom(self, mock_check):
+        mock_check.return_value = (False, 750)
+        check_grid.check_carbon_intensity("ZA", 250, PROVIDER_ESKOM)
+        mock_check.assert_called_once_with("ZA", 250)
+
+    @mock.patch("providers.grid_india.get_forecast")
+    def test_forecast_routes_to_grid_india(self, mock_forecast):
+        mock_forecast.return_value = (None, None)
+        check_grid.get_forecast("IN-SO", 250, PROVIDER_GRID_INDIA)
+        mock_forecast.assert_called_once_with("IN-SO", 250)
+
+    @mock.patch("providers.ons_brazil.get_forecast")
+    def test_forecast_routes_to_ons_brazil(self, mock_forecast):
+        mock_forecast.return_value = (None, None)
+        check_grid.get_forecast("BR-NE", 250, PROVIDER_ONS_BRAZIL)
+        mock_forecast.assert_called_once_with("BR-NE", 250)
+
+    @mock.patch("providers.eskom.get_forecast")
+    def test_forecast_routes_to_eskom(self, mock_forecast):
+        mock_forecast.return_value = (None, None)
+        check_grid.get_forecast("ZA", 250, PROVIDER_ESKOM)
+        mock_forecast.assert_called_once_with("ZA", 250)
+
+    @mock.patch("providers.grid_india.get_history_trend")
+    def test_trend_routes_to_grid_india(self, mock_trend):
+        mock_trend.return_value = None
+        check_grid.get_history_trend("IN-WE", PROVIDER_GRID_INDIA)
+        mock_trend.assert_called_once_with("IN-WE")
+
+    @mock.patch("providers.ons_brazil.get_history_trend")
+    def test_trend_routes_to_ons_brazil(self, mock_trend):
+        mock_trend.return_value = None
+        check_grid.get_history_trend("BR-S", PROVIDER_ONS_BRAZIL)
+        mock_trend.assert_called_once_with("BR-S")
+
+    @mock.patch("providers.eskom.get_history_trend")
+    def test_trend_routes_to_eskom(self, mock_trend):
+        mock_trend.return_value = None
+        check_grid.get_history_trend("ZA", PROVIDER_ESKOM)
+        mock_trend.assert_called_once_with("ZA")
+
+
+# --- New provider detection tests ---
+
+class TestNewProviderDetection:
+    def test_india_zones_detect_grid_india(self):
+        for zone in ["IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"]:
+            assert detect_provider(zone) == PROVIDER_GRID_INDIA
+
+    def test_brazil_zones_detect_ons_brazil(self):
+        for zone in ["BR-S", "BR-SE", "BR-CS", "BR-NE", "BR-N"]:
+            assert detect_provider(zone) == PROVIDER_ONS_BRAZIL
+
+    def test_south_africa_detects_eskom(self):
+        assert detect_provider("ZA") == PROVIDER_ESKOM
+
+    def test_india_zone_not_uk(self):
+        assert detect_provider("IN-NO") != PROVIDER_UK
+
+    def test_brazil_zone_not_eia(self):
+        assert detect_provider("BR-S") != PROVIDER_EIA
+
+
+# --- Grid India provider tests ---
+
+class TestGridIndiaProvider:
+    def test_unknown_zone(self):
+        is_green, intensity = grid_india.check_carbon_intensity("XX", 250)
+        assert is_green is None
+        assert intensity is None
+
+    def test_estimate_from_dict_data(self):
+        data = {
+            "coal": 5000,
+            "solar": 2000,
+            "wind": 1000,
+            "hydro": 500,
+            "nuclear": 500,
+        }
+        intensity = grid_india._estimate_from_national_mix(data)
+        assert intensity is not None
+        assert 0 < intensity < 820  # Should be between pure coal and zero
+
+    def test_estimate_from_empty_data(self):
+        assert grid_india._estimate_from_national_mix({}) is None
+
+    def test_estimate_from_list_data(self):
+        data = [{"coal": 3000, "solar": 1000}]
+        intensity = grid_india._estimate_from_national_mix(data)
+        assert intensity is not None
+
+    @mock.patch("providers.grid_india._fetch_generation_data")
+    def test_check_intensity_api_failure(self, mock_fetch):
+        mock_fetch.return_value = None
+        is_green, intensity = grid_india.check_carbon_intensity("IN-NO", 250)
+        assert is_green is None
+
+    @mock.patch("providers.grid_india._fetch_generation_data")
+    def test_check_intensity_with_data(self, mock_fetch):
+        mock_fetch.return_value = {"coal": 5000, "solar": 3000, "wind": 2000}
+        is_green, intensity = grid_india.check_carbon_intensity("IN-SO", 500)
+        assert is_green is not None
+        assert intensity is not None
+
+    def test_forecast_returns_none(self):
+        assert grid_india.get_forecast("IN-NO", 250) == (None, None)
+
+    def test_trend_returns_none(self):
+        assert grid_india.get_history_trend("IN-NO") is None
+
+
+# --- ONS Brazil provider tests ---
+
+class TestOnsBrazilProvider:
+    def test_unknown_zone(self):
+        is_green, intensity = ons_brazil.check_carbon_intensity("XX", 250)
+        assert is_green is None
+        assert intensity is None
+
+    def test_calculate_intensity_hydro_dominant(self):
+        gen = {"hidraulica": 7000, "termica": 1000, "eolica": 1500, "solar": 500}
+        intensity = ons_brazil._calculate_intensity(gen)
+        assert intensity is not None
+        assert intensity < 200  # Hydro-dominant grid should be clean
+
+    def test_calculate_intensity_empty(self):
+        assert ons_brazil._calculate_intensity({}) is None
+
+    def test_parse_energy_balance_dict(self):
+        data = {"hidraulica": 5000, "termica": 2000}
+        result = ons_brazil._parse_energy_balance(data)
+        assert result is not None
+        assert "hidraulica" in result
+
+    def test_parse_energy_balance_list(self):
+        data = [
+            {"fonte": "hidraulica", "geracao": 5000},
+            {"fonte": "eolica", "geracao": 1000},
+        ]
+        result = ons_brazil._parse_energy_balance(data)
+        assert result is not None
+
+    def test_parse_energy_balance_none(self):
+        assert ons_brazil._parse_energy_balance(None) is None
+
+    @mock.patch("providers.ons_brazil._fetch_energy_balance")
+    def test_check_intensity_api_failure(self, mock_fetch):
+        mock_fetch.return_value = None
+        is_green, intensity = ons_brazil.check_carbon_intensity("BR-S", 250)
+        assert is_green is None
+
+    def test_forecast_returns_none(self):
+        assert ons_brazil.get_forecast("BR-S", 250) == (None, None)
+
+    def test_trend_returns_none(self):
+        assert ons_brazil.get_history_trend("BR-S") is None
+
+
+# --- Eskom provider tests ---
+
+class TestEskomProvider:
+    def test_unknown_zone(self):
+        is_green, intensity = eskom.check_carbon_intensity("XX", 250)
+        assert is_green is None
+        assert intensity is None
+
+    def test_estimation_without_api_data(self):
+        intensity = eskom._estimate_intensity(None)
+        assert intensity is not None
+        assert 600 < intensity < 900  # SA grid is ~85% coal
+
+    def test_estimation_with_api_data(self):
+        data = {"coal": 30000, "nuclear": 2000, "wind": 1000, "solar": 500}
+        intensity = eskom._estimate_intensity(data)
+        assert intensity is not None
+        assert intensity > 500  # Coal-dominant
+
+    @mock.patch("providers.eskom._fetch_generation_data")
+    def test_check_always_returns_value(self, mock_fetch):
+        """Eskom should always return a value (estimation fallback)."""
+        mock_fetch.return_value = None
+        is_green, intensity = eskom.check_carbon_intensity("ZA", 250)
+        assert is_green is not None
+        assert intensity is not None
+        assert is_green is False  # SA grid is too dirty for 250 threshold
+
+    @mock.patch("providers.eskom._fetch_generation_data")
+    def test_check_with_high_threshold(self, mock_fetch):
+        mock_fetch.return_value = None
+        is_green, intensity = eskom.check_carbon_intensity("ZA", 1000)
+        assert is_green is True  # Even SA is green at 1000 threshold
+
+    def test_forecast_returns_none(self):
+        assert eskom.get_forecast("ZA", 250) == (None, None)
+
+    def test_trend_returns_none(self):
+        assert eskom.get_history_trend("ZA") is None
+
+
+# --- Auto presets tests ---
+
+class TestAutoCleanestPreset:
+    def test_auto_cleanest_expansion(self):
+        result = check_grid.expand_auto_zones("auto:cleanest")
+        assert result is not None
+        assert len(result) == len(AUTO_CLEANEST_ZONES)
+        zone_names = {z["zone"] for z in result}
+        expected_names = {z["zone"] for z in AUTO_CLEANEST_ZONES}
+        assert zone_names == expected_names
+
+    def test_auto_cleanest_includes_free_providers(self):
+        result = check_grid.expand_auto_zones("auto:cleanest")
+        zone_names = {z["zone"] for z in result}
+        # Should include zones from each free provider
+        assert "CISO" in zone_names  # EIA
+        assert "GB" in zone_names or "GB-16" in zone_names  # UK
+        assert "AU-TAS" in zone_names  # AEMO
+        assert "IN-SO" in zone_names  # Grid India
+        assert "BR-S" in zone_names  # ONS Brazil
+        assert "ZA" in zone_names  # Eskom
+
+    def test_auto_cleanest_case_insensitive(self):
+        result = check_grid.expand_auto_zones("AUTO:CLEANEST")
+        assert result is not None
+
+
+class TestAutoEscapeCoalPreset:
+    def test_escape_coal_expansion(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal")
+        assert result is not None
+        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
+
+    def test_escape_coal_specific_zone(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:IN")
+        assert result is not None
+        zone_names = {z["zone"] for z in result}
+        # Should contain clean alternatives for India
+        expected = set(ESCAPE_COAL_MAPPINGS["IN"])
+        assert zone_names == expected
+
+    def test_escape_coal_china(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:CN")
+        assert result is not None
+        zone_names = {z["zone"] for z in result}
+        assert "NZ-NZN" in zone_names or "AU-TAS" in zone_names
+
+    def test_escape_coal_poland(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:PL")
+        assert result is not None
+        zone_names = {z["zone"] for z in result}
+        assert "NO-NO1" in zone_names
+
+    def test_escape_coal_unknown_zone_uses_default(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:XX")
+        assert result is not None
+        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
+
+    def test_escape_coal_mappings_exist(self):
+        """All dirty-grid mappings should have valid clean alternatives."""
+        for dirty, alternatives in ESCAPE_COAL_MAPPINGS.items():
+            assert len(alternatives) > 0, f"No alternatives for {dirty}"
+
+
+class TestParseZonesAutoPresets:
+    def test_parse_auto_cleanest(self):
+        result = check_grid.parse_zones_input("auto:cleanest")
+        assert result is not None
+        assert len(result) > 0
+
+    def test_parse_auto_escape_coal(self):
+        result = check_grid.parse_zones_input("auto:escape-coal")
+        assert result is not None
+        assert len(result) > 0
+
+    def test_parse_auto_escape_coal_specific(self):
+        result = check_grid.parse_zones_input("auto:escape-coal:ZA")
+        assert result is not None
+        zone_names = {z["zone"] for z in result}
+        assert "IS" in zone_names  # Iceland is in ZA escape list
+
+
+# --- GCP and Azure region tests ---
+
+class TestGcpRegionMapping:
+    def test_us_zones(self):
+        assert get_gcp_region("CISO") == "us-west1"
+        assert get_gcp_region("PJM") == "us-east4"
+        assert get_gcp_region("ERCO") == "us-south1"
+
+    def test_eu_zones(self):
+        assert get_gcp_region("DE") == "europe-west3"
+        assert get_gcp_region("FR") == "europe-west9"
+        assert get_gcp_region("NO-NO1") == "europe-north1"
+
+    def test_apac_zones(self):
+        assert get_gcp_region("JP-TK") == "asia-northeast1"
+        assert get_gcp_region("AU-NSW") == "australia-southeast1"
+        assert get_gcp_region("IN-NO") == "asia-south1"
+
+    def test_latam_zones(self):
+        assert get_gcp_region("BR-S") == "southamerica-east1"
+
+    def test_default_region(self):
+        assert get_gcp_region("UNKNOWN-ZONE") == "us-central1"
+
+
+class TestAzureRegionMapping:
+    def test_us_zones(self):
+        assert get_azure_region("CISO") == "westus2"
+        assert get_azure_region("PJM") == "eastus"
+        assert get_azure_region("ERCO") == "southcentralus"
+
+    def test_eu_zones(self):
+        assert get_azure_region("DE") == "germanywestcentral"
+        assert get_azure_region("FR") == "francecentral"
+        assert get_azure_region("NO-NO1") == "norwayeast"
+        assert get_azure_region("SE-SE2") == "swedencentral"
+
+    def test_apac_zones(self):
+        assert get_azure_region("JP-TK") == "japaneast"
+        assert get_azure_region("AU-NSW") == "australiaeast"
+        assert get_azure_region("IN-NO") == "centralindia"
+
+    def test_africa_zones(self):
+        assert get_azure_region("ZA") == "southafricanorth"
+
+    def test_default_region(self):
+        assert get_azure_region("UNKNOWN-ZONE") == "eastus"
+
+
+# --- Cloud region recommender output tests ---
+
+class TestCloudRegionRecommender:
+    def test_set_runner_outputs_includes_all_clouds(self):
+        """set_runner_outputs should set gcp_region and azure_region."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            output_file = f.name
+        os.environ["GITHUB_OUTPUT"] = output_file
+        try:
+            check_grid.set_runner_outputs(
+                "CISO", None, "", "", ""
+            )
+            with open(output_file) as f:
+                content = f.read()
+            assert "cloud_region=us-west-1" in content
+            assert "gcp_region=us-west1" in content
+            assert "azure_region=westus2" in content
+        finally:
+            os.unlink(output_file)
+
+
+# --- Carbon policy (org config) tests ---
+
+class TestCarbonPolicy:
+    def test_no_policy_file(self):
+        os.environ["CARBON_POLICY_PATH"] = "/nonexistent/path.yml"
+        policy = check_grid.load_carbon_policy()
+        assert policy == {}
+
+    def test_load_simple_policy(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", delete=False
+        ) as f:
+            f.write("max_carbon_intensity: 150\n")
+            f.write("grid_zones: 'auto:green'\n")
+            f.write("enable_forecast: true\n")
+            f.write("# This is a comment\n")
+            f.write("strategy: queue\n")
+            policy_path = f.name
+
+        os.environ["CARBON_POLICY_PATH"] = policy_path
+        try:
+            policy = check_grid.load_carbon_policy()
+            assert policy["max_carbon_intensity"] == "150"
+            assert policy["grid_zones"] == "auto:green"
+            assert policy["enable_forecast"] == "true"
+            assert policy["strategy"] == "queue"
+        finally:
+            os.unlink(policy_path)
+
+    def test_policy_ignores_comments_and_blanks(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", delete=False
+        ) as f:
+            f.write("# Comment\n\n")
+            f.write("max_carbon_intensity: 200\n")
+            f.write("\n# Another comment\n")
+            policy_path = f.name
+
+        os.environ["CARBON_POLICY_PATH"] = policy_path
+        try:
+            policy = check_grid.load_carbon_policy()
+            assert len(policy) == 1
+            assert policy["max_carbon_intensity"] == "200"
+        finally:
+            os.unlink(policy_path)
+
+
+# --- Queue strategy tests ---
+
+class TestQueueStrategy:
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid.get_forecast")
+    def test_queue_find_optimal_window_found(self, mock_forecast, mock_check):
+        mock_forecast.return_value = ("2026-03-10T14:00Z", 120)
+        zones = [{"zone": "CISO", "runner_label": None}]
+        zone, time, intensity = check_grid.queue_find_optimal_window(
+            zones, 250, 24
+        )
+        assert zone == "CISO"
+        assert time == "2026-03-10T14:00Z"
+        assert intensity == 120
+
+    @mock.patch("check_grid.get_forecast")
+    def test_queue_find_optimal_window_none(self, mock_forecast):
+        mock_forecast.return_value = ("none_in_forecast", None)
+        zones = [{"zone": "PJM", "runner_label": None}]
+        zone, time, intensity = check_grid.queue_find_optimal_window(
+            zones, 250, 24
+        )
+        assert zone is None
+
+    @mock.patch("check_grid.get_forecast")
+    def test_queue_picks_cleanest_forecast(self, mock_forecast):
+        def side_effect(zone, max_carbon, provider, *args, **kwargs):
+            if zone == "CISO":
+                return ("2026-03-10T14:00Z", 150)
+            if zone == "BPAT":
+                return ("2026-03-10T12:00Z", 80)
+            return (None, None)
+
+        mock_forecast.side_effect = side_effect
+        zones = [
+            {"zone": "CISO", "runner_label": None},
+            {"zone": "BPAT", "runner_label": None},
+        ]
+        zone, time, intensity = check_grid.queue_find_optimal_window(
+            zones, 250, 24
+        )
+        assert zone == "BPAT"  # Lower intensity
+        assert intensity == 80
+
+
+# --- Inline mode simplification test ---
+
+class TestInlineMode:
+    @mock.patch("check_grid.check_carbon_intensity")
+    def test_inline_no_workflow_id(self, mock_check):
+        """Inline mode should work without workflow_id or github_token."""
+        mock_check.return_value = (True, 100)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            output_file = f.name
+        os.environ["GITHUB_OUTPUT"] = output_file
+        os.environ["GRID_ZONE"] = "GB"
+        os.environ.pop("WORKFLOW_ID", None)
+        os.environ.pop("GITHUB_TOKEN", None)
+        try:
+            # Should not raise; inline mode doesn't need token
+            check_grid.main()
+            with open(output_file) as f:
+                content = f.read()
+            assert "grid_clean=true" in content
+        finally:
+            os.unlink(output_file)
