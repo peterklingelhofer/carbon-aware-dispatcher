@@ -160,8 +160,51 @@ def get_history_trend(zone):
 
 
 def get_forecast(zone, max_carbon):
-    """Grid India forecast: not available via the public API.
+    """Estimate future green windows from India's known generation patterns.
 
-    Returns (None, None).
+    India's grid gets significantly cleaner during daytime (solar peak 10am-4pm IST).
+    Southern grid (IN-SO) is cleanest due to higher solar/wind penetration.
+    IST = UTC+5:30.
+
+    Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    return None, None
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = now_utc.astimezone(ist)
+    local_hour = now_ist.hour
+
+    # India's grid is ~60% coal but solar reduces midday intensity significantly.
+    # Southern grid (IN-SO): ~30-40% renewables midday -> ~350-450 gCO2eq/kWh
+    # Other regions: ~20-30% renewables midday -> ~450-550 gCO2eq/kWh
+    # Night: ~600-700 gCO2eq/kWh (all thermal)
+    is_south = zone == "IN-SO"
+    midday_intensity = 380 if is_south else 480
+    shoulder_intensity = 450 if is_south else 550
+
+    # If we're already in a green window, no forecast needed
+    if 10 <= local_hour <= 15 and midday_intensity <= max_carbon:
+        return None, None
+
+    # Find next solar peak window
+    for hours_ahead in range(1, 49):
+        future = now_ist + timedelta(hours=hours_ahead)
+        future_hour = future.hour
+
+        if 10 <= future_hour <= 15:
+            est_intensity = midday_intensity
+        elif 8 <= future_hour <= 17:
+            est_intensity = shoulder_intensity
+        else:
+            continue
+
+        if est_intensity <= max_carbon:
+            future_utc = future.astimezone(timezone.utc)
+            dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
+            print(f"  Forecast: India solar peak ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                  f"(heuristic based on solar generation patterns)")
+            return dt_str, est_intensity
+
+    print(f"  Forecast: no estimated green window in 48h for {zone}.")
+    return "none_in_forecast", None

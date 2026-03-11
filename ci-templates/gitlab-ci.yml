@@ -1,0 +1,93 @@
+# Carbon-Aware CI for GitLab CI/CD
+#
+# Checks grid carbon intensity before running heavy jobs.
+# Include this template in your .gitlab-ci.yml:
+#
+#   include:
+#     - local: 'ci-templates/gitlab-ci.yml'
+#
+#   my-heavy-job:
+#     extends: .carbon-aware-job
+#     script:
+#       - echo "Running on clean energy!"
+#
+# Or copy the carbon-check job directly into your pipeline.
+#
+# Environment variables (set in GitLab CI/CD Settings > Variables):
+#   GRID_ZONE: Grid zone to check (default: auto:detect)
+#   MAX_CARBON: Max gCO2eq/kWh threshold (default: 250)
+#   ELECTRICITY_MAPS_TOKEN: Optional, for global coverage
+#   ENTSOE_TOKEN: Optional, for EU coverage
+#   EIA_API_KEY: Optional, for higher US rate limits
+
+stages:
+  - carbon-check
+  - build
+
+.carbon-check-base:
+  stage: carbon-check
+  image: python:3.11-slim
+  variables:
+    GRID_ZONE: "auto:detect"
+    MAX_CARBON: "250"
+  before_script:
+    - pip install -q requests==2.32.*
+  script:
+    - |
+      python -c "
+      import os, sys
+      sys.path.insert(0, '.')
+      from check_grid import parse_zones_input, check_carbon_intensity, detect_provider
+      from providers import detect_provider
+
+      zone_str = os.environ.get('GRID_ZONE', 'auto:detect')
+      max_carbon = float(os.environ.get('MAX_CARBON', '250'))
+      entsoe_token = os.environ.get('ENTSOE_TOKEN', '')
+
+      zones = parse_zones_input(zone_str)
+      if not zones:
+          print('No valid zones. Exiting.')
+          sys.exit(1)
+
+      zone = zones[0]['zone']
+      provider = detect_provider(zone, entsoe_token)
+      is_green, intensity = check_carbon_intensity(
+          zone, max_carbon, provider,
+          eia_api_key=os.environ.get('EIA_API_KEY', ''),
+          emaps_api_key=os.environ.get('ELECTRICITY_MAPS_TOKEN', ''),
+          entsoe_token=entsoe_token,
+      )
+
+      if is_green:
+          print(f'Grid is clean! ({intensity} gCO2eq/kWh)')
+          # Write dotenv file for downstream jobs
+          with open('carbon.env', 'w') as f:
+              f.write(f'GRID_CLEAN=true\n')
+              f.write(f'CARBON_INTENSITY={intensity}\n')
+              f.write(f'GRID_ZONE={zone}\n')
+      else:
+          print(f'Grid is dirty ({intensity} gCO2eq/kWh > {max_carbon}). Skipping.')
+          with open('carbon.env', 'w') as f:
+              f.write(f'GRID_CLEAN=false\n')
+              f.write(f'CARBON_INTENSITY={intensity or \"unknown\"}\n')
+      "
+  artifacts:
+    reports:
+      dotenv: carbon.env
+
+carbon-check:
+  extends: .carbon-check-base
+
+# Extend this in your jobs to only run when grid is clean:
+#
+#   my-heavy-job:
+#     extends: .carbon-aware-job
+#     script:
+#       - echo "Running on clean energy!"
+.carbon-aware-job:
+  stage: build
+  needs:
+    - job: carbon-check
+      artifacts: true
+  rules:
+    - if: '$GRID_CLEAN == "true"'
