@@ -12,7 +12,10 @@ on:
         description: "Comma-separated zones (or auto:green, auto:cleanest)"
         required: false
         type: string
-        default: "GB,CISO,AU-NSW,FR"
+        # Default to the unlimited free providers (UK + Australia) so the demo
+        # gives a clean result with no API key. Add CISO/FR with an EIA key or
+        # entsoe_token secret for US and European coverage.
+        default: "GB,AU-NSW"
       max_carbon:
         description: "Max carbon intensity threshold (gCO2eq/kWh)"
         required: false
