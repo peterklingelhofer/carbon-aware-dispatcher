@@ -34,11 +34,16 @@ from providers import (
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
     PROVIDER_UK,
+    aemo,
     detect_provider,
-)
-from providers import (
-    aemo, eia, electricity_maps, entsoe, eskom,
-    grid_india, ons_brazil, open_meteo, uk,
+    eia,
+    electricity_maps,
+    entsoe,
+    eskom,
+    grid_india,
+    ons_brazil,
+    open_meteo,
+    uk,
 )
 
 # Provider display names for the wizard
@@ -93,7 +98,9 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
     # Check if API key is available for zones that need it
     if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
         result["status"] = "skipped"
-        result["error"] = "No electricity_maps_token. Get free at https://portal.electricitymaps.com/"
+        result["error"] = (
+            "No electricity_maps_token. Get free at https://portal.electricitymaps.com/"
+        )
         return result
 
     if provider == PROVIDER_ENTSOE and not entsoe_token:
@@ -109,8 +116,11 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
             result["error"] = f"Unknown provider: {provider}"
             return result
 
-        keys = {"eia_api_key": eia_api_key, "emaps_api_key": emaps_api_key,
-                "entsoe_token": entsoe_token}
+        keys = {
+            "eia_api_key": eia_api_key,
+            "emaps_api_key": emaps_api_key,
+            "entsoe_token": entsoe_token,
+        }
         resolver = _PROVIDER_AUTH_ARGS.get(provider)
         extra = resolver(keys) if resolver else []
 
@@ -129,8 +139,9 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
     return result
 
 
-def print_results(results, eia_api_key="", emaps_api_key="",
-                  gridstatus_api_key="", entsoe_token=""):
+def print_results(
+    results, eia_api_key="", emaps_api_key="", gridstatus_api_key="", entsoe_token=""
+):
     """Print a formatted summary of test results."""
     print("\n" + "=" * 64)
     print("  Carbon-Aware Dispatcher: Setup Wizard")
@@ -211,7 +222,8 @@ def print_results(results, eia_api_key="", emaps_api_key="",
             if not entsoe_token:
                 has_eu = any(
                     detect_provider(r["zone"]) == PROVIDER_ENTSOE
-                    for r in results if r["status"] == "skipped"
+                    for r in results
+                    if r["status"] == "skipped"
                 )
                 if has_eu:
                     print("    - Add entsoe_token to enable 36 EU country zones")
@@ -230,33 +242,34 @@ def print_results(results, eia_api_key="", emaps_api_key="",
     # Example workflow snippet
     zones_str = ",".join(r["zone"] for r in results if r["status"] == "ok")
     if zones_str:
-        print(f"\n  Custom config from your test:")
+        print("\n  Custom config from your test:")
         print(f"    grid_zones: '{zones_str}'")
-        greenest = min((r for r in results if r["status"] == "ok"),
-                       key=lambda r: r["intensity"])
-        print(f"    Greenest zone right now: {greenest['zone']} "
-              f"({greenest['intensity']} gCO2eq/kWh)")
+        greenest = min((r for r in results if r["status"] == "ok"), key=lambda r: r["intensity"])
+        print(
+            f"    Greenest zone right now: {greenest['zone']} ({greenest['intensity']} gCO2eq/kWh)"
+        )
 
     print("\n" + "=" * 64)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Carbon-Aware Dispatcher: Setup Wizard"
-    )
+    parser = argparse.ArgumentParser(description="Carbon-Aware Dispatcher: Setup Wizard")
     parser.add_argument("--zone", help="Test a single zone")
     parser.add_argument("--zones", help="Test comma-separated zones")
-    parser.add_argument("--auto-green", action="store_true",
-                        help="Test the auto:green preset zones")
-    parser.add_argument("--auto-cleanest", action="store_true",
-                        help="Test the auto:cleanest preset (all free providers)")
+    parser.add_argument(
+        "--auto-green", action="store_true", help="Test the auto:green preset zones"
+    )
+    parser.add_argument(
+        "--auto-cleanest",
+        action="store_true",
+        help="Test the auto:cleanest preset (all free providers)",
+    )
     parser.add_argument("--eia-api-key", default=os.environ.get("EIA_API_KEY", ""))
-    parser.add_argument("--electricity-maps-token",
-                        default=os.environ.get("ELECTRICITY_MAPS_TOKEN", ""))
-    parser.add_argument("--gridstatus-api-key",
-                        default=os.environ.get("GRID_STATUS_API_KEY", ""))
-    parser.add_argument("--entsoe-token",
-                        default=os.environ.get("ENTSOE_TOKEN", ""))
+    parser.add_argument(
+        "--electricity-maps-token", default=os.environ.get("ELECTRICITY_MAPS_TOKEN", "")
+    )
+    parser.add_argument("--gridstatus-api-key", default=os.environ.get("GRID_STATUS_API_KEY", ""))
+    parser.add_argument("--entsoe-token", default=os.environ.get("ENTSOE_TOKEN", ""))
 
     args = parser.parse_args()
 
@@ -281,12 +294,16 @@ def main():
 
     results = []
     for zone in zones:
-        result = test_zone(zone, args.eia_api_key, args.electricity_maps_token,
-                           args.entsoe_token)
+        result = test_zone(zone, args.eia_api_key, args.electricity_maps_token, args.entsoe_token)
         results.append(result)
 
-    print_results(results, args.eia_api_key, args.electricity_maps_token,
-                  args.gridstatus_api_key, args.entsoe_token)
+    print_results(
+        results,
+        args.eia_api_key,
+        args.electricity_maps_token,
+        args.gridstatus_api_key,
+        args.entsoe_token,
+    )
 
     # Exit code: 1 if any errors
     has_errors = any(r["status"] == "error" for r in results)
