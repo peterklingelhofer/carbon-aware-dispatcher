@@ -31,6 +31,13 @@ DEFAULT_TIMEOUT = 30
 MAX_RETRIES = 2
 RETRY_DELAY = 5
 
+# A descriptive User-Agent. Some public grid APIs (notably AEMO) reject or
+# silently empty the default python-requests UA, which breaks them on shared
+# CI runner IPs, so identify ourselves with a real one
+USER_AGENT = (
+    "carbon-aware-dispatcher/1.1 (+https://github.com/peterklingelhofer/carbon-aware-dispatcher)"
+)
+
 # Lifecycle emission factors in gCO2eq/kWh by EIA fuel type code
 # IPCC AR5 (2014) lifecycle median gCO2eq/kWh
 EIA_EMISSION_FACTORS = {
@@ -116,7 +123,9 @@ def request(
     401/403 logs an auth error and returns None immediately. Returns None on
     failure. URLs are never logged because they may carry tokens
     """
-    headers = headers or {}
+    headers = dict(headers or {})
+    # Identify ourselves unless the caller already set a UA
+    headers.setdefault("User-Agent", USER_AGENT)
 
     for attempt in range(MAX_RETRIES + 1):
         try:
