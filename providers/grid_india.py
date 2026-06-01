@@ -7,9 +7,7 @@ Updates every 5 minutes. No authentication required.
 Data source: https://report.grid-india.in/
 """
 
-import requests
-
-from providers.base import FOSSIL_AVG_INTENSITY, DEFAULT_TIMEOUT
+from providers.base import request
 
 # Grid India real-time generation overview API
 GRID_INDIA_API = "https://report.grid-india.in/ReportData/Generation"
@@ -24,19 +22,23 @@ GRID_INDIA_REGIONS = {
 }
 
 # Generation source -> emission factors (gCO2eq/kWh)
+# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
 INDIA_EMISSION_FACTORS = {
     "coal": 820,
-    "thermal": 750,   # Mix of coal + gas
+    "thermal": 750,  # blended coal + gas across two IPCC classes
     "gas": 490,
-    "lignite": 900,
+    "lignite": 1050,
     "diesel": 650,
-    "nuclear": 0,
-    "hydro": 0,
-    "solar": 0,
-    "wind": 0,
-    "biomass": 200,
-    "other": 200,
+    "nuclear": 12,
+    "hydro": 24,
+    "solar": 45,
+    "wind": 12,
+    "biomass": 230,  # IPCC dedicated biomass median
+    "other": 300,
 }
+
+# Fallback factor for unknown fuel types (warned about, then applied)
+DEFAULT_FUEL_FACTOR = 300
 
 
 def _fetch_generation_data():
@@ -44,26 +46,11 @@ def _fetch_generation_data():
 
     Returns parsed JSON or None on error.
     """
-    try:
-        response = requests.get(
-            GRID_INDIA_API,
-            timeout=DEFAULT_TIMEOUT,
-            headers={"Accept": "application/json"},
-        )
-    except requests.RequestException as exc:
-        print(f"::warning::Grid India API error: {exc}")
-        return None
-
-    if response.status_code != 200:
-        print(f"::warning::Grid India API returned {response.status_code}: "
-              f"{response.text[:200]}")
-        return None
-
-    try:
-        return response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        print(f"::warning::Invalid JSON from Grid India API: {response.text[:200]}")
-        return None
+    return request(
+        GRID_INDIA_API,
+        headers={"Accept": "application/json"},
+        parse="json",
+    )
 
 
 def _estimate_from_national_mix(data):
@@ -128,21 +115,27 @@ def check_carbon_intensity(zone, max_carbon):
     Returns (is_green, intensity) or (None, None) on error.
     """
     if zone not in GRID_INDIA_REGIONS:
-        print(f"::warning::Unknown Grid India zone: {zone}. "
-              f"Valid zones: {', '.join(GRID_INDIA_REGIONS.keys())}")
+        print(
+            f"::warning::Unknown Grid India zone: {zone}. "
+            f"Valid zones: {', '.join(GRID_INDIA_REGIONS.keys())}"
+        )
         return None, None
 
     print(f"Checking carbon intensity for zone: {zone} (Grid India)...")
     data = _fetch_generation_data()
     if data is None:
-        print(f"  Grid India API may be temporarily unavailable. "
-              f"Data source: https://report.grid-india.in/")
+        print(
+            "  Grid India API may be temporarily unavailable. "
+            "Data source: https://report.grid-india.in/"
+        )
         return None, None
 
     intensity = _estimate_from_national_mix(data)
     if intensity is None:
-        print(f"::warning::Could not parse Grid India generation data for {zone}. "
-              f"API format may have changed. Check https://report.grid-india.in/")
+        print(
+            f"::warning::Could not parse Grid India generation data for {zone}. "
+            f"API format may have changed. Check https://report.grid-india.in/"
+        )
         return None, None
 
     is_green = intensity <= max_carbon
@@ -168,7 +161,7 @@ def get_forecast(zone, max_carbon):
 
     Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     now_utc = datetime.now(timezone.utc)
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -202,8 +195,10 @@ def get_forecast(zone, max_carbon):
         if est_intensity <= max_carbon:
             future_utc = future.astimezone(timezone.utc)
             dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
-            print(f"  Forecast: India solar peak ~{est_intensity} gCO2eq/kWh at {dt_str} "
-                  f"(heuristic based on solar generation patterns)")
+            print(
+                f"  Forecast: India solar peak ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                f"(heuristic based on solar generation patterns)"
+            )
             return dt_str, est_intensity
 
     print(f"  Forecast: no estimated green window in 48h for {zone}.")
