@@ -137,10 +137,6 @@ runs:
       with:
         enable-cache: true
 
-    - name: Install dependencies
-      shell: bash
-      run: uv run --with requests==2.32.* --python 3.11 python -c "print('deps ready')"
-
     - name: Check grid and dispatch
       id: grid-check
       shell: bash
