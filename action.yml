@@ -1,6 +1,6 @@
 name: 'Carbon-Aware Dispatcher'
-description: 'Sustainable CI/CD — dispatches workflows only when the energy grid is powered by renewables. Free, zero-config for US & UK'
-author: 'Open Source Climate Tech'
+description: 'Run CI/CD only when the energy grid is clean. Free, zero-config carbon-aware scheduling for US, UK and more'
+author: 'Peter Klingelhofer'
 branding:
   icon: 'globe'
   color: 'green'
