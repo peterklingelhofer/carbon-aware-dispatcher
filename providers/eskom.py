@@ -7,9 +7,7 @@ South Africa's grid is heavily coal-dependent (~80-85% coal).
 Data source: https://www.eskom.co.za/dataportal/
 """
 
-import requests
-
-from providers.base import FOSSIL_AVG_INTENSITY, DEFAULT_TIMEOUT
+from providers.base import request
 
 # Eskom supply/demand data endpoint
 ESKOM_API = "https://www.eskom.co.za/dataportal/wp-content/uploads/2023/generation.json"
@@ -21,18 +19,25 @@ ESKOM_STATUS_API = "https://loadshedding.eskom.co.za/LoadShedding/GetStatus"
 ESKOM_ZONES = {"ZA"}
 
 # South Africa's grid emission factors (gCO2eq/kWh)
+# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
 # SA grid is ~85% coal, 5% nuclear, 5% wind/solar, 5% other
 SA_EMISSION_FACTORS = {
     "coal": 820,
-    "nuclear": 0,
-    "hydro": 0,
-    "pumped_storage": 0,
-    "wind": 0,
-    "solar": 0,
+    "nuclear": 12,
+    "hydro": 24,
+    "wind": 12,
+    "solar": 45,
     "gas": 490,
     "diesel": 650,
-    "other": 200,
+    "other": 300,
 }
+
+# Fuel name fragments that represent storage
+# Pumped storage discharge is not zero-carbon, so it is excluded from the mix
+SA_STORAGE_FUELS = ("pumped_storage", "pumped storage", "pumped")
+
+# Fallback factor for unknown fuel types (warned about, then applied)
+DEFAULT_FUEL_FACTOR = 300
 
 # Known SA grid characteristics for estimation when API is unavailable.
 # SA is ~85% coal with some nuclear and renewables.
@@ -47,25 +52,13 @@ def _fetch_generation_data():
 
     Returns parsed JSON or None on error.
     """
-    try:
-        response = requests.get(
-            ESKOM_API,
-            timeout=DEFAULT_TIMEOUT,
-            headers={"Accept": "application/json"},
-        )
-    except requests.RequestException as exc:
-        print(f"::warning::Eskom API error: {exc}")
-        return None
-
-    if response.status_code != 200:
-        # Eskom's data portal URLs change frequently.
-        # Fall back to estimation.
-        return None
-
-    try:
-        return response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        return None
+    # Eskom's data portal URLs change frequently. On any failure we return
+    # None and the caller falls back to estimation from known grid mix
+    return request(
+        ESKOM_API,
+        headers={"Accept": "application/json"},
+        parse="json",
+    )
 
 
 def _estimate_intensity(data):
@@ -105,11 +98,20 @@ def _estimate_intensity(data):
             if gen_mw <= 0:
                 continue
 
-            factor = 200
+            # Storage discharge is not zero-carbon, so exclude it from the mix
+            if any(s in key_lower for s in SA_STORAGE_FUELS):
+                continue
+
+            # keys here are arbitrary JSON fields, so
+            # only count keys that map to a known fuel and skip the rest rather
+            # than counting non-fuel fields at a fallback factor
+            factor = None
             for fuel_key, fuel_factor in SA_EMISSION_FACTORS.items():
                 if fuel_key in key_lower:
                     factor = fuel_factor
                     break
+            if factor is None:
+                continue
             total_gen += gen_mw
             weighted_emissions += gen_mw * factor
 
@@ -140,8 +142,9 @@ def check_carbon_intensity(zone, max_carbon):
     intensity = _estimate_intensity(data)
 
     if data is None:
-        print(f"  Note: Using estimated intensity for SA grid "
-              f"(API unavailable, using known grid mix)")
+        print(
+            "  Note: Using estimated intensity for SA grid (API unavailable, using known grid mix)"
+        )
 
     is_green = intensity <= max_carbon
     status = "GREEN" if is_green else "over threshold"
@@ -167,12 +170,11 @@ def get_forecast(zone, max_carbon):
 
     Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     now_utc = datetime.now(timezone.utc)
     sast = timezone(timedelta(hours=2))
     now_sast = now_utc.astimezone(sast)
-    local_hour = now_sast.hour
 
     # SA grid intensity by time of day (approximate):
     # Midday (10-16): ~650 gCO2eq/kWh (solar generation helps)
@@ -197,10 +199,14 @@ def get_forecast(zone, max_carbon):
         if est_intensity <= max_carbon:
             future_utc = future.astimezone(timezone.utc)
             dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
-            print(f"  Forecast: SA grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
-                  f"(heuristic: SA grid is ~85% coal)")
+            print(
+                f"  Forecast: SA grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                f"(heuristic: SA grid is ~85% coal)"
+            )
             return dt_str, est_intensity
 
-    print(f"  Forecast: SA grid unlikely to go below {max_carbon} gCO2eq/kWh. "
-          f"Consider using auto:escape-coal:ZA to route to clean alternatives.")
+    print(
+        f"  Forecast: SA grid unlikely to go below {max_carbon} gCO2eq/kWh. "
+        f"Consider using auto:escape-coal:ZA to route to clean alternatives."
+    )
     return "none_in_forecast", None

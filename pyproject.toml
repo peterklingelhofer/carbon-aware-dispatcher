@@ -1,10 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "carbon-aware-dispatcher"
-version = "1.0.0"
+version = "1.1.0"
 description = "Sustainable CI/CD: dispatches workflows only when the energy grid is powered by renewables"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
+authors = [
+    { name = "Peter Klingelhofer", email = "peterklingelhofer@gmail.com" },
+]
+keywords = [
+    "carbon",
+    "ci-cd",
+    "sustainability",
+    "github-actions",
+    "green-energy",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "requests>=2.32,<3",
 ]
@@ -12,9 +38,55 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
-    "requests-mock>=1.11",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "types-requests",
 ]
+
+[project.scripts]
+carbon-dispatch = "check_grid:main"
+carbon-dispatch-setup = "setup_wizard:main"
+
+[project.urls]
+Homepage = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
+Repository = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["check_grid.py", "setup_wizard.py", "providers"]
+
+[tool.hatch.build.targets.wheel.sources]
+"check_grid.py" = "check_grid.py"
+"setup_wizard.py" = "setup_wizard.py"
+"providers" = "providers"
 
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
+# Coverage is opt-in (run: pytest --cov) so the default run stays fast
+# and avoids a coverage subprocess hang seen in some sandboxed shells
+addopts = ""
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+no_implicit_optional = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["test_check_grid", "test_env_helpers"]
+ignore_errors = true
+
+[tool.coverage.run]
+source = ["check_grid", "providers", "setup_wizard"]
+
+[tool.coverage.report]
+show_missing = true
