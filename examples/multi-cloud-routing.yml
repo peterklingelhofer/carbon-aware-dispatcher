@@ -33,7 +33,7 @@ jobs:
     if: needs.find-green-region.outputs.clean == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: |
           echo "Deploying to greenest region:"
           echo "  Zone: ${{ needs.find-green-region.outputs.zone }}"
