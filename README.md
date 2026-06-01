@@ -20,7 +20,7 @@ jobs:
         id: carbon
 
       - if: steps.carbon.outputs.grid_clean == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - if: steps.carbon.outputs.grid_clean == 'true'
         run: |
@@ -87,7 +87,7 @@ jobs:
     if: needs.green-check.outputs.grid_clean == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: echo "Building on clean energy!"
 ```
 
@@ -141,7 +141,7 @@ jobs:
     if: needs.pick-region.outputs.clean == 'true'
     runs-on: ${{ needs.pick-region.outputs.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: echo "Building in ${{ needs.pick-region.outputs.runner }}"
 ```
 

@@ -26,7 +26,7 @@ jobs:
           max_carbon_intensity: '150'
 
       - if: steps.carbon.outputs.grid_clean == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - if: steps.carbon.outputs.grid_clean == 'true'
         run: |
