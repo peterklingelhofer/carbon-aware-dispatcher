@@ -13,7 +13,7 @@
 #       if: needs.green-check.outputs.grid_clean == 'true'
 #       runs-on: ubuntu-latest
 #       steps:
-#         - uses: actions/checkout@v4
+#         - uses: actions/checkout@v5
 #         - run: echo "Building on clean energy in ${{ needs.green-check.outputs.grid_zone }}!"
 
 name: Carbon-Aware Check (Reusable)
