@@ -8,9 +8,7 @@ No authentication required.
 Data source: https://integra.ons.org.br/
 """
 
-import requests
-
-from providers.base import FOSSIL_AVG_INTENSITY, DEFAULT_TIMEOUT
+from providers.base import request
 
 # ONS real-time energy balance API
 ONS_API = "https://integra.ons.org.br/api/energiaagora/GetBalancoEnergetico/null"
@@ -19,20 +17,24 @@ ONS_API = "https://integra.ons.org.br/api/energiaagora/GetBalancoEnergetico/null
 ONS_REGIONS = {
     "BR-S": "Sul",
     "BR-SE": "Sudeste",
-    "BR-CS": "Sudeste",       # Alias for Centro-Sudeste
+    "BR-CS": "Sudeste",  # Alias for Centro-Sudeste
     "BR-NE": "Nordeste",
     "BR-N": "Norte",
 }
 
 # Generation source → emission factors (gCO2eq/kWh)
+# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
 BRAZIL_EMISSION_FACTORS = {
-    "hidraulica": 0,     # Hydro (dominant source ~60-70%)
-    "termica": 490,      # Thermal (gas + coal + biomass mix)
-    "eolica": 0,         # Wind
-    "solar": 0,          # Solar
-    "nuclear": 0,        # Nuclear (Angra 1 & 2)
-    "importacao": 200,   # Import (estimated)
+    "hidraulica": 24,  # Hydro (dominant source ~60-70%)
+    "termica": 650,  # Thermal (gas + coal + biomass mix, oil-class median)
+    "eolica": 12,  # Wind
+    "solar": 45,  # Solar
+    "nuclear": 12,  # Nuclear (Angra 1 & 2)
+    "importacao": 300,  # Import (estimated)
 }
+
+# Fallback factor for unknown fuel types (warned about, then applied)
+DEFAULT_FUEL_FACTOR = 300
 
 
 def _fetch_energy_balance():
@@ -40,26 +42,11 @@ def _fetch_energy_balance():
 
     Returns parsed JSON or None on error.
     """
-    try:
-        response = requests.get(
-            ONS_API,
-            timeout=DEFAULT_TIMEOUT,
-            headers={"Accept": "application/json"},
-        )
-    except requests.RequestException as exc:
-        print(f"::warning::ONS Brazil API error: {exc}")
-        return None
-
-    if response.status_code != 200:
-        print(f"::warning::ONS Brazil API returned {response.status_code}: "
-              f"{response.text[:200]}")
-        return None
-
-    try:
-        return response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        print(f"::warning::Invalid JSON from ONS API: {response.text[:200]}")
-        return None
+    return request(
+        ONS_API,
+        headers={"Accept": "application/json"},
+        parse="json",
+    )
 
 
 def _parse_energy_balance(data):
@@ -88,10 +75,12 @@ def _parse_energy_balance(data):
     elif isinstance(data, list):
         for entry in data:
             if isinstance(entry, dict):
-                source = (entry.get("combustivel") or entry.get("fonte")
-                          or entry.get("tipo") or "").lower().strip()
-                gen = (entry.get("geracao") or entry.get("valor")
-                       or entry.get("total") or 0)
+                source = (
+                    (entry.get("combustivel") or entry.get("fonte") or entry.get("tipo") or "")
+                    .lower()
+                    .strip()
+                )
+                gen = entry.get("geracao") or entry.get("valor") or entry.get("total") or 0
                 if isinstance(gen, (int, float)) and gen > 0 and source:
                     result[source] = gen
 
@@ -108,11 +97,17 @@ def _calculate_intensity(generation):
 
     for source, gen_mw in generation.items():
         # Match source name to emission factor
-        factor = 200  # Default for unknown sources
+        factor = None
         for fuel_key, fuel_factor in BRAZIL_EMISSION_FACTORS.items():
             if fuel_key in source:
                 factor = fuel_factor
                 break
+        if factor is None:
+            print(
+                f"::warning::Unknown fuel type '{source}', using fallback "
+                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
+            )
+            factor = DEFAULT_FUEL_FACTOR
         total_gen += gen_mw
         weighted_emissions += gen_mw * factor
 
@@ -128,21 +123,27 @@ def check_carbon_intensity(zone, max_carbon):
     Returns (is_green, intensity) or (None, None) on error.
     """
     if zone not in ONS_REGIONS:
-        print(f"::warning::Unknown ONS Brazil zone: {zone}. "
-              f"Valid zones: {', '.join(ONS_REGIONS.keys())}")
+        print(
+            f"::warning::Unknown ONS Brazil zone: {zone}. "
+            f"Valid zones: {', '.join(ONS_REGIONS.keys())}"
+        )
         return None, None
 
     print(f"Checking carbon intensity for zone: {zone} (ONS Brazil)...")
     data = _fetch_energy_balance()
     if data is None:
-        print(f"  ONS Brazil API may be temporarily unavailable. "
-              f"Data source: https://integra.ons.org.br/")
+        print(
+            "  ONS Brazil API may be temporarily unavailable. "
+            "Data source: https://integra.ons.org.br/"
+        )
         return None, None
 
     generation = _parse_energy_balance(data)
     if generation is None:
-        print(f"::warning::Could not parse ONS energy balance for {zone}. "
-              f"API format may have changed. Check https://integra.ons.org.br/")
+        print(
+            f"::warning::Could not parse ONS energy balance for {zone}. "
+            f"API format may have changed. Check https://integra.ons.org.br/"
+        )
         return None, None
 
     intensity = _calculate_intensity(generation)
@@ -174,7 +175,7 @@ def get_forecast(zone, max_carbon):
 
     Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     now_utc = datetime.now(timezone.utc)
     brt = timezone(timedelta(hours=-3))
@@ -207,8 +208,10 @@ def get_forecast(zone, max_carbon):
         if est_intensity <= max_carbon:
             future_utc = future.astimezone(timezone.utc)
             dt_str = future_utc.strftime("%Y-%m-%dT%H:00Z")
-            print(f"  Forecast: Brazil grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
-                  f"(heuristic based on hydro/thermal dispatch patterns)")
+            print(
+                f"  Forecast: Brazil grid ~{est_intensity} gCO2eq/kWh at {dt_str} "
+                f"(heuristic based on hydro/thermal dispatch patterns)"
+            )
             return dt_str, est_intensity
 
     print(f"  Forecast: no estimated green window in 48h for {zone}.")
