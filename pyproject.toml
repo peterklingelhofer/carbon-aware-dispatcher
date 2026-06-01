@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carbon-aware-dispatcher"
-version = "1.1.0"
-description = "Sustainable CI/CD — dispatches workflows only when the energy grid is powered by renewables"
+version = "1.2.0"
+description = "Run CI/CD only when the energy grid is clean. Free, zero-config carbon-aware scheduling for US, UK and more"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
