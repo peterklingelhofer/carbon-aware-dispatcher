@@ -23,12 +23,18 @@ from providers import (
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
     PROVIDER_UK,
+    aemo,
     detect_provider,
+    eia,
+    electricity_maps,
+    entsoe,
+    eskom,
+    grid_india,
+    gridstatus,
+    ons_brazil,
+    open_meteo,
     sort_auto_green_by_time,
-)
-from providers import (
-    aemo, eia, electricity_maps, entsoe, eskom,
-    grid_india, gridstatus, ons_brazil, open_meteo, uk,
+    uk,
 )
 from providers.base import (
     CI_JOB_POWER_KW,
@@ -38,7 +44,10 @@ from providers.base import (
 )
 from providers.runners import (
     detect_cloud_zone,
-    format_runner_label, get_azure_region, get_cloud_region, get_gcp_region,
+    format_runner_label,
+    get_azure_region,
+    get_cloud_region,
+    get_gcp_region,
 )
 
 # Exit codes
@@ -59,6 +68,41 @@ def get_required_env(name):
         print(f"::error::Required environment variable {name} is not set or empty.")
         sys.exit(EXIT_FAILURE)
     return value
+
+
+def _convert_env(name, raw, default, converter):
+    """Convert a raw env value via converter, exiting on malformed input.
+
+    Falls back to default when raw is unset/empty so existing default
+    behavior (including policy-file fallbacks) is preserved
+    """
+    if raw is None or raw == "":
+        return default
+    try:
+        return converter(raw)
+    except (ValueError, TypeError):
+        print(f"::error::Invalid {name} value '{raw}', expected a number")
+        sys.exit(EXIT_FAILURE)
+
+
+def _env_float(name, default, raw=None):
+    """Read name from the environment as a float, exiting on malformed input.
+
+    Pass an already-resolved raw string to honor policy-file precedence
+    """
+    if raw is None:
+        raw = os.environ.get(name)
+    return _convert_env(name, raw, default, float)
+
+
+def _env_int(name, default, raw=None):
+    """Read name from the environment as an int, exiting on malformed input.
+
+    Pass an already-resolved raw string to honor policy-file precedence
+    """
+    if raw is None:
+        raw = os.environ.get(name)
+    return _convert_env(name, raw, default, int)
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +137,9 @@ def _get_extra_args(provider, api_keys):
     return resolver(api_keys) if resolver else []
 
 
-def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
-                           emaps_api_key="", entsoe_token=""):
+def check_carbon_intensity(
+    zone, max_carbon, provider, eia_api_key="", emaps_api_key="", entsoe_token=""
+):
     """Check carbon intensity using the appropriate provider.
 
     If the primary provider fails and Open-Meteo has coordinates for the zone,
@@ -104,16 +149,20 @@ def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
     if module is None:
         print(f"::warning::Unknown provider '{provider}' for zone '{zone}'")
         return None, None
-    extra = _get_extra_args(provider, {
-        "eia_api_key": eia_api_key,
-        "emaps_api_key": emaps_api_key,
-        "entsoe_token": entsoe_token,
-    })
+    extra = _get_extra_args(
+        provider,
+        {
+            "eia_api_key": eia_api_key,
+            "emaps_api_key": emaps_api_key,
+            "entsoe_token": entsoe_token,
+        },
+    )
     result = module.check_carbon_intensity(zone, max_carbon, *extra)
 
     # Fallback: if primary provider failed, try Open-Meteo estimation
     if result == (None, None) and provider != PROVIDER_OPEN_METEO:
         from providers.open_meteo import ZONE_COORDINATES
+
         if zone in ZONE_COORDINATES:
             print(f"  Falling back to Open-Meteo estimate for zone {zone}...")
             result = open_meteo.check_carbon_intensity(zone, max_carbon)
@@ -121,37 +170,52 @@ def check_carbon_intensity(zone, max_carbon, provider, eia_api_key="",
     return result
 
 
-def get_forecast(zone, max_carbon, provider, gridstatus_api_key="",
-                 emaps_api_key="", entsoe_token=""):
+def get_forecast(
+    zone,
+    max_carbon,
+    provider,
+    gridstatus_api_key="",
+    emaps_api_key="",
+    entsoe_token="",
+    eia_api_key="",
+):
     """Get forecast using the appropriate provider."""
     module = _PROVIDER_MODULES.get(provider)
     if module is None:
         return None, None
-    extra = _get_extra_args(provider, {
-        "emaps_api_key": emaps_api_key,
-        "entsoe_token": entsoe_token,
-    })
+    extra = _get_extra_args(
+        provider,
+        {
+            "eia_api_key": eia_api_key,
+            "emaps_api_key": emaps_api_key,
+            "entsoe_token": entsoe_token,
+        },
+    )
     result = module.get_forecast(zone, max_carbon, *extra)
     # EIA doesn't have its own forecast; use GridStatus if available
     if provider == PROVIDER_EIA and result == (None, None) and gridstatus_api_key:
         return gridstatus.get_forecast(zone, max_carbon, gridstatus_api_key)
     if provider == PROVIDER_EIA and not gridstatus_api_key:
-        print("  No forecast available for US zones without a GridStatus API key. "
-              "Register free at https://www.gridstatus.io")
+        print(
+            "  No forecast available for US zones without a GridStatus API key. "
+            "Register free at https://www.gridstatus.io"
+        )
     return result
 
 
-def get_history_trend(zone, provider, eia_api_key="", emaps_api_key="",
-                      entsoe_token=""):
+def get_history_trend(zone, provider, eia_api_key="", emaps_api_key="", entsoe_token=""):
     """Get history trend using the appropriate provider."""
     module = _PROVIDER_MODULES.get(provider)
     if module is None:
         return None
-    extra = _get_extra_args(provider, {
-        "eia_api_key": eia_api_key,
-        "emaps_api_key": emaps_api_key,
-        "entsoe_token": entsoe_token,
-    })
+    extra = _get_extra_args(
+        provider,
+        {
+            "eia_api_key": eia_api_key,
+            "emaps_api_key": emaps_api_key,
+            "entsoe_token": entsoe_token,
+        },
+    )
     return module.get_history_trend(zone, *extra)
 
 
@@ -175,24 +239,30 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
         # Also warn if ENTSO-E zones would work with a token but aren't
         if not entsoe_token:
             from providers.entsoe import ENTSOE_AREA_CODES
+
             if zone in ENTSOE_AREA_CODES and provider != PROVIDER_ENTSOE:
                 needs_entsoe.append(zone)
 
     if needs_emaps:
         zones_str = ", ".join(needs_emaps[:5])
         extra = f" (+{len(needs_emaps) - 5} more)" if len(needs_emaps) > 5 else ""
-        print(f"::notice::Zones [{zones_str}{extra}] need electricity_maps_token. "
-              f"Get free at https://portal.electricitymaps.com/")
+        print(
+            f"::notice::Zones [{zones_str}{extra}] need electricity_maps_token. "
+            f"Get free at https://portal.electricitymaps.com/"
+        )
 
     if needs_entsoe:
         zones_str = ", ".join(needs_entsoe[:5])
         extra = f" (+{len(needs_entsoe) - 5} more)" if len(needs_entsoe) > 5 else ""
-        print(f"::notice::Zones [{zones_str}{extra}] would use ENTSO-E with entsoe_token. "
-              f"Get free at https://transparency.entsoe.eu/")
+        print(
+            f"::notice::Zones [{zones_str}{extra}] would use ENTSO-E with entsoe_token. "
+            f"Get free at https://transparency.entsoe.eu/"
+        )
 
 
-def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
-                         emaps_api_key="", entsoe_token=""):
+def check_multiple_zones(
+    zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token=""
+):
     """Check carbon intensity for multiple zones, return the best green option.
 
     Checks free-provider zones first (to avoid exhausting paid API rate limits),
@@ -213,14 +283,20 @@ def check_multiple_zones(zones_config, max_carbon, eia_api_key="",
 
     def _provider_cost(entry):
         provider = detect_provider(entry["zone"], entsoe_token)
-        if provider in (PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO,
-                        PROVIDER_GRID_INDIA, PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM):
+        if provider in (
+            PROVIDER_UK,
+            PROVIDER_EIA,
+            PROVIDER_AEMO,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_ESKOM,
+        ):
             return 0  # Free, no rate limit concern
         if provider == PROVIDER_OPEN_METEO:
             return 1  # Free, high rate limit
         if provider == PROVIDER_ENTSOE:
             return 2  # Free token, 400 req/min
-        return 3      # Electricity Maps: 50 req/hr
+        return 3  # Electricity Maps: 50 req/hr
 
     sorted_zones = sorted(zones_config, key=_provider_cost)
 
@@ -267,7 +343,7 @@ def _detect_utc_offset():
         # Handle common offset formats: UTC+5, UTC-8, GMT+5:30, Etc/GMT-5
         for prefix in ("UTC", "GMT", "Etc/GMT"):
             if tz_env.upper().startswith(prefix.upper()):
-                rest = tz_env[len(prefix):]
+                rest = tz_env[len(prefix) :]
                 if not rest:
                     return 0
                 try:
@@ -318,8 +394,7 @@ def expand_auto_zones(zones_str):
         if zone:
             print(f"Auto-detected grid zone: {zone} (from {source})")
             return [{"zone": zone, "runner_label": None}]
-        print("::notice::Could not auto-detect cloud region. "
-              "Falling back to auto:cleanest.")
+        print("::notice::Could not auto-detect cloud region. Falling back to auto:cleanest.")
         return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
 
     if normalized == "auto:nearest":
@@ -352,8 +427,7 @@ def expand_auto_zones(zones_str):
             zones = [{"zone": z, "runner_label": None} for z in alternatives]
             return sort_auto_green_by_time(zones, utc_hour)
         # Unknown dirty zone: use default escape zones
-        print(f"::warning::No escape mapping for '{dirty_zone}', "
-              f"using default clean zones")
+        print(f"::warning::No escape mapping for '{dirty_zone}', using default clean zones")
         return sort_auto_green_by_time(list(AUTO_ESCAPE_COAL_ZONES), utc_hour)
 
     return None
@@ -432,7 +506,7 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     duration_hours = (job_minutes / 60) if job_minutes else DEFAULT_JOB_DURATION_HOURS
     energy_kwh = CI_JOB_POWER_KW * duration_hours
 
-    actual_co2 = intensity * energy_kwh       # gCO2 from clean grid
+    actual_co2 = intensity * energy_kwh  # gCO2 from clean grid
     baseline_co2 = GLOBAL_AVG_INTENSITY * energy_kwh  # gCO2 from average grid
 
     saved = max(0, round(baseline_co2 - actual_co2, 1))
@@ -459,7 +533,9 @@ def suggest_green_cron(zone):
     description, or (None, None) if no suggestion is available.
     """
     from providers import (
-        AUTO_GREEN_ZONES, AUTO_GREEN_ZONES_FULL, AUTO_CLEANEST_ZONES,
+        AUTO_CLEANEST_ZONES,
+        AUTO_GREEN_ZONES,
+        AUTO_GREEN_ZONES_FULL,
     )
 
     # Find zone metadata from our curated lists
@@ -478,6 +554,10 @@ def suggest_green_cron(zone):
     energy_type = zone_meta.get("type", "unknown")
     utc_offset = zone_meta.get("utc_offset", 0)
 
+    # NOTE: these time-of-day heuristics are rough generalizations and the
+    # suggestion is advisory only. Real renewable output varies by region,
+    # season, and weather (e.g. wind tends to be stronger at night in many
+    # regions). Treat the cron as a starting point to tune
     if energy_type == "solar":
         # Best during local noon (12pm local = 12 - offset UTC)
         best_utc_hour = int((12 - utc_offset) % 24)
@@ -514,9 +594,7 @@ def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_ru
 
     # Provider-formatted label takes precedence over user label
     if runner_provider:
-        formatted = format_runner_label(
-            zone, runner_provider, github_run_id, runner_spec
-        )
+        formatted = format_runner_label(zone, runner_provider, github_run_id, runner_spec)
         if formatted:
             set_output("runner_label", formatted)
             return
@@ -526,9 +604,66 @@ def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_ru
         set_output("runner_label", user_label)
 
 
-def write_job_summary(zone, intensity, is_green, max_carbon, trend=None,
-                      forecast_at=None, forecast_intensity=None,
-                      waited_minutes=0, skipped=None, co2_saved=0):
+def _emit_green_result(
+    zone,
+    intensity,
+    label,
+    max_carbon,
+    dispatch_mode,
+    repo,
+    workflow_id,
+    token,
+    ref,
+    runner_provider,
+    runner_spec,
+    github_run_id,
+    *,
+    waited_minutes=0,
+    skipped=None,
+):
+    """Emit the shared 'grid is green' outputs, summary, and dispatch/print.
+
+    Shared by the queue, single-zone, and multi-zone strategy branches:
+    sets grid_clean/carbon_intensity outputs, runner outputs, carbon savings
+    outputs, writes the job summary, then either dispatches the workflow (when
+    dispatch_mode) or prints the inline green message
+    """
+    set_output("grid_clean", "true")
+    set_output("carbon_intensity", str(intensity))
+    set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
+    co2_saved, badge_url = estimate_carbon_savings(intensity)
+    if co2_saved > 0:
+        set_output("co2_saved_grams", str(co2_saved))
+    if badge_url:
+        set_output("carbon_badge_url", badge_url)
+    write_job_summary(
+        zone,
+        intensity,
+        True,
+        max_carbon,
+        waited_minutes=waited_minutes,
+        skipped=skipped,
+        co2_saved=co2_saved,
+    )
+    if dispatch_mode:
+        print(f"\nGrid is clean! Zone {zone} ({intensity} gCO2eq/kWh). Triggering workflow...")
+        trigger_workflow(repo, workflow_id, token, ref)
+    else:
+        print(f"\nGrid is clean! Zone {zone} ({intensity} gCO2eq/kWh)")
+
+
+def write_job_summary(
+    zone,
+    intensity,
+    is_green,
+    max_carbon,
+    trend=None,
+    forecast_at=None,
+    forecast_intensity=None,
+    waited_minutes=0,
+    skipped=None,
+    co2_saved=0,
+):
     """Write a GitHub Actions job summary with carbon intensity results."""
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
@@ -539,11 +674,11 @@ def write_job_summary(zone, intensity, is_green, max_carbon, trend=None,
     if is_green:
         lines.append("| | |")
         lines.append("|---|---|")
-        lines.append(f"| **Status** | Grid is clean, workflow dispatched |")
+        lines.append("| **Status** | Grid is clean, workflow dispatched |")
     else:
         lines.append("| | |")
         lines.append("|---|---|")
-        lines.append(f"| **Status** | Grid is dirty, waiting for clean energy |")
+        lines.append("| **Status** | Grid is dirty, waiting for clean energy |")
 
     lines.append(f"| **Zone** | `{zone}` |")
 
@@ -583,9 +718,16 @@ def write_job_summary(zone, intensity, is_green, max_carbon, trend=None,
         f.write("\n".join(lines))
 
 
-def handle_dirty_grid(zone, max_carbon, intensity, enable_forecast,
-                      eia_api_key="", gridstatus_api_key="", emaps_api_key="",
-                      entsoe_token=""):
+def handle_dirty_grid(
+    zone,
+    max_carbon,
+    intensity,
+    enable_forecast,
+    eia_api_key="",
+    gridstatus_api_key="",
+    emaps_api_key="",
+    entsoe_token="",
+):
     """When the grid is dirty, fetch forecast/trend info and set outputs.
 
     Returns (trend, forecast_at, forecast_intensity) for use in job summary.
@@ -608,11 +750,16 @@ def handle_dirty_grid(zone, max_carbon, intensity, enable_forecast,
 
     # Forecast: free for UK, Electricity Maps, ENTSO-E, Open-Meteo; GridStatus for US
     if enable_forecast or provider in (
-        PROVIDER_UK, PROVIDER_ELECTRICITY_MAPS, PROVIDER_ENTSOE, PROVIDER_OPEN_METEO,
-        PROVIDER_GRID_INDIA, PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM,
+        PROVIDER_UK,
+        PROVIDER_ELECTRICITY_MAPS,
+        PROVIDER_ENTSOE,
+        PROVIDER_OPEN_METEO,
+        PROVIDER_GRID_INDIA,
+        PROVIDER_ONS_BRAZIL,
+        PROVIDER_ESKOM,
     ):
         forecast_at, forecast_intensity = get_forecast(
-            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token
+            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
         )
         if forecast_at and forecast_at != "none_in_forecast":
             set_output("forecast_green_at", forecast_at)
@@ -632,9 +779,16 @@ def handle_dirty_grid(zone, max_carbon, intensity, enable_forecast,
     return trend, forecast_at, forecast_intensity
 
 
-def smart_wait_single(zone, max_carbon, max_wait_minutes, provider,
-                      eia_api_key="", gridstatus_api_key="", emaps_api_key="",
-                      entsoe_token=""):
+def smart_wait_single(
+    zone,
+    max_carbon,
+    max_wait_minutes,
+    provider,
+    eia_api_key="",
+    gridstatus_api_key="",
+    emaps_api_key="",
+    entsoe_token="",
+):
     """Wait up to max_wait_minutes for a single zone to go green.
 
     Uses forecast data to sleep efficiently when possible.
@@ -652,7 +806,7 @@ def smart_wait_single(zone, max_carbon, max_wait_minutes, provider,
 
         # Try to use forecast for smarter sleep
         forecast_at, _ = get_forecast(
-            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token
+            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
         )
 
         if forecast_at and forecast_at not in (None, "none_in_forecast"):
@@ -665,17 +819,20 @@ def smart_wait_single(zone, max_carbon, max_wait_minutes, provider,
                 if 0 < wait_until:
                     # Wake 30s before forecast, minimum 60s sleep
                     sleep_seconds = max(min(wait_until - 30, remaining), 60)
-                    print(f"  Forecast: green at {forecast_at}. "
-                          f"Sleeping {sleep_seconds / 60:.0f}m...")
-            except (ValueError, TypeError):
-                pass
+                    print(
+                        f"  Forecast: green at {forecast_at}. Sleeping {sleep_seconds / 60:.0f}m..."
+                    )
+            except (ValueError, TypeError) as exc:
+                print(f"::warning::Could not parse forecast time '{forecast_at}': {exc}")
 
         if sleep_seconds <= 0:
             break
 
         remaining_min = remaining / 60
-        print(f"  Sleeping {sleep_seconds / 60:.0f}m... "
-              f"({remaining_min:.0f}m remaining of {max_wait_minutes}m)")
+        print(
+            f"  Sleeping {sleep_seconds / 60:.0f}m... "
+            f"({remaining_min:.0f}m remaining of {max_wait_minutes}m)"
+        )
         _time.sleep(sleep_seconds)
 
         # Re-check
@@ -695,8 +852,9 @@ def smart_wait_single(zone, max_carbon, max_wait_minutes, provider,
     return bool(is_green), intensity, waited
 
 
-def smart_wait_multi(zones_config, max_carbon, max_wait_minutes,
-                     eia_api_key="", emaps_api_key="", entsoe_token=""):
+def smart_wait_multi(
+    zones_config, max_carbon, max_wait_minutes, eia_api_key="", emaps_api_key="", entsoe_token=""
+):
     """Wait up to max_wait_minutes for any zone in the list to go green.
 
     Returns (best_zone, best_intensity, best_label, waited_minutes, skipped).
@@ -715,8 +873,10 @@ def smart_wait_multi(zones_config, max_carbon, max_wait_minutes,
             break
 
         remaining_min = remaining / 60
-        print(f"  Sleeping {sleep_seconds / 60:.0f}m... "
-              f"({remaining_min:.0f}m remaining of {max_wait_minutes}m)")
+        print(
+            f"  Sleeping {sleep_seconds / 60:.0f}m... "
+            f"({remaining_min:.0f}m remaining of {max_wait_minutes}m)"
+        )
         _time.sleep(sleep_seconds)
 
         best_zone, best_intensity, best_label, skipped = check_multiple_zones(
@@ -740,9 +900,7 @@ def load_carbon_policy():
     Returns a dict of policy settings, or empty dict if no policy file exists.
     The policy file provides defaults that action inputs can override.
     """
-    policy_path = os.environ.get(
-        "CARBON_POLICY_PATH", ".github/carbon-policy.yml"
-    )
+    policy_path = os.environ.get("CARBON_POLICY_PATH", ".github/carbon-policy.yml")
 
     if not os.path.isfile(policy_path):
         return {}
@@ -755,7 +913,19 @@ def load_carbon_policy():
         print(f"::warning::Could not read carbon policy: {exc}")
         return {}
 
-    # Simple YAML parser for flat key: value files (no dependency on PyYAML)
+    # -----------------------------------------------------------------------
+    # WARNING: this is a hand-rolled, intentionally minimal YAML parser.
+    # It supports ONLY flat top-level scalar keys of the form `key: value`.
+    # It does NOT support:
+    #   - nested mappings or indentation
+    #   - lists / sequences
+    #   - multi-line or block scalars
+    #   - values containing ':' (e.g. cron times like '0 18') will be
+    #     mis-split on the first colon
+    # This is deliberate to keep the project zero-runtime-dependency (no
+    # PyYAML). Do not rely on it for complex YAML; add a real parser only if
+    # the zero-dependency goal is dropped.
+    # -----------------------------------------------------------------------
     policy = {}
     for line in content.splitlines():
         line = line.strip()
@@ -773,9 +943,15 @@ def load_carbon_policy():
     return policy
 
 
-def queue_find_optimal_window(zones_config, max_carbon, deadline_hours,
-                              eia_api_key="", gridstatus_api_key="",
-                              emaps_api_key="", entsoe_token=""):
+def queue_find_optimal_window(
+    zones_config,
+    max_carbon,
+    deadline_hours,
+    eia_api_key="",
+    gridstatus_api_key="",
+    emaps_api_key="",
+    entsoe_token="",
+):
     """Find the optimal green window across all zones within a deadline.
 
     Instead of waiting in real-time, this checks forecasts for all zones
@@ -794,13 +970,14 @@ def queue_find_optimal_window(zones_config, max_carbon, deadline_hours,
         # Fall back to Open-Meteo if needed
         if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
             from providers.open_meteo import ZONE_COORDINATES
+
             if zone in ZONE_COORDINATES:
                 provider = PROVIDER_OPEN_METEO
             else:
                 continue
 
         forecast_at, forecast_intensity = get_forecast(
-            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token
+            zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
         )
 
         if forecast_at and forecast_at != "none_in_forecast" and forecast_intensity is not None:
@@ -810,8 +987,8 @@ def queue_find_optimal_window(zones_config, max_carbon, deadline_hours,
                 hours_away = (ft - datetime.now(timezone.utc)).total_seconds() / 3600
                 if hours_away > deadline_hours:
                     continue
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as exc:
+                print(f"::warning::Could not parse forecast time '{forecast_at}': {exc}")
 
             if best_intensity is None or forecast_intensity < best_intensity:
                 best_zone = zone
@@ -843,25 +1020,25 @@ def main():
     emaps_api_key = os.environ.get("ELECTRICITY_MAPS_TOKEN", "")
     entsoe_token = os.environ.get("ENTSOE_TOKEN", "")
     ref = os.environ.get("TARGET_REF", DEFAULT_REF) or DEFAULT_REF
-    max_carbon = float(os.environ.get(
-        "MAX_CARBON", policy.get("max_carbon_intensity", str(DEFAULT_MAX_CARBON))
-    ))
-    fail_on_api_error = os.environ.get(
-        "FAIL_ON_API_ERROR", policy.get("fail_on_api_error", "false")
-    ).lower() == "true"
-    enable_forecast = os.environ.get(
-        "ENABLE_FORECAST", policy.get("enable_forecast", "false")
-    ).lower() == "true"
-    max_wait = min(int(os.environ.get(
-        "MAX_WAIT", policy.get("max_wait", "0")
-    )), MAX_WAIT_CAP)
+    # Resolve raw string first (env overrides policy), then convert with a
+    # numeric default so malformed input fails loudly instead of crashing
+    max_carbon_raw = os.environ.get("MAX_CARBON", policy.get("max_carbon_intensity", ""))
+    max_carbon = _env_float("MAX_CARBON", DEFAULT_MAX_CARBON, max_carbon_raw)
+    fail_on_api_error = (
+        os.environ.get("FAIL_ON_API_ERROR", policy.get("fail_on_api_error", "false")).lower()
+        == "true"
+    )
+    enable_forecast = (
+        os.environ.get("ENABLE_FORECAST", policy.get("enable_forecast", "false")).lower() == "true"
+    )
+    max_wait_raw = os.environ.get("MAX_WAIT", policy.get("max_wait", ""))
+    max_wait = min(_env_int("MAX_WAIT", 0, max_wait_raw), MAX_WAIT_CAP)
     runner_provider = os.environ.get("RUNNER_PROVIDER", policy.get("runner_provider", ""))
     runner_spec = os.environ.get("RUNNER_SPEC", policy.get("runner_spec", ""))
     github_run_id = os.environ.get("GITHUB_RUN_ID", "")
     strategy = os.environ.get("STRATEGY", policy.get("strategy", "check")).lower()
-    deadline_hours = float(os.environ.get(
-        "DEADLINE_HOURS", policy.get("deadline_hours", "24")
-    ))
+    deadline_hours_raw = os.environ.get("DEADLINE_HOURS", policy.get("deadline_hours", ""))
+    deadline_hours = _env_float("DEADLINE_HOURS", 24, deadline_hours_raw)
 
     # Parse zone(s): action inputs override policy
     grid_zones_str = os.environ.get("GRID_ZONES", "")
@@ -910,31 +1087,35 @@ def main():
 
         if best_zone is not None:
             # Already green, so dispatch immediately
-            set_output("grid_clean", "true")
             set_output("grid_zone", best_zone)
-            set_output("carbon_intensity", str(best_intensity))
             set_output("optimal_dispatch_at", "now")
-            set_runner_outputs(best_zone, best_label,
-                               runner_provider, runner_spec, github_run_id)
-            co2_saved, badge_url = estimate_carbon_savings(best_intensity)
-            if co2_saved > 0:
-                set_output("co2_saved_grams", str(co2_saved))
-            if badge_url:
-                set_output("carbon_badge_url", badge_url)
-            write_job_summary(best_zone, best_intensity, True, max_carbon,
-                              skipped=skipped, co2_saved=co2_saved)
-            if dispatch_mode:
-                print(f"\nQueue: zone {best_zone} is already green! Dispatching now...")
-                trigger_workflow(repo, workflow_id, token, ref)
-            else:
-                print(f"\nQueue: zone {best_zone} is already green ({best_intensity} gCO2eq/kWh)")
+            _emit_green_result(
+                best_zone,
+                best_intensity,
+                best_label,
+                max_carbon,
+                dispatch_mode,
+                repo,
+                workflow_id,
+                token,
+                ref,
+                runner_provider,
+                runner_spec,
+                github_run_id,
+                skipped=skipped,
+            )
             sys.exit(EXIT_SUCCESS)
 
         # No green zone now, so find the optimal future window via forecasts
         print("\nNo green zone right now. Searching forecasts for optimal window...")
         opt_zone, opt_time, opt_intensity = queue_find_optimal_window(
-            zones_config, max_carbon, deadline_hours,
-            eia_api_key, gridstatus_api_key, emaps_api_key, entsoe_token
+            zones_config,
+            max_carbon,
+            deadline_hours,
+            eia_api_key,
+            gridstatus_api_key,
+            emaps_api_key,
+            entsoe_token,
         )
 
         if opt_zone and opt_time:
@@ -943,11 +1124,12 @@ def main():
             set_output("optimal_zone", opt_zone)
             if opt_intensity is not None:
                 set_output("forecast_intensity", str(opt_intensity))
-            set_runner_outputs(opt_zone, None,
-                               runner_provider, runner_spec, github_run_id)
-            print(f"\nQueue: optimal window at {opt_time} in zone {opt_zone} "
-                  f"(~{opt_intensity} gCO2eq/kWh)")
-            print(f"  Schedule your workflow to run at that time for green energy.")
+            set_runner_outputs(opt_zone, None, runner_provider, runner_spec, github_run_id)
+            print(
+                f"\nQueue: optimal window at {opt_time} in zone {opt_zone} "
+                f"(~{opt_intensity} gCO2eq/kWh)"
+            )
+            print("  Schedule your workflow to run at that time for green energy.")
 
             # If max_wait is set and the window is within range, actually wait
             if max_wait > 0:
@@ -960,8 +1142,7 @@ def main():
                         # Re-check
                         provider = detect_provider(opt_zone, entsoe_token)
                         is_green, intensity = check_carbon_intensity(
-                            opt_zone, max_carbon, provider,
-                            eia_api_key, emaps_api_key, entsoe_token
+                            opt_zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
                         )
                         if is_green:
                             set_output("grid_clean", "true")
@@ -972,25 +1153,29 @@ def main():
                             if badge_url:
                                 set_output("carbon_badge_url", badge_url)
                             if dispatch_mode:
-                                print(f"\nGrid is green after queue wait! Dispatching...")
+                                print("\nGrid is green after queue wait! Dispatching...")
                                 trigger_workflow(repo, workflow_id, token, ref)
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as exc:
+                    print(f"::warning::Could not parse forecast time '{opt_time}': {exc}")
         else:
             set_output("grid_clean", "false")
             set_output("optimal_dispatch_at", "none_in_deadline")
             print(f"\nQueue: no green window found within {deadline_hours}h deadline.")
             if fail_on_api_error:
-                print("::error::No green window in queue deadline and "
-                      "fail_on_api_error is enabled.")
-                write_job_summary(
-                    zones_config[0]["zone"], None, False, max_carbon, skipped=skipped
+                print(
+                    "::error::No green window in queue deadline and fail_on_api_error is enabled."
                 )
+                write_job_summary(zones_config[0]["zone"], None, False, max_carbon, skipped=skipped)
                 sys.exit(EXIT_FAILURE)
 
         write_job_summary(
-            (opt_zone or zones_config[0]["zone"]), opt_intensity, False, max_carbon,
-            forecast_at=opt_time, forecast_intensity=opt_intensity, skipped=skipped
+            (opt_zone or zones_config[0]["zone"]),
+            opt_intensity,
+            False,
+            max_carbon,
+            forecast_at=opt_time,
+            forecast_intensity=opt_intensity,
+            skipped=skipped,
         )
         sys.exit(EXIT_SUCCESS)
 
@@ -1019,40 +1204,58 @@ def main():
         # Smart wait if dirty and max_wait configured
         if not is_green and max_wait > 0:
             is_green, intensity, waited_minutes = smart_wait_single(
-                entry["zone"], max_carbon, max_wait, provider,
-                eia_api_key, gridstatus_api_key, emaps_api_key, entsoe_token
+                entry["zone"],
+                max_carbon,
+                max_wait,
+                provider,
+                eia_api_key,
+                gridstatus_api_key,
+                emaps_api_key,
+                entsoe_token,
             )
 
         if is_green:
-            set_output("grid_clean", "true")
-            set_output("carbon_intensity", str(intensity))
-            set_runner_outputs(entry["zone"], entry.get("runner_label"),
-                               runner_provider, runner_spec, github_run_id)
-            co2_saved, badge_url = estimate_carbon_savings(intensity)
-            if co2_saved > 0:
-                set_output("co2_saved_grams", str(co2_saved))
-            if badge_url:
-                set_output("carbon_badge_url", badge_url)
-            write_job_summary(entry["zone"], intensity, True, max_carbon,
-                              waited_minutes=waited_minutes,
-                              co2_saved=co2_saved)
-            if dispatch_mode:
-                print(f"\nGrid is clean! Triggering workflow...")
-                trigger_workflow(repo, workflow_id, token, ref)
-            else:
-                print(f"\nGrid is clean! ({intensity} gCO2eq/kWh)")
+            _emit_green_result(
+                entry["zone"],
+                intensity,
+                entry.get("runner_label"),
+                max_carbon,
+                dispatch_mode,
+                repo,
+                workflow_id,
+                token,
+                ref,
+                runner_provider,
+                runner_spec,
+                github_run_id,
+                waited_minutes=waited_minutes,
+            )
         else:
             trend, forecast_at, forecast_intensity = handle_dirty_grid(
-                entry["zone"], max_carbon, intensity, enable_forecast,
-                eia_api_key, gridstatus_api_key, emaps_api_key, entsoe_token
+                entry["zone"],
+                max_carbon,
+                intensity,
+                enable_forecast,
+                eia_api_key,
+                gridstatus_api_key,
+                emaps_api_key,
+                entsoe_token,
             )
-            write_job_summary(entry["zone"], intensity, False, max_carbon,
-                              trend=trend, forecast_at=forecast_at,
-                              forecast_intensity=forecast_intensity,
-                              waited_minutes=waited_minutes)
+            write_job_summary(
+                entry["zone"],
+                intensity,
+                False,
+                max_carbon,
+                trend=trend,
+                forecast_at=forecast_at,
+                forecast_intensity=forecast_intensity,
+                waited_minutes=waited_minutes,
+            )
             wait_msg = f" (waited {waited_minutes:.0f}m)" if waited_minutes > 0 else ""
-            print(f"\nGrid is dirty ({intensity} gCO2eq/kWh > {max_carbon}){wait_msg}. "
-                  "Will retry on next schedule.")
+            print(
+                f"\nGrid is dirty ({intensity} gCO2eq/kWh > {max_carbon}){wait_msg}. "
+                "Will retry on next schedule."
+            )
             sys.exit(EXIT_SUCCESS)
 
     # Multi-zone mode: pick the greenest zone
@@ -1065,50 +1268,56 @@ def main():
 
         # Smart wait if no green zone and max_wait configured
         if best_zone is None and max_wait > 0:
-            best_zone, best_intensity, best_label, waited_minutes, skipped = (
-                smart_wait_multi(
-                    zones_config, max_carbon, max_wait,
-                    eia_api_key, emaps_api_key, entsoe_token
-                )
+            best_zone, best_intensity, best_label, waited_minutes, skipped = smart_wait_multi(
+                zones_config, max_carbon, max_wait, eia_api_key, emaps_api_key, entsoe_token
             )
 
         if best_zone is None:
             first_zone = zones_config[0]["zone"]
             trend, forecast_at, forecast_intensity = handle_dirty_grid(
-                first_zone, max_carbon, None, enable_forecast,
-                eia_api_key, gridstatus_api_key, emaps_api_key, entsoe_token
+                first_zone,
+                max_carbon,
+                None,
+                enable_forecast,
+                eia_api_key,
+                gridstatus_api_key,
+                emaps_api_key,
+                entsoe_token,
             )
-            write_job_summary(first_zone, None, False, max_carbon,
-                              trend=trend, forecast_at=forecast_at,
-                              forecast_intensity=forecast_intensity,
-                              waited_minutes=waited_minutes, skipped=skipped)
+            write_job_summary(
+                first_zone,
+                None,
+                False,
+                max_carbon,
+                trend=trend,
+                forecast_at=forecast_at,
+                forecast_intensity=forecast_intensity,
+                waited_minutes=waited_minutes,
+                skipped=skipped,
+            )
             if fail_on_api_error:
                 print("::error::No green zones found and fail_on_api_error is enabled.")
                 sys.exit(EXIT_FAILURE)
             print("\nNo green zones available. Will retry on next schedule.")
             sys.exit(EXIT_SUCCESS)
 
-        set_output("grid_clean", "true")
         set_output("grid_zone", best_zone)
-        set_output("carbon_intensity", str(best_intensity))
-        set_runner_outputs(best_zone, best_label,
-                           runner_provider, runner_spec, github_run_id)
-        co2_saved, badge_url = estimate_carbon_savings(best_intensity)
-        if co2_saved > 0:
-            set_output("co2_saved_grams", str(co2_saved))
-        if badge_url:
-            set_output("carbon_badge_url", badge_url)
-
-        write_job_summary(best_zone, best_intensity, True, max_carbon,
-                          waited_minutes=waited_minutes, skipped=skipped,
-                          co2_saved=co2_saved)
-
-        if dispatch_mode:
-            print(f"\nBest zone: {best_zone} ({best_intensity} gCO2eq/kWh)")
-            print(f"Triggering workflow...")
-            trigger_workflow(repo, workflow_id, token, ref)
-        else:
-            print(f"\nBest zone: {best_zone} ({best_intensity} gCO2eq/kWh)")
+        _emit_green_result(
+            best_zone,
+            best_intensity,
+            best_label,
+            max_carbon,
+            dispatch_mode,
+            repo,
+            workflow_id,
+            token,
+            ref,
+            runner_provider,
+            runner_spec,
+            github_run_id,
+            waited_minutes=waited_minutes,
+            skipped=skipped,
+        )
 
 
 if __name__ == "__main__":

@@ -22,28 +22,34 @@ from providers import (
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
     PROVIDER_UK,
-    detect_provider,
-    sort_auto_green_by_time,
     _time_priority_score,
-)
-from providers import (
-    aemo, eia, electricity_maps, entsoe, eskom,
-    grid_india, gridstatus, ons_brazil, open_meteo, uk,
+    aemo,
+    detect_provider,
+    eia,
+    electricity_maps,
+    entsoe,
+    eskom,
+    grid_india,
+    gridstatus,
+    ons_brazil,
+    open_meteo,
+    sort_auto_green_by_time,
+    uk,
 )
 from providers.base import api_request, api_request_with_header, compute_trend
 from providers.runners import (
+    AWS_REGION_TO_ZONE,
+    AZURE_REGION_TO_ZONE,
+    GCP_REGION_TO_ZONE,
+    ZONE_TO_AWS_REGION,
+    ZONE_TO_AZURE_REGION,
+    ZONE_TO_GCP_REGION,
     detect_cloud_zone,
     format_runner_label,
     format_runson_label,
     get_azure_region,
     get_cloud_region,
     get_gcp_region,
-    AWS_REGION_TO_ZONE,
-    GCP_REGION_TO_ZONE,
-    AZURE_REGION_TO_ZONE,
-    ZONE_TO_AWS_REGION,
-    ZONE_TO_GCP_REGION,
-    ZONE_TO_AZURE_REGION,
 )
 
 
@@ -51,12 +57,28 @@ from providers.runners import (
 def _clear_env():
     """Ensure test env vars don't leak between tests."""
     keys = [
-        "GRID_ZONE", "GRID_ZONES", "EIA_API_KEY", "GRID_STATUS_API_KEY",
-        "ELECTRICITY_MAPS_TOKEN", "MAX_CARBON", "WORKFLOW_ID", "GITHUB_TOKEN",
-        "TARGET_REPO", "TARGET_REF", "FAIL_ON_API_ERROR", "ENABLE_FORECAST",
-        "MAX_WAIT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
-        "RUNNER_PROVIDER", "RUNNER_SPEC", "GITHUB_RUN_ID", "ENTSOE_TOKEN",
-        "STRATEGY", "DEADLINE_HOURS", "CARBON_POLICY_PATH",
+        "GRID_ZONE",
+        "GRID_ZONES",
+        "EIA_API_KEY",
+        "GRID_STATUS_API_KEY",
+        "ELECTRICITY_MAPS_TOKEN",
+        "MAX_CARBON",
+        "WORKFLOW_ID",
+        "GITHUB_TOKEN",
+        "TARGET_REPO",
+        "TARGET_REF",
+        "FAIL_ON_API_ERROR",
+        "ENABLE_FORECAST",
+        "MAX_WAIT",
+        "GITHUB_OUTPUT",
+        "GITHUB_STEP_SUMMARY",
+        "RUNNER_PROVIDER",
+        "RUNNER_SPEC",
+        "GITHUB_RUN_ID",
+        "ENTSOE_TOKEN",
+        "STRATEGY",
+        "DEADLINE_HOURS",
+        "CARBON_POLICY_PATH",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -205,12 +227,18 @@ class TestApiRequest:
 # UK Carbon Intensity API tests
 # ---------------------------------------------------------------------------
 
+
 class TestUkCheckCarbonIntensity:
     @mock.patch("providers.uk.api_request")
     def test_national_green(self, mock_api):
         mock_api.return_value = {
-            "data": [{"from": "2026-03-10T00:00Z", "to": "2026-03-10T00:30Z",
-                       "intensity": {"forecast": 100, "actual": 95, "index": "low"}}]
+            "data": [
+                {
+                    "from": "2026-03-10T00:00Z",
+                    "to": "2026-03-10T00:30Z",
+                    "intensity": {"forecast": 100, "actual": 95, "index": "low"},
+                }
+            ]
         }
         is_green, intensity = uk.check_carbon_intensity("GB", 250)
         assert is_green is True
@@ -294,9 +322,12 @@ class TestUkGetHistoryTrend:
     def test_decreasing(self, mock_api):
         mock_api.return_value = {
             "data": [
-                {"intensity": {"forecast": 400}}, {"intensity": {"forecast": 380}},
-                {"intensity": {"forecast": 360}}, {"intensity": {"forecast": 300}},
-                {"intensity": {"forecast": 280}}, {"intensity": {"forecast": 260}},
+                {"intensity": {"forecast": 400}},
+                {"intensity": {"forecast": 380}},
+                {"intensity": {"forecast": 360}},
+                {"intensity": {"forecast": 300}},
+                {"intensity": {"forecast": 280}},
+                {"intensity": {"forecast": 260}},
             ]
         }
         assert uk.get_history_trend("GB") == "decreasing"
@@ -311,6 +342,7 @@ class TestUkGetHistoryTrend:
 # EIA tests
 # ---------------------------------------------------------------------------
 
+
 class TestEiaFuelMixToIntensity:
     def test_all_gas(self):
         data = [{"fueltype": "NG", "value": 100}]
@@ -318,15 +350,16 @@ class TestEiaFuelMixToIntensity:
 
     def test_all_wind(self):
         data = [{"fueltype": "WND", "value": 100}]
-        assert eia._fuel_mix_to_intensity(data) == 0
+        # IPCC AR5 wind = 12, renewables are no longer treated as zero
+        assert eia._fuel_mix_to_intensity(data) == 12
 
     def test_mixed(self):
         data = [
-            {"fueltype": "NG", "value": 50},   # 50 * 490 = 24500
-            {"fueltype": "WND", "value": 50},   # 50 * 0 = 0
+            {"fueltype": "NG", "value": 50},  # 50 * 490 = 24500
+            {"fueltype": "WND", "value": 50},  # 50 * 12 = 600
         ]
-        # 24500 / 100 = 245
-        assert eia._fuel_mix_to_intensity(data) == 245
+        # (24500 + 600) / 100 = 251
+        assert eia._fuel_mix_to_intensity(data) == 251
 
     def test_negative_values_ignored(self):
         data = [
@@ -349,6 +382,28 @@ class TestEiaFuelMixToIntensity:
         data = [{"fueltype": "NG", "value": 0}]
         assert eia._fuel_mix_to_intensity(data) is None
 
+    def test_unknown_fuel_warns_and_falls_back(self, capsys):
+        # an unknown EIA fuel code must warn and still apply the fallback
+        # factor so the calc proceeds rather than silently using zero
+        from providers.base import DEFAULT_FUEL_FACTOR
+
+        data = [{"fueltype": "XYZ", "value": 100}]
+        result = eia._fuel_mix_to_intensity(data)
+        assert result == DEFAULT_FUEL_FACTOR
+        out = capsys.readouterr().out
+        assert "::warning::" in out
+        assert "XYZ" in out
+
+    def test_battery_storage_excluded(self):
+        # battery storage must not be counted as zero-carbon generation,
+        # it is excluded from the mix entirely
+        data = [
+            {"fueltype": "COL", "value": 100},
+            {"fueltype": "BAT", "value": 100},
+        ]
+        # BAT excluded, so result is pure coal = 820
+        assert eia._fuel_mix_to_intensity(data) == 820
+
 
 class TestEiaCheckCarbonIntensity:
     @mock.patch("providers.eia.api_request")
@@ -356,24 +411,50 @@ class TestEiaCheckCarbonIntensity:
         mock_api.return_value = {
             "response": {
                 "data": [
-                    {"period": "2026-03-09T06", "respondent": "CISO", "fueltype": "WND", "value": 500},
-                    {"period": "2026-03-09T06", "respondent": "CISO", "fueltype": "SUN", "value": 300},
-                    {"period": "2026-03-09T06", "respondent": "CISO", "fueltype": "NG", "value": 100},
+                    {
+                        "period": "2026-03-09T06",
+                        "respondent": "CISO",
+                        "fueltype": "WND",
+                        "value": 500,
+                    },
+                    {
+                        "period": "2026-03-09T06",
+                        "respondent": "CISO",
+                        "fueltype": "SUN",
+                        "value": 300,
+                    },
+                    {
+                        "period": "2026-03-09T06",
+                        "respondent": "CISO",
+                        "fueltype": "NG",
+                        "value": 100,
+                    },
                 ]
             }
         }
         is_green, intensity = eia.check_carbon_intensity("CISO", 250)
         assert is_green is True
-        # (100*490) / (500+300+100) = 49000/900 = 54
-        assert intensity == 54
+        # wind 12, solar 45, gas 490: (500*12 + 300*45 + 100*490) / 900
+        # = (6000 + 13500 + 49000) / 900 = 68500/900 = 76.1 -> 76
+        assert intensity == 76
 
     @mock.patch("providers.eia.api_request")
     def test_dirty_grid(self, mock_api):
         mock_api.return_value = {
             "response": {
                 "data": [
-                    {"period": "2026-03-09T06", "respondent": "ERCO", "fueltype": "COL", "value": 500},
-                    {"period": "2026-03-09T06", "respondent": "ERCO", "fueltype": "NG", "value": 500},
+                    {
+                        "period": "2026-03-09T06",
+                        "respondent": "ERCO",
+                        "fueltype": "COL",
+                        "value": 500,
+                    },
+                    {
+                        "period": "2026-03-09T06",
+                        "respondent": "ERCO",
+                        "fueltype": "NG",
+                        "value": 500,
+                    },
                 ]
             }
         }
@@ -419,7 +500,7 @@ class TestEiaGetHistoryTrend:
         gas_amounts = [100, 150, 200, 300, 350, 400]  # newest to oldest
         wind_amounts = [400, 350, 300, 200, 150, 100]
         for i in range(6):
-            period = f"2026-03-09T{6-i:02d}"
+            period = f"2026-03-09T{6 - i:02d}"
             rows.append({"period": period, "fueltype": "NG", "value": gas_amounts[i]})
             rows.append({"period": period, "fueltype": "WND", "value": wind_amounts[i]})
 
@@ -436,6 +517,7 @@ class TestEiaGetHistoryTrend:
 # ---------------------------------------------------------------------------
 # Electricity Maps tests
 # ---------------------------------------------------------------------------
+
 
 class TestElectricityMapsCheckCarbonIntensity:
     @mock.patch("providers.electricity_maps.api_request_with_header")
@@ -515,9 +597,12 @@ class TestElectricityMapsGetHistoryTrend:
     def test_decreasing(self, mock_api):
         mock_api.return_value = {
             "history": [
-                {"carbonIntensity": 400}, {"carbonIntensity": 380},
-                {"carbonIntensity": 360}, {"carbonIntensity": 300},
-                {"carbonIntensity": 280}, {"carbonIntensity": 260},
+                {"carbonIntensity": 400},
+                {"carbonIntensity": 380},
+                {"carbonIntensity": 360},
+                {"carbonIntensity": 300},
+                {"carbonIntensity": 280},
+                {"carbonIntensity": 260},
             ]
         }
         assert electricity_maps.get_history_trend("DE", "key") == "decreasing"
@@ -535,6 +620,7 @@ class TestElectricityMapsGetHistoryTrend:
 # GridStatus.io forecast tests
 # ---------------------------------------------------------------------------
 
+
 class TestGridstatusApiRequest:
     @mock.patch("providers.base.requests.get")
     def test_success(self, mock_get):
@@ -550,7 +636,9 @@ class TestGridstatusApiRequest:
     @mock.patch("providers.base.requests.get")
     def test_auth_error(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
-        result = api_request_with_header("https://api.gridstatus.io/v1/test", "x-api-key", "bad-key")
+        result = api_request_with_header(
+            "https://api.gridstatus.io/v1/test", "x-api-key", "bad-key"
+        )
         assert result is None
         assert mock_get.call_count == 1
 
@@ -615,9 +703,7 @@ class TestGridstatusGetForecast:
         mock_load.return_value = {
             "2026-03-10T18:00:00+00:00": 10000,
         }
-        dt, intensity = check_grid.get_forecast(
-            "CISO", 250, PROVIDER_EIA, "my-gridstatus-key"
-        )
+        dt, intensity = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "my-gridstatus-key")
         assert dt == "2026-03-10T18:00:00+00:00"
         assert intensity == 0
 
@@ -627,10 +713,18 @@ class TestGridstatusRenewableForecast:
     def test_single_dataset_with_location_filter(self, mock_query):
         """CAISO-style: single dataset with location filter."""
         mock_query.return_value = [
-            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "location": "CAISO",
-             "solar_mw": 8000, "wind_mw": 1500},
-            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "location": "NP15",
-             "solar_mw": 2000, "wind_mw": 500},
+            {
+                "interval_start_utc": "2026-03-10T18:00:00+00:00",
+                "location": "CAISO",
+                "solar_mw": 8000,
+                "wind_mw": 1500,
+            },
+            {
+                "interval_start_utc": "2026-03-10T18:00:00+00:00",
+                "location": "NP15",
+                "solar_mw": 2000,
+                "wind_mw": 500,
+            },
         ]
         iso_config = gridstatus.GRIDSTATUS_ISO_MAP["CISO"]
         result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
@@ -657,6 +751,7 @@ class TestGridstatusRenewableForecast:
 # Provider-agnostic tests
 # ---------------------------------------------------------------------------
 
+
 class TestComputeTrend:
     def test_decreasing(self):
         points = [400, 380, 360, 300, 280, 260]
@@ -679,8 +774,8 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_picks_greenest(self, _mock_detect, mock_check):
         mock_check.side_effect = [
-            (True, 200),   # zone A
-            (True, 50),    # zone B (best)
+            (True, 200),  # zone A
+            (True, 50),  # zone B (best)
             (False, 400),  # zone C
         ]
         zones = [
@@ -857,13 +952,14 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "decreasing"
         mock_forecast.return_value = ("2026-03-10T18:00:00+00:00", 50)
 
-        check_grid.handle_dirty_grid("CISO", 250, 400, enable_forecast=True,
-                                     gridstatus_api_key="gs-key")
+        check_grid.handle_dirty_grid(
+            "CISO", 250, 400, enable_forecast=True, gridstatus_api_key="gs-key"
+        )
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T18:00:00+00:00"
         assert output_calls["forecast_intensity"] == "50"
-        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "", "")
+        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "", "", "")
 
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
@@ -898,8 +994,7 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "stable"
         mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
 
-        check_grid.handle_dirty_grid("DE", 250, 400, enable_forecast=False,
-                                     emaps_api_key="em-key")
+        check_grid.handle_dirty_grid("DE", 250, 400, enable_forecast=False, emaps_api_key="em-key")
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T14:00Z"
@@ -940,7 +1035,10 @@ class TestWriteJobSummary:
         try:
             os.environ["GITHUB_STEP_SUMMARY"] = path
             check_grid.write_job_summary(
-                "PJM", 380, False, 200,
+                "PJM",
+                380,
+                False,
+                200,
                 trend="decreasing",
                 forecast_at="2026-03-10T14:00Z",
                 forecast_intensity=150,
@@ -961,7 +1059,10 @@ class TestWriteJobSummary:
         try:
             os.environ["GITHUB_STEP_SUMMARY"] = path
             check_grid.write_job_summary(
-                "CISO", 100, True, 200,
+                "CISO",
+                100,
+                True,
+                200,
                 skipped=[("DE", "no electricity_maps_token")],
             )
             with open(path) as f:
@@ -988,9 +1089,7 @@ class TestSmartWaitSingle:
         mock_check.return_value = (True, 100)
         mock_forecast.return_value = (None, None)
 
-        is_green, intensity, waited = check_grid.smart_wait_single(
-            "CISO", 250, 10, PROVIDER_EIA
-        )
+        is_green, intensity, waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
         assert is_green is True
         assert intensity == 100
         mock_sleep.assert_called_once()
@@ -1002,13 +1101,16 @@ class TestSmartWaitSingle:
     def test_stays_dirty_after_max_wait(self, mock_time, mock_sleep, mock_check, mock_forecast):
         """Grid stays dirty: returns after max_wait exceeded."""
         # Simulate time passing: start at 0, then exceed deadline
-        mock_time.side_effect = [0, 0, 601, 601]  # start, loop check, loop check (past deadline), final
+        mock_time.side_effect = [
+            0,
+            0,
+            601,
+            601,
+        ]  # start, loop check, loop check (past deadline), final
         mock_check.return_value = (False, 400)
         mock_forecast.return_value = (None, None)
 
-        is_green, intensity, waited = check_grid.smart_wait_single(
-            "CISO", 250, 10, PROVIDER_EIA
-        )
+        is_green, intensity, waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
         assert is_green is False
         assert intensity == 400
 
@@ -1054,6 +1156,7 @@ class TestInlineMode:
 # ---------------------------------------------------------------------------
 # Runner provider tests
 # ---------------------------------------------------------------------------
+
 
 class TestGetCloudRegion:
     def test_us_zones(self):
@@ -1185,7 +1288,9 @@ class TestRoutingIntegration:
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["grid_clean"] == "true"
         assert output_calls["cloud_region"] == "us-west-1"
-        assert output_calls["runner_label"] == "runs-on=98765/runner=4cpu-linux-x64/region=us-west-1"
+        assert (
+            output_calls["runner_label"] == "runs-on=98765/runner=4cpu-linux-x64/region=us-west-1"
+        )
 
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.set_output")
@@ -1193,7 +1298,7 @@ class TestRoutingIntegration:
     def test_multi_zone_with_runson_provider(self, mock_summary, mock_output, mock_check):
         mock_check.side_effect = [
             (False, 400),  # ERCO dirty
-            (True, 80),    # GB green
+            (True, 80),  # GB green
         ]
 
         os.environ["GRID_ZONES"] = "ERCO,GB"
@@ -1229,6 +1334,7 @@ class TestRoutingIntegration:
 # AEMO provider tests
 # ---------------------------------------------------------------------------
 
+
 class TestAemoDetectProvider:
     def test_au_nsw(self):
         assert detect_provider("AU-NSW") == PROVIDER_AEMO
@@ -1247,22 +1353,24 @@ class TestAemoFuelMixToIntensity:
 
     def test_all_wind(self):
         data = [{"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 500}]
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+        # IPCC AR5 wind = 12, renewables are no longer treated as zero
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
 
     def test_mixed(self):
         data = [
             {"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 500},
             {"REGIONID": "NSW1", "FUELTYPE": "Solar", "GEN_MW": 500},
         ]
-        # (500*820 + 500*0) / 1000 = 410
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 410
+        # coal 820, solar 45: (500*820 + 500*45) / 1000 = 432.5 -> 432
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 432
 
     def test_filters_by_region(self):
         data = [
             {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 1000},
             {"REGIONID": "QLD1", "FUELTYPE": "Black Coal", "GEN_MW": 1000},
         ]
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+        # only NSW wind is counted, wind = 12
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
 
     def test_empty_data(self):
         assert aemo._fuel_mix_to_intensity([], "NSW1") is None
@@ -1272,7 +1380,8 @@ class TestAemoFuelMixToIntensity:
             {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 100},
             {"REGIONID": "NSW1", "FUELTYPE": "Battery", "GEN_MW": -50},
         ]
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 0
+        # wind = 12, battery is storage and excluded anyway
+        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
 
 
 class TestAemoCheckCarbonIntensity:
@@ -1284,7 +1393,8 @@ class TestAemoCheckCarbonIntensity:
         ]
         is_green, intensity = aemo.check_carbon_intensity("AU-TAS", 250)
         assert is_green is True
-        assert intensity == 0
+        # hydro 24, wind 12: (900*24 + 100*12) / 1000 = 22.8 -> 23
+        assert intensity == 23
 
     @mock.patch("providers.aemo._fetch_fuel_data")
     def test_dirty(self, mock_fetch):
@@ -1294,8 +1404,9 @@ class TestAemoCheckCarbonIntensity:
         ]
         is_green, intensity = aemo.check_carbon_intensity("AU-VIC", 250)
         assert is_green is False
-        # (800*900 + 200*0) / 1000 = 720
-        assert intensity == 720
+        # brown coal/lignite 1050, wind 12: (800*1050 + 200*12) / 1000
+        # = 842.4 -> 842
+        assert intensity == 842
 
     @mock.patch("providers.aemo._fetch_fuel_data")
     def test_api_error(self, mock_fetch):
@@ -1318,6 +1429,7 @@ class TestAemoCheckCarbonIntensity:
 # ---------------------------------------------------------------------------
 # ENTSO-E provider tests
 # ---------------------------------------------------------------------------
+
 
 class TestEntsoeDetectProvider:
     def test_de_with_token(self):
@@ -1366,9 +1478,46 @@ class TestEntsoeParseGenerationXml:
         result = entsoe._parse_generation_xml("")
         assert result == []
 
+    def test_uses_latest_period_not_blend(self):
+        # two periods for the same production type, the parser must use only
+        # the latest period/position quantity, discarding earlier hours
+        xml = """
+        <TimeSeries>
+            <MktPSRType><psrType>B05</psrType></MktPSRType>
+            <Period>
+                <timeInterval><end>2024-01-01T01:00Z</end></timeInterval>
+                <Point><position>1</position><quantity>100</quantity></Point>
+                <Point><position>2</position><quantity>200</quantity></Point>
+            </Period>
+            <Period>
+                <timeInterval><end>2024-01-01T02:00Z</end></timeInterval>
+                <Point><position>1</position><quantity>500</quantity></Point>
+            </Period>
+        </TimeSeries>
+        """
+        result = entsoe._parse_generation_xml(xml)
+        # latest period end is 02:00 with quantity 500, not a sum (800)
+        assert result == [("B05", 500.0)]
+
+    def test_pumped_storage_excluded_from_intensity(self):
+        # B10 Hydro Pumped Storage must be excluded from the weighted mix
+        gen_data = [("B05", 100.0), ("B10", 100.0)]
+        # B10 excluded, so result is pure hard coal = 820
+        assert entsoe._intensity_from_gen_data(gen_data) == 820
+
+    def test_unknown_psr_warns_and_falls_back(self, capsys):
+        from providers.entsoe import DEFAULT_FUEL_FACTOR
+
+        gen_data = [("B99", 100.0)]
+        result = entsoe._intensity_from_gen_data(gen_data)
+        assert result == DEFAULT_FUEL_FACTOR
+        out = capsys.readouterr().out
+        assert "::warning::" in out
+        assert "B99" in out
+
 
 class TestEntsoeCheckCarbonIntensity:
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_green(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1383,10 +1532,11 @@ class TestEntsoeCheckCarbonIntensity:
         mock_get.return_value = mock.Mock(status_code=200, text=xml)
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
         assert is_green is True
-        # (800*0 + 200*490) / 1000 = 98
-        assert intensity == 98
+        # wind B19 = 12, gas B04 = 490: (800*12 + 200*490) / 1000
+        # = (9600 + 98000) / 1000 = 107.6 -> 108
+        assert intensity == 108
 
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_dirty(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1414,21 +1564,21 @@ class TestEntsoeCheckCarbonIntensity:
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_auth_failure(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "bad-token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_rate_limit(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=429, text="Too Many Requests")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_network_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
@@ -1437,7 +1587,7 @@ class TestEntsoeCheckCarbonIntensity:
 
 
 class TestEntsoeForecast:
-    @mock.patch("providers.entsoe.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_forecast_green(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1452,7 +1602,9 @@ class TestEntsoeForecast:
         mock_get.return_value = mock.Mock(status_code=200, text=xml)
         dt, intensity = entsoe.get_forecast("DE", 250, "token")
         assert dt is not None
-        assert intensity == 49  # (900*0 + 100*490) / 1000
+        # wind B19 = 12, gas B04 = 490: (900*12 + 100*490) / 1000
+        # = (10800 + 49000) / 1000 = 59.8 -> 60
+        assert intensity == 60
 
     def test_no_token(self):
         dt, intensity = entsoe.get_forecast("DE", 250, "")
@@ -1464,11 +1616,13 @@ class TestEntsoeForecast:
 # Open-Meteo provider tests
 # ---------------------------------------------------------------------------
 
+
 class TestOpenMeteoEstimateIntensity:
     def test_high_solar_high_wind(self):
         # 40% solar reduction * 25% wind reduction = 0.60 * 0.75 = 0.45
+        # 550 * 0.60 * 0.75 = 247.5 -> 248 (above the renewable floor)
         intensity = open_meteo._estimate_intensity_from_weather(700, 10)
-        assert intensity == round(550 * 0.60 * 0.75)
+        assert intensity == 248
 
     def test_no_solar_no_wind(self):
         # Night, calm: full base intensity
@@ -1480,8 +1634,9 @@ class TestOpenMeteoEstimateIntensity:
         assert intensity == round(550 * 0.80 * 1.0)
 
     def test_high_wind_only(self):
+        # 25% wind reduction only: 550 * 1.0 * 0.75 = 412.5 -> 412
         intensity = open_meteo._estimate_intensity_from_weather(0, 9)
-        assert intensity == round(550 * 1.0 * 0.75)
+        assert intensity == 412
 
 
 class TestOpenMeteoCheckCarbonIntensity:
@@ -1531,9 +1686,7 @@ class TestOpenMeteoCheckCarbonIntensity:
                 }
             },
         )
-        is_green, intensity = open_meteo.check_carbon_intensity(
-            "CUSTOM", 500, lat=40.0, lon=-74.0
-        )
+        is_green, intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
         assert is_green is True
 
     @mock.patch("providers.open_meteo.requests.get")
@@ -1592,6 +1745,7 @@ class TestOpenMeteoForecast:
 # Time-aware auto:green sorting tests
 # ---------------------------------------------------------------------------
 
+
 class TestTimePriorityScore:
     def test_solar_peak(self):
         zone = {"zone": "CISO", "utc_offset": -8, "type": "solar"}
@@ -1614,8 +1768,8 @@ class TestTimePriorityScore:
 
     def test_wind_higher_at_night(self):
         zone = {"zone": "GB-16", "utc_offset": 0, "type": "wind"}
-        night_score = _time_priority_score(zone, 2)   # 2am local
-        day_score = _time_priority_score(zone, 14)     # 2pm local
+        night_score = _time_priority_score(zone, 2)  # 2am local
+        day_score = _time_priority_score(zone, 14)  # 2pm local
         assert night_score > day_score
 
 
@@ -1647,6 +1801,7 @@ class TestSortAutoGreenByTime:
 # Expanded auto:green tests
 # ---------------------------------------------------------------------------
 
+
 class TestExpandedAutoGreen:
     def test_has_global_coverage(self):
         """auto:green includes free-provider zones across multiple continents."""
@@ -1675,11 +1830,12 @@ class TestExpandedAutoGreen:
     def test_auto_green_full_includes_token_zones(self):
         """auto:green:full includes both free and token-requiring zones."""
         from providers import AUTO_GREEN_ZONES_FULL
+
         zones = {z["zone"] for z in AUTO_GREEN_ZONES_FULL}
-        assert "CISO" in zones      # Free
-        assert "NO-NO1" in zones    # Token-requiring
-        assert "CA-QC" in zones     # Token-requiring
-        assert "NZ-NZN" in zones    # Token-requiring
+        assert "CISO" in zones  # Free
+        assert "NO-NO1" in zones  # Token-requiring
+        assert "CA-QC" in zones  # Token-requiring
+        assert "NZ-NZN" in zones  # Token-requiring
 
     def test_all_zones_have_required_fields(self):
         for zone in AUTO_GREEN_ZONES:
@@ -1693,6 +1849,7 @@ class TestExpandedAutoGreen:
 # ---------------------------------------------------------------------------
 # Carbon savings estimation tests
 # ---------------------------------------------------------------------------
+
 
 class TestEstimateCarbonSavings:
     def test_green_grid_saves_co2(self):
@@ -1743,13 +1900,12 @@ class TestWriteJobSummaryWithCo2:
 # check_grid.py dispatch routing tests for new providers
 # ---------------------------------------------------------------------------
 
+
 class TestCheckGridDispatchRouting:
     @mock.patch("providers.aemo.check_carbon_intensity")
     def test_routes_to_aemo(self, mock_aemo):
         mock_aemo.return_value = (True, 100)
-        is_green, intensity = check_grid.check_carbon_intensity(
-            "AU-NSW", 250, PROVIDER_AEMO
-        )
+        is_green, intensity = check_grid.check_carbon_intensity("AU-NSW", 250, PROVIDER_AEMO)
         assert is_green is True
         mock_aemo.assert_called_once_with("AU-NSW", 250)
 
@@ -1765,9 +1921,7 @@ class TestCheckGridDispatchRouting:
     @mock.patch("providers.open_meteo.check_carbon_intensity")
     def test_routes_to_open_meteo(self, mock_om):
         mock_om.return_value = (True, 200)
-        is_green, intensity = check_grid.check_carbon_intensity(
-            "ZA", 250, PROVIDER_OPEN_METEO
-        )
+        is_green, intensity = check_grid.check_carbon_intensity("ZA", 250, PROVIDER_OPEN_METEO)
         assert is_green is True
         mock_om.assert_called_once_with("ZA", 250)
 
@@ -1854,6 +2008,7 @@ class TestCheckGridDispatchRouting:
 
 # --- New provider detection tests ---
 
+
 class TestNewProviderDetection:
     def test_india_zones_detect_grid_india(self):
         for zone in ["IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"]:
@@ -1874,6 +2029,7 @@ class TestNewProviderDetection:
 
 
 # --- Grid India provider tests ---
+
 
 class TestGridIndiaProvider:
     def test_unknown_zone(self):
@@ -1936,6 +2092,7 @@ class TestGridIndiaProvider:
 
 # --- ONS Brazil provider tests ---
 
+
 class TestOnsBrazilProvider:
     def test_unknown_zone(self):
         is_green, intensity = ons_brazil.check_carbon_intensity("XX", 250)
@@ -1985,6 +2142,7 @@ class TestOnsBrazilProvider:
 
 
 # --- Eskom provider tests ---
+
 
 class TestEskomProvider:
     def test_unknown_zone(self):
@@ -2039,6 +2197,7 @@ class TestEskomProvider:
 
 
 # --- Auto presets tests ---
+
 
 class TestAutoCleanestPreset:
     def test_auto_cleanest_expansion(self):
@@ -2123,6 +2282,7 @@ class TestParseZonesAutoPresets:
 
 # --- GCP and Azure region tests ---
 
+
 class TestGcpRegionMapping:
     def test_us_zones(self):
         assert get_gcp_region("CISO") == "us-west1"
@@ -2172,6 +2332,7 @@ class TestAzureRegionMapping:
 
 # --- Cloud region recommender output tests ---
 
+
 class TestCloudRegionRecommender:
     def test_set_runner_outputs_includes_all_clouds(self):
         """set_runner_outputs should set gcp_region and azure_region."""
@@ -2179,9 +2340,7 @@ class TestCloudRegionRecommender:
             output_file = f.name
         os.environ["GITHUB_OUTPUT"] = output_file
         try:
-            check_grid.set_runner_outputs(
-                "CISO", None, "", "", ""
-            )
+            check_grid.set_runner_outputs("CISO", None, "", "", "")
             with open(output_file) as f:
                 content = f.read()
             assert "cloud_region=us-west-1" in content
@@ -2193,6 +2352,7 @@ class TestCloudRegionRecommender:
 
 # --- Carbon policy (org config) tests ---
 
+
 class TestCarbonPolicy:
     def test_no_policy_file(self):
         os.environ["CARBON_POLICY_PATH"] = "/nonexistent/path.yml"
@@ -2200,9 +2360,7 @@ class TestCarbonPolicy:
         assert policy == {}
 
     def test_load_simple_policy(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("max_carbon_intensity: 150\n")
             f.write("grid_zones: 'auto:green'\n")
             f.write("enable_forecast: true\n")
@@ -2221,9 +2379,7 @@ class TestCarbonPolicy:
             os.unlink(policy_path)
 
     def test_policy_ignores_comments_and_blanks(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("# Comment\n\n")
             f.write("max_carbon_intensity: 200\n")
             f.write("\n# Another comment\n")
@@ -2240,15 +2396,14 @@ class TestCarbonPolicy:
 
 # --- Queue strategy tests ---
 
+
 class TestQueueStrategy:
     @mock.patch("check_grid.check_multiple_zones")
     @mock.patch("check_grid.get_forecast")
     def test_queue_find_optimal_window_found(self, mock_forecast, mock_check):
         mock_forecast.return_value = ("2026-03-10T14:00Z", 120)
         zones = [{"zone": "CISO", "runner_label": None}]
-        zone, time, intensity = check_grid.queue_find_optimal_window(
-            zones, 250, 24
-        )
+        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
         assert zone == "CISO"
         assert time == "2026-03-10T14:00Z"
         assert intensity == 120
@@ -2257,9 +2412,7 @@ class TestQueueStrategy:
     def test_queue_find_optimal_window_none(self, mock_forecast):
         mock_forecast.return_value = ("none_in_forecast", None)
         zones = [{"zone": "PJM", "runner_label": None}]
-        zone, time, intensity = check_grid.queue_find_optimal_window(
-            zones, 250, 24
-        )
+        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
         assert zone is None
 
     @mock.patch("check_grid.get_forecast")
@@ -2276,16 +2429,15 @@ class TestQueueStrategy:
             {"zone": "CISO", "runner_label": None},
             {"zone": "BPAT", "runner_label": None},
         ]
-        zone, time, intensity = check_grid.queue_find_optimal_window(
-            zones, 250, 24
-        )
+        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
         assert zone == "BPAT"  # Lower intensity
         assert intensity == 80
 
 
 # --- Inline mode simplification test ---
 
-class TestInlineMode:
+
+class TestInlineModeDispatch:
     @mock.patch("check_grid.check_carbon_intensity")
     def test_inline_no_workflow_id(self, mock_check):
         """Inline mode should work without workflow_id or github_token."""
@@ -2310,42 +2462,75 @@ class TestInlineMode:
 # Setup wizard tests
 # ---------------------------------------------------------------------------
 
+
 class TestSetupWizard:
     def test_provider_names_cover_all_providers(self):
         """All providers should have display names in the wizard."""
-        from setup_wizard import _PROVIDER_NAMES
         from providers import (
-            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_AEMO,
+            PROVIDER_EIA,
+            PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_ENTSOE,
+            PROVIDER_ESKOM,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_UK,
         )
-        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+        from setup_wizard import _PROVIDER_NAMES
+
+        for p in [
+            PROVIDER_UK,
+            PROVIDER_EIA,
+            PROVIDER_AEMO,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_ESKOM,
+            PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_ELECTRICITY_MAPS,
+        ]:
             assert p in _PROVIDER_NAMES, f"Missing display name for {p}"
 
     def test_provider_modules_cover_all_providers(self):
         """All providers should have modules in the wizard."""
-        from setup_wizard import _PROVIDER_MODULES
         from providers import (
-            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_AEMO,
+            PROVIDER_EIA,
+            PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_ENTSOE,
+            PROVIDER_ESKOM,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_UK,
         )
-        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+        from setup_wizard import _PROVIDER_MODULES
+
+        for p in [
+            PROVIDER_UK,
+            PROVIDER_EIA,
+            PROVIDER_AEMO,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_ESKOM,
+            PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_ELECTRICITY_MAPS,
+        ]:
             assert p in _PROVIDER_MODULES, f"Missing module for {p}"
 
     @mock.patch("setup_wizard.uk.check_carbon_intensity", return_value=(True, 100))
     def test_zone_test_uk(self, mock_check):
         from setup_wizard import test_zone
+
         result = test_zone("GB")
         assert result["status"] == "ok"
         assert result["intensity"] == 100
 
     def test_zone_test_entsoe_skipped_without_token(self):
         from setup_wizard import test_zone
+
         result = test_zone("DE", entsoe_token="")
         # DE without entsoe token should use Open-Meteo (if coordinates exist)
         # or be skipped for ENTSO-E
@@ -2353,6 +2538,7 @@ class TestSetupWizard:
 
     def test_zone_test_emaps_skipped_without_token(self):
         from setup_wizard import test_zone
+
         # Use a fake zone that only Electricity Maps can handle (no coordinates)
         result = test_zone("XX-NOCOORDS", emaps_api_key="")
         assert result["status"] == "skipped"
@@ -2361,6 +2547,7 @@ class TestSetupWizard:
     @mock.patch("setup_wizard.open_meteo.check_carbon_intensity", return_value=(True, 300))
     def test_zone_with_open_meteo_fallback(self, mock_check):
         from setup_wizard import test_zone
+
         # SG has Open-Meteo coordinates, should work without emaps token
         result = test_zone("SG", emaps_api_key="")
         assert result["status"] == "ok"
@@ -2369,6 +2556,7 @@ class TestSetupWizard:
 # ---------------------------------------------------------------------------
 # Cloud region mapping completeness
 # ---------------------------------------------------------------------------
+
 
 class TestCloudRegionMappingCompleteness:
     def test_all_auto_cleanest_zones_have_aws_mapping(self):
@@ -2409,30 +2597,46 @@ class TestCloudRegionMappingCompleteness:
 # Provider registry consistency
 # ---------------------------------------------------------------------------
 
+
 class TestProviderRegistryConsistency:
     def test_all_providers_in_check_grid_registry(self):
         """All provider constants should be in check_grid's module registry."""
         from check_grid import _PROVIDER_MODULES
         from providers import (
-            PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_AEMO,
+            PROVIDER_EIA,
+            PROVIDER_ELECTRICITY_MAPS,
+            PROVIDER_ENTSOE,
+            PROVIDER_ESKOM,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_UK,
         )
-        for p in [PROVIDER_UK, PROVIDER_EIA, PROVIDER_AEMO, PROVIDER_GRID_INDIA,
-                  PROVIDER_ONS_BRAZIL, PROVIDER_ESKOM, PROVIDER_ENTSOE,
-                  PROVIDER_OPEN_METEO, PROVIDER_ELECTRICITY_MAPS]:
+
+        for p in [
+            PROVIDER_UK,
+            PROVIDER_EIA,
+            PROVIDER_AEMO,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_ESKOM,
+            PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_ELECTRICITY_MAPS,
+        ]:
             assert p in _PROVIDER_MODULES, f"Missing {p} in _PROVIDER_MODULES"
 
     def test_all_provider_modules_have_required_functions(self):
-        """Each provider module must have check_carbon_intensity, get_forecast, get_history_trend."""
+        """Every provider module exposes the three required provider functions."""
         from check_grid import _PROVIDER_MODULES
+
         for provider_id, module in _PROVIDER_MODULES.items():
-            assert hasattr(module, "check_carbon_intensity"), \
+            assert hasattr(module, "check_carbon_intensity"), (
                 f"{provider_id} missing check_carbon_intensity"
-            assert hasattr(module, "get_forecast"), \
-                f"{provider_id} missing get_forecast"
-            assert hasattr(module, "get_history_trend"), \
-                f"{provider_id} missing get_history_trend"
+            )
+            assert hasattr(module, "get_forecast"), f"{provider_id} missing get_forecast"
+            assert hasattr(module, "get_history_trend"), f"{provider_id} missing get_history_trend"
 
     def test_detect_provider_prefers_free_over_paid(self):
         """Free providers should be preferred over token-required providers."""
@@ -2461,6 +2665,7 @@ class TestProviderRegistryConsistency:
 # Fallback chain tests
 # ---------------------------------------------------------------------------
 
+
 class TestFallbackChain:
     @mock.patch("check_grid.open_meteo.check_carbon_intensity", return_value=(True, 200))
     @mock.patch("check_grid.eia.check_carbon_intensity", return_value=(None, None))
@@ -2470,6 +2675,7 @@ class TestFallbackChain:
         # a zone that would hit EIA but also has coords, which is unrealistic.
         # Instead test the generic fallback path.
         from providers.open_meteo import ZONE_COORDINATES
+
         # Temporarily add coords for test
         ZONE_COORDINATES["CISO"] = (37.8, -122.4)
         try:
@@ -2486,9 +2692,7 @@ class TestFallbackChain:
     def test_no_fallback_when_primary_succeeds(self, mock_uk):
         """Fallback should NOT trigger when primary provider succeeds."""
         with mock.patch("check_grid.open_meteo.check_carbon_intensity") as mock_meteo:
-            is_green, intensity = check_grid.check_carbon_intensity(
-                "GB", 250, PROVIDER_UK
-            )
+            is_green, intensity = check_grid.check_carbon_intensity("GB", 250, PROVIDER_UK)
             assert is_green is True
             assert intensity == 150
             mock_meteo.assert_not_called()
@@ -2497,9 +2701,7 @@ class TestFallbackChain:
     def test_no_double_fallback_for_open_meteo(self, mock_meteo):
         """Open-Meteo itself should not trigger fallback to Open-Meteo."""
         mock_meteo.return_value = (None, None)
-        is_green, intensity = check_grid.check_carbon_intensity(
-            "IS", 250, PROVIDER_OPEN_METEO
-        )
+        is_green, intensity = check_grid.check_carbon_intensity("IS", 250, PROVIDER_OPEN_METEO)
         assert is_green is None
         # Should only be called once (primary), not twice (no self-fallback)
         assert mock_meteo.call_count == 1
@@ -2508,6 +2710,7 @@ class TestFallbackChain:
 # ---------------------------------------------------------------------------
 # Cloud auto-detection tests
 # ---------------------------------------------------------------------------
+
 
 class TestCloudAutoDetection:
     def test_aws_region_detection(self):
@@ -2547,10 +2750,19 @@ class TestCloudAutoDetection:
             assert "CLOUD_REGION_OVERRIDE" in source
 
     def test_no_cloud_env_returns_none(self):
-        env_keys = ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_REGION",
-                     "CLOUDSDK_COMPUTE_REGION", "CLOUD_RUN_REGION",
-                     "AZURE_REGION", "REGION_NAME", "WEBSITE_SITE_NAME_REGION",
-                     "CLOUD_REGION_OVERRIDE", "GITHUB_ACTIONS", "RUNNER_NAME"]
+        env_keys = [
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "GOOGLE_CLOUD_REGION",
+            "CLOUDSDK_COMPUTE_REGION",
+            "CLOUD_RUN_REGION",
+            "AZURE_REGION",
+            "REGION_NAME",
+            "WEBSITE_SITE_NAME_REGION",
+            "CLOUD_REGION_OVERRIDE",
+            "GITHUB_ACTIONS",
+            "RUNNER_NAME",
+        ]
         clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
         with mock.patch.dict(os.environ, clean_env, clear=True):
             zone, source = detect_cloud_zone()
@@ -2591,10 +2803,19 @@ class TestAutoDetectPreset:
 
     def test_auto_detect_fallback_to_cleanest(self):
         """auto:detect falls back to auto:cleanest when no cloud env is set."""
-        env_keys = ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_REGION",
-                     "CLOUDSDK_COMPUTE_REGION", "CLOUD_RUN_REGION",
-                     "AZURE_REGION", "REGION_NAME", "WEBSITE_SITE_NAME_REGION",
-                     "CLOUD_REGION_OVERRIDE", "GITHUB_ACTIONS", "RUNNER_NAME"]
+        env_keys = [
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "GOOGLE_CLOUD_REGION",
+            "CLOUDSDK_COMPUTE_REGION",
+            "CLOUD_RUN_REGION",
+            "AZURE_REGION",
+            "REGION_NAME",
+            "WEBSITE_SITE_NAME_REGION",
+            "CLOUD_REGION_OVERRIDE",
+            "GITHUB_ACTIONS",
+            "RUNNER_NAME",
+        ]
         clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
         with mock.patch.dict(os.environ, clean_env, clear=True):
             result = check_grid.expand_auto_zones("auto:detect")
@@ -2626,6 +2847,7 @@ class TestZeroConfigDefault:
 # ---------------------------------------------------------------------------
 # Forecast heuristic tests
 # ---------------------------------------------------------------------------
+
 
 class TestIndiaForecastHeuristic:
     def test_high_threshold_finds_window(self):
@@ -2677,6 +2899,7 @@ class TestEskomForecastHeuristic:
 # ---------------------------------------------------------------------------
 # auto:nearest preset tests
 # ---------------------------------------------------------------------------
+
 
 class TestAutoNearestPreset:
     def test_nearest_with_tz_utc(self):
@@ -2750,6 +2973,7 @@ class TestDetectUtcOffset:
 # Cron schedule optimizer tests
 # ---------------------------------------------------------------------------
 
+
 class TestSuggestGreenCron:
     def test_solar_zone(self):
         """Solar zones should suggest midday cron."""
@@ -2788,13 +3012,138 @@ class TestSuggestGreenCron:
 # NEAREST_ZONES_BY_OFFSET coverage tests
 # ---------------------------------------------------------------------------
 
+
 class TestNearestZonesMapping:
     def test_all_major_offsets_covered(self):
         from providers import NEAREST_ZONES_BY_OFFSET
+
         for offset in range(-10, 14):
             assert offset in NEAREST_ZONES_BY_OFFSET, f"Missing offset {offset}"
 
     def test_half_hour_offsets(self):
         from providers import NEAREST_ZONES_BY_OFFSET
+
         assert 5.5 in NEAREST_ZONES_BY_OFFSET  # India
         assert 9.5 in NEAREST_ZONES_BY_OFFSET  # Australia Central
+
+
+# ---------------------------------------------------------------------------
+# Guarded env parsing helpers
+# ---------------------------------------------------------------------------
+
+
+class TestEnvParsingHelpers:
+    def test_env_float_default_when_unset(self):
+        os.environ.pop("MAX_CARBON", None)
+        assert check_grid._env_float("MAX_CARBON", 250) == 250
+
+    def test_env_float_default_when_empty(self):
+        with mock.patch.dict(os.environ, {"MAX_CARBON": ""}):
+            assert check_grid._env_float("MAX_CARBON", 250) == 250
+
+    def test_env_float_parses_value(self):
+        with mock.patch.dict(os.environ, {"MAX_CARBON": "123.5"}):
+            assert check_grid._env_float("MAX_CARBON", 250) == 123.5
+
+    def test_env_float_exits_on_malformed(self):
+        with mock.patch.dict(os.environ, {"MAX_CARBON": "notanumber"}):
+            with pytest.raises(SystemExit) as exc:
+                check_grid._env_float("MAX_CARBON", 250)
+            assert exc.value.code == check_grid.EXIT_FAILURE
+
+    def test_env_int_default_when_unset(self):
+        os.environ.pop("MAX_WAIT", None)
+        assert check_grid._env_int("MAX_WAIT", 0) == 0
+
+    def test_env_int_parses_value(self):
+        with mock.patch.dict(os.environ, {"MAX_WAIT": "30"}):
+            assert check_grid._env_int("MAX_WAIT", 0) == 30
+
+    def test_env_int_exits_on_malformed(self):
+        with mock.patch.dict(os.environ, {"MAX_WAIT": "soon"}):
+            with pytest.raises(SystemExit) as exc:
+                check_grid._env_int("MAX_WAIT", 0)
+            assert exc.value.code == check_grid.EXIT_FAILURE
+
+    def test_env_float_raw_overrides_env(self):
+        # Explicit raw string takes precedence (policy-fallback path)
+        with mock.patch.dict(os.environ, {"MAX_CARBON": "999"}):
+            assert check_grid._env_float("MAX_CARBON", 250, "100") == 100
+
+    def test_env_float_raw_empty_uses_default(self):
+        assert check_grid._env_float("DEADLINE_HOURS", 24, "") == 24
+
+
+# ---------------------------------------------------------------------------
+# get_forecast forwards eia_api_key
+# ---------------------------------------------------------------------------
+
+
+class TestGetForecastEiaKey:
+    @mock.patch("providers.eia.get_forecast", create=True)
+    def test_eia_key_forwarded_to_extra_args(self, mock_fc):
+        # EIA resolves the eia_api_key from the extra-args dict; verify it
+        # reaches the provider module's get_forecast call
+        mock_fc.return_value = (None, None)
+        check_grid.get_forecast(
+            "CISO", 250, PROVIDER_EIA, gridstatus_api_key="", eia_api_key="my-eia-key"
+        )
+        mock_fc.assert_called_once_with("CISO", 250, "my-eia-key")
+
+    @mock.patch("providers.gridstatus.get_forecast")
+    @mock.patch("providers.eia.get_forecast", create=True)
+    def test_eia_still_returns_none_without_gridstatus(self, mock_eia_fc, mock_gs):
+        # Without a gridstatus key, EIA forecast resolves to (None, None) today
+        mock_eia_fc.return_value = (None, None)
+        result = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "")
+        assert result == (None, None)
+        mock_gs.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _emit_green_result shared helper
+# ---------------------------------------------------------------------------
+
+
+class TestEmitGreenResult:
+    @mock.patch("check_grid.trigger_workflow")
+    def test_sets_grid_clean_and_co2_saved(self, mock_trigger):
+        outputs = {}
+
+        def _capture(name, value):
+            outputs[name] = value
+
+        with mock.patch("check_grid.set_output", side_effect=_capture):
+            with mock.patch("check_grid.write_job_summary") as mock_summary:
+                # Low intensity vs global average produces positive savings
+                check_grid._emit_green_result(
+                    "CISO", 50, None, 250, False, "", "", "", "main", "", "", "run-1"
+                )
+
+        assert outputs["grid_clean"] == "true"
+        assert outputs["carbon_intensity"] == "50"
+        assert "co2_saved_grams" in outputs
+        assert float(outputs["co2_saved_grams"]) > 0
+        mock_summary.assert_called_once()
+        # Inline mode (no dispatch) should not trigger a workflow
+        mock_trigger.assert_not_called()
+
+    @mock.patch("check_grid.trigger_workflow")
+    def test_dispatch_mode_triggers_workflow(self, mock_trigger):
+        with mock.patch("check_grid.set_output"):
+            with mock.patch("check_grid.write_job_summary"):
+                check_grid._emit_green_result(
+                    "CISO",
+                    50,
+                    None,
+                    250,
+                    True,
+                    "owner/repo",
+                    "wf.yml",
+                    "tok",
+                    "main",
+                    "",
+                    "",
+                    "run-1",
+                )
+        mock_trigger.assert_called_once_with("owner/repo", "wf.yml", "tok", "main")

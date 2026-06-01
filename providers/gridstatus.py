@@ -74,10 +74,7 @@ GRIDSTATUS_ISO_MAP = {
 
 def _query_dataset(dataset, api_key, start_time, limit=48):
     """Query a GridStatus dataset and return the data rows."""
-    url = (
-        f"{GRIDSTATUS_API_BASE}/datasets/{dataset}/query"
-        f"?start_time={start_time}&limit={limit}"
-    )
+    url = f"{GRIDSTATUS_API_BASE}/datasets/{dataset}/query?start_time={start_time}&limit={limit}"
     result = api_request_with_header(url, "x-api-key", api_key)
     if result is None:
         return []
@@ -116,9 +113,12 @@ def _get_renewable_forecast(iso_config, api_key, start_time):
                     results[ts] = {"solar_mw": 0, "wind_mw": 0}
                 if iso_config.get("sum_columns"):
                     total = sum(
-                        v for k, v in row.items()
-                        if not k.startswith("interval_") and not k.startswith("publish_")
-                        and isinstance(v, (int, float)) and v > 0
+                        v
+                        for k, v in row.items()
+                        if not k.startswith("interval_")
+                        and not k.startswith("publish_")
+                        and isinstance(v, (int, float))
+                        and v > 0
                     )
                     results[ts]["solar_mw"] = float(total)
                 else:
@@ -132,9 +132,12 @@ def _get_renewable_forecast(iso_config, api_key, start_time):
                     results[ts] = {"solar_mw": 0, "wind_mw": 0}
                 if iso_config.get("sum_columns"):
                     total = sum(
-                        v for k, v in row.items()
-                        if not k.startswith("interval_") and not k.startswith("publish_")
-                        and isinstance(v, (int, float)) and v > 0
+                        v
+                        for k, v in row.items()
+                        if not k.startswith("interval_")
+                        and not k.startswith("publish_")
+                        and isinstance(v, (int, float))
+                        and v > 0
                     )
                     results[ts]["wind_mw"] = float(total)
                 else:
@@ -175,6 +178,7 @@ def get_forecast(zone, max_carbon, gridstatus_api_key):
         return None, None
 
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     start_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -216,10 +220,12 @@ def get_forecast(zone, max_carbon, gridstatus_api_key):
         estimated_intensity = round(fossil_pct * FOSSIL_AVG_INTENSITY)
 
         if estimated_intensity <= max_carbon:
-            print(f"  Forecast: grid expected to be green at {ts} "
-                  f"(~{estimated_intensity} gCO2eq/kWh, "
-                  f"{renewable_pct:.0%} renewable)")
+            print(
+                f"  Forecast: grid expected to be green at {ts} "
+                f"(~{estimated_intensity} gCO2eq/kWh, "
+                f"{renewable_pct:.0%} renewable)"
+            )
             return ts, estimated_intensity
 
-    print(f"  Forecast: no green window found in GridStatus forecast horizon.")
+    print("  Forecast: no green window found in GridStatus forecast horizon.")
     return "none_in_forecast", None
