@@ -5,9 +5,7 @@ Uses the AEMO visualisation API for real-time fuel mix data.
 Updates every 5 minutes. No authentication required.
 """
 
-import requests
-
-from providers.base import FOSSIL_AVG_INTENSITY, compute_trend, DEFAULT_TIMEOUT
+from providers.base import compute_trend, request
 
 AEMO_FUEL_API = "https://visualisations.aemo.com.au/aemo/apps/api/report/FUEL"
 
@@ -21,21 +19,29 @@ AEMO_REGIONS = {
 }
 
 # AEMO fuel types → emission factors (gCO2eq/kWh)
+# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
 AEMO_EMISSION_FACTORS = {
     "Black Coal": 820,
-    "Brown Coal": 900,
+    "Brown Coal": 1050,  # lignite
     "Natural Gas": 490,
     "Gas": 490,
     "Liquid Fuel": 650,
     "Diesel": 650,
     "Oil": 650,
-    "Solar": 0,
-    "Wind": 0,
-    "Hydro": 0,
-    "Battery": 0,
-    "Biomass": 200,
-    "Other": 200,
+    "Solar": 45,
+    "Wind": 12,
+    "Hydro": 24,
+    "Biomass": 230,  # IPCC dedicated biomass median
+    "Other": 300,
+    # Battery is storage, not generation, and is excluded from the mix
 }
+
+# Fuel categories that represent storage, not primary generation
+# Storage discharge is not zero-carbon, so it is excluded from the mix
+AEMO_STORAGE_FUELS = {"Battery"}
+
+# Fallback factor for unknown fuel types (warned about, then applied)
+DEFAULT_FUEL_FACTOR = 300
 
 
 def _fetch_fuel_data():
@@ -43,26 +49,13 @@ def _fetch_fuel_data():
 
     Returns the parsed JSON list or None on error.
     """
-    try:
-        response = requests.post(
-            AEMO_FUEL_API,
-            json={"type": ["CURRENT"]},
-            timeout=DEFAULT_TIMEOUT,
-            headers={"Content-Type": "application/json"},
-        )
-    except requests.RequestException as exc:
-        print(f"::warning::AEMO API error: {exc}")
-        return None
-
-    if response.status_code != 200:
-        print(f"::warning::AEMO API returned {response.status_code}: {response.text[:200]}")
-        return None
-
-    try:
-        return response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        print(f"::warning::Invalid JSON from AEMO API: {response.text[:200]}")
-        return None
+    return request(
+        AEMO_FUEL_API,
+        method="POST",
+        json_body={"type": ["CURRENT"]},
+        headers={"Content-Type": "application/json"},
+        parse="json",
+    )
 
 
 def _fuel_mix_to_intensity(fuel_data, region_code):
@@ -74,6 +67,10 @@ def _fuel_mix_to_intensity(fuel_data, region_code):
     weighted_emissions = 0
 
     for entry in fuel_data:
+        # The live AEMO feed sometimes yields non-dict rows (bare strings or
+        # nulls), so skip anything we cannot read as a record
+        if not isinstance(entry, dict):
+            continue
         entry_region = entry.get("REGIONID", "")
         if entry_region != region_code:
             continue
@@ -84,7 +81,17 @@ def _fuel_mix_to_intensity(fuel_data, region_code):
         if gen_mw is None or gen_mw <= 0:
             continue
 
-        factor = AEMO_EMISSION_FACTORS.get(fuel_type, 200)
+        # Storage discharge is not zero-carbon, so exclude it from the mix
+        if fuel_type in AEMO_STORAGE_FUELS:
+            continue
+        if fuel_type in AEMO_EMISSION_FACTORS:
+            factor = AEMO_EMISSION_FACTORS[fuel_type]
+        else:
+            print(
+                f"::warning::Unknown fuel type '{fuel_type}', using fallback "
+                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
+            )
+            factor = DEFAULT_FUEL_FACTOR
         total_gen += gen_mw
         weighted_emissions += gen_mw * factor
 
@@ -101,8 +108,9 @@ def check_carbon_intensity(zone, max_carbon):
     """
     region_code = AEMO_REGIONS.get(zone)
     if region_code is None:
-        print(f"::warning::Unknown AEMO zone: {zone}. "
-              f"Valid zones: {', '.join(AEMO_REGIONS.keys())}")
+        print(
+            f"::warning::Unknown AEMO zone: {zone}. Valid zones: {', '.join(AEMO_REGIONS.keys())}"
+        )
         return None, None
 
     print(f"Checking carbon intensity for zone: {zone} (AEMO NEM)...")
@@ -148,7 +156,10 @@ def get_history_trend(zone):
         if gen_mw is None or gen_mw <= 0:
             continue
         fuel_type = entry.get("FUELTYPE", "")
-        factor = AEMO_EMISSION_FACTORS.get(fuel_type, 200)
+        # Storage discharge is not zero-carbon, so exclude it from the mix
+        if fuel_type in AEMO_STORAGE_FUELS:
+            continue
+        factor = AEMO_EMISSION_FACTORS.get(fuel_type, DEFAULT_FUEL_FACTOR)
         periods[period]["total_gen"] += gen_mw
         periods[period]["weighted_emissions"] += gen_mw * factor
 

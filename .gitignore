@@ -6,3 +6,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.venv/
+.uv/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
