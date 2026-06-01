@@ -1,6 +1,6 @@
 # Carbon-Aware Dispatcher
 
-![CO2 Saved](https://img.shields.io/badge/CO2_saved-green_CI-brightgreen?style=flat&logo=leaf&logoColor=white) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
+[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![CO2 Saved](https://img.shields.io/badge/CO2_saved-green_CI-brightgreen?style=flat&logo=leaf&logoColor=white) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
 Run your CI/CD only when the energy grid is clean. One file, no API keys, no configuration.
 
@@ -37,7 +37,7 @@ That's it. The action auto-detects your cloud region (AWS, GCP, Azure) or checks
 3. If below your threshold: sets `grid_clean=true`, your build runs on clean energy
 4. If above: sets `grid_clean=false`, skips the build, reports forecast for next green window
 
-**Use cases:** ML training, batch processing, media rendering, database migrations, and any other non-urgent job that can wait for clean energy.
+**Use cases:** ML training, batch processing, media rendering, database migrations: any non-urgent job that can wait for clean energy.
 
 ## Presets
 
@@ -362,7 +362,7 @@ uv run setup_wizard.py --zones "DE,FR" --electricity-maps-token YOUR_TOKEN
 
 ## Why Carbon-Aware CI/CD
 
-Data centers consume **2.7% of Europe's energy**. A 2025 study estimates GitHub Actions alone produced **~457 metric tons of CO2e in 2024**, equivalent to the carbon captured by 7,615 urban trees per year ([Saavedra et al., 2025](https://arxiv.org/abs/2510.26413)). Carbon intensity varies dramatically: California swings from 400+ gCO2eq/kWh (evening gas) to near-zero (midday solar). Simply shifting *when* and *where* batch jobs run yields **20–50% carbon reductions** with zero code changes.
+Data centers consume **2.7% of Europe's energy**. A 2025 study estimates GitHub Actions alone produced **~457 metric tons of CO2e in 2024**, equivalent to the carbon captured by 7,615 urban trees per year ([Saavedra et al., 2025](https://arxiv.org/abs/2510.26413)). Carbon intensity varies dramatically: California swings from 400+ gCO2eq/kWh (evening gas) to near-zero (midday solar). Simply shifting *when* and *where* batch jobs run yields **20-50% carbon reductions** with zero code changes.
 
 | Study | Key Finding |
 |-------|-------------|
