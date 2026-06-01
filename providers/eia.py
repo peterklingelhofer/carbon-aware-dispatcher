@@ -2,7 +2,13 @@
 
 from collections import OrderedDict
 
-from providers.base import EIA_EMISSION_FACTORS, api_request, compute_trend
+from providers.base import (
+    DEFAULT_FUEL_FACTOR,
+    EIA_EMISSION_FACTORS,
+    EIA_STORAGE_FUELS,
+    api_request,
+    compute_trend,
+)
 
 EIA_API_BASE = "https://api.eia.gov/v2"
 
@@ -24,8 +30,19 @@ def _fuel_mix_to_intensity(fuel_data):
         mwh = float(value)
         if mwh <= 0:
             continue
+        # Storage is not primary generation and its discharge is not
+        # zero-carbon, so exclude it from the mix entirely
+        if fuel_type in EIA_STORAGE_FUELS:
+            continue
+        if fuel_type in EIA_EMISSION_FACTORS:
+            ef = EIA_EMISSION_FACTORS[fuel_type]
+        else:
+            print(
+                f"::warning::Unknown fuel type '{fuel_type}', using fallback "
+                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
+            )
+            ef = DEFAULT_FUEL_FACTOR
         total_generation += mwh
-        ef = EIA_EMISSION_FACTORS.get(fuel_type, 200)
         total_co2 += mwh * ef
 
     if total_generation == 0:
@@ -41,8 +58,10 @@ def check_carbon_intensity(zone, max_carbon, eia_api_key=""):
     """
     api_key = eia_api_key or "DEMO_KEY"
     if api_key == "DEMO_KEY":
-        print("::notice::Using built-in EIA DEMO_KEY (rate limit ~30 req/hr). "
-              "For higher limits, register a free key at https://www.eia.gov/opendata/register.php")
+        print(
+            "::notice::Using built-in EIA DEMO_KEY (rate limit ~30 req/hr). "
+            "For higher limits, register a free key at https://www.eia.gov/opendata/register.php"
+        )
     url = (
         f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
         f"?api_key={api_key}"
