@@ -50,14 +50,16 @@ EIA_EMISSION_FACTORS = {
     "WAT": 24,  # Hydroelectric
     "GEO": 38,  # Geothermal
     "BIO": 230,  # Biomass (IPCC dedicated biomass median)
+    "SNB": 45,  # Solar non-billing (behind-the-meter solar), same as solar
     "OTH": 300,  # Other / unknown-but-counted
-    # BAT is battery storage, not generation, and is excluded from the mix
+    # BAT and PS are storage, not generation, and are excluded from the mix
 }
 
 # Fuel codes that represent storage, not primary generation
 # Storage discharge is not zero-carbon and double-counts energy already
 # counted at generation, so it is excluded from the weighted-average denominator
-EIA_STORAGE_FUELS = {"BAT"}
+# BAT = battery storage, PS = pumped-storage hydro
+EIA_STORAGE_FUELS = {"BAT", "PS"}
 
 # Fallback factor for unknown fuel codes (warned about, then applied)
 DEFAULT_FUEL_FACTOR = 300

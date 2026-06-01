@@ -13,13 +13,14 @@ from providers.base import request
 # ONS real-time energy balance API
 ONS_API = "https://integra.ons.org.br/api/energiaagora/GetBalancoEnergetico/null"
 
-# Brazilian grid subsystems
+# Brazilian grid subsystems mapped to the ONS API region keys. The live
+# GetBalancoEnergetico response is {region_key: {"geracao": {fuel: MW}}}
 ONS_REGIONS = {
-    "BR-S": "Sul",
-    "BR-SE": "Sudeste",
-    "BR-CS": "Sudeste",  # Alias for Centro-Sudeste
-    "BR-NE": "Nordeste",
-    "BR-N": "Norte",
+    "BR-S": "sul",
+    "BR-SE": "sudesteECentroOeste",
+    "BR-CS": "sudesteECentroOeste",  # Alias for Centro-Sudeste
+    "BR-NE": "nordeste",
+    "BR-N": "norte",
 }
 
 # Generation source → emission factors (gCO2eq/kWh)
@@ -49,40 +50,32 @@ def _fetch_energy_balance():
     )
 
 
-def _parse_energy_balance(data):
-    """Parse ONS energy balance into generation by source.
+def _parse_energy_balance(data, region_key):
+    """Parse the ONS energy balance for one region into generation by source.
 
-    ONS returns an object with generation values by source.
+    The live API returns {region_key: {"geracao": {"total": x, "hidraulica":
+    y, "termica": z, ...}}}. We read that region's geracao block and drop the
+    "total" aggregate so only per-fuel values remain.
     Returns dict of {source: mw_value} or None.
     """
-    if data is None:
+    if not isinstance(data, dict):
+        return None
+
+    region = data.get(region_key)
+    if not isinstance(region, dict):
+        return None
+
+    geracao = region.get("geracao")
+    if not isinstance(geracao, dict):
         return None
 
     result = {}
-
-    # The ONS API may return data in various formats depending on version.
-    # Handle both direct object and nested list formats.
-    if isinstance(data, dict):
-        for key, value in data.items():
-            key_lower = key.lower().strip()
-            if isinstance(value, (int, float)) and value > 0:
-                result[key_lower] = value
-            elif isinstance(value, dict):
-                # Nested structure — extract generation value
-                gen = value.get("geracao") or value.get("valor") or value.get("total")
-                if isinstance(gen, (int, float)) and gen > 0:
-                    result[key_lower] = gen
-    elif isinstance(data, list):
-        for entry in data:
-            if isinstance(entry, dict):
-                source = (
-                    (entry.get("combustivel") or entry.get("fonte") or entry.get("tipo") or "")
-                    .lower()
-                    .strip()
-                )
-                gen = entry.get("geracao") or entry.get("valor") or entry.get("total") or 0
-                if isinstance(gen, (int, float)) and gen > 0 and source:
-                    result[source] = gen
+    for source, value in geracao.items():
+        key = source.lower().strip()
+        if key == "total":
+            continue
+        if isinstance(value, (int, float)) and value > 0:
+            result[key] = value
 
     return result if result else None
 
@@ -138,7 +131,7 @@ def check_carbon_intensity(zone, max_carbon):
         )
         return None, None
 
-    generation = _parse_energy_balance(data)
+    generation = _parse_energy_balance(data, ONS_REGIONS[zone])
     if generation is None:
         print(
             f"::warning::Could not parse ONS energy balance for {zone}. "

@@ -2108,22 +2108,32 @@ class TestOnsBrazilProvider:
     def test_calculate_intensity_empty(self):
         assert ons_brazil._calculate_intensity({}) is None
 
-    def test_parse_energy_balance_dict(self):
-        data = {"hidraulica": 5000, "termica": 2000}
-        result = ons_brazil._parse_energy_balance(data)
+    def test_parse_energy_balance_nested(self):
+        # Real ONS shape: {region_key: {"geracao": {total, fuel: MW, ...}}}
+        data = {
+            "sul": {
+                "geracao": {
+                    "total": 7000.0,
+                    "hidraulica": 5000.0,
+                    "termica": 2000.0,
+                    "eolica": 0.0,
+                }
+            }
+        }
+        result = ons_brazil._parse_energy_balance(data, "sul")
         assert result is not None
-        assert "hidraulica" in result
+        assert result["hidraulica"] == 5000.0
+        assert result["termica"] == 2000.0
+        # the aggregate "total" and zero-valued sources are dropped
+        assert "total" not in result
+        assert "eolica" not in result
 
-    def test_parse_energy_balance_list(self):
-        data = [
-            {"fonte": "hidraulica", "geracao": 5000},
-            {"fonte": "eolica", "geracao": 1000},
-        ]
-        result = ons_brazil._parse_energy_balance(data)
-        assert result is not None
+    def test_parse_energy_balance_missing_region(self):
+        data = {"sul": {"geracao": {"hidraulica": 5000.0}}}
+        assert ons_brazil._parse_energy_balance(data, "nordeste") is None
 
     def test_parse_energy_balance_none(self):
-        assert ons_brazil._parse_energy_balance(None) is None
+        assert ons_brazil._parse_energy_balance(None, "sul") is None
 
     @mock.patch("providers.ons_brazil._fetch_energy_balance")
     def test_check_intensity_api_failure(self, mock_fetch):
