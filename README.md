@@ -145,6 +145,17 @@ jobs:
       - run: echo "Building in ${{ needs.pick-region.outputs.runner }}"
 ```
 
+> **Prerequisite for region routing:** `runs-on: ${{ needs.pick-region.outputs.runner }}`
+> only works if the `runner_label` resolves to a runner that actually exists. The
+> `grid_zones` `zone:label` syntax (e.g. `CISO:us-west-runner`) maps each zone to a
+> runner label, but GitHub-hosted runners (`ubuntu-latest` etc.) have no concept of
+> geographic region, so the labels must match **self-hosted runners** you have
+> registered with those labels, or a provider like [RunsOn](#runson-integration)
+> that interprets region labels. If you only have GitHub-hosted runners, use the
+> time-shift pattern above (gate steps on `grid_clean`) rather than region routing,
+> or consume the `cloud_region` / `gcp_region` / `azure_region` outputs to target
+> regions in your own deploy steps.
+
 The action always outputs cloud regions for all three major providers:
 
 | Output | Example |
