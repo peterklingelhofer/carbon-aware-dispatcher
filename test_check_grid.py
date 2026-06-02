@@ -1896,6 +1896,49 @@ class TestWriteJobSummaryWithCo2:
             os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 
+class TestRoutingComparison:
+    def test_renders_bars_and_markers(self):
+        measured = [("BR-NE", 27), ("GB", 169), ("AU-NSW", 501)]
+        panel = check_grid.render_routing_comparison(measured, "BR-NE")
+        assert panel is not None
+        text = "\n".join(panel)
+        # cleanest is the chosen zone, dirtiest is flagged avoided
+        assert "BR-NE" in text and "routed here" in text
+        assert "AU-NSW" in text and "avoided" in text
+        # both baselines present
+        assert "dirtiest candidate" in text
+        assert "global average" in text
+        # fenced for monospace rendering
+        assert panel[0] == "```text" and panel[-1] == "```"
+
+    def test_delta_math(self):
+        panel = check_grid.render_routing_comparison([("A", 100), ("B", 500)], "A")
+        text = "\n".join(panel)
+        # 500 - 100 = 400 avoided, (400/500) = 80% lower than worst
+        assert "400 gCO2eq/kWh" in text
+        assert "80% lower" in text
+
+    def test_needs_two_zones(self):
+        assert check_grid.render_routing_comparison([("A", 100)], "A") is None
+        assert check_grid.render_routing_comparison([], None) is None
+
+    def test_summary_includes_comparison(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary(
+                "GB", 169, True, 250, comparison=[("GB", 169), ("AU-NSW", 501)]
+            )
+            with open(path) as f:
+                content = f.read()
+            assert "Carbon-aware routing" in content
+            assert "avoided" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+
 # ---------------------------------------------------------------------------
 # check_grid.py dispatch routing tests for new providers
 # ---------------------------------------------------------------------------
