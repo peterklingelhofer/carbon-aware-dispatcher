@@ -1,6 +1,6 @@
 # Carbon-Aware Dispatcher
 
-[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![CO2 Saved](https://img.shields.io/badge/CO2_saved-green_CI-brightgreen?style=flat&logo=leaf&logoColor=white) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
+[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
 Run your CI/CD only when the energy grid is clean. One file, no API keys, no configuration.
 
@@ -28,20 +28,20 @@ jobs:
           # your build/test/deploy commands here
 ```
 
-That's it. The action auto-detects your cloud region (AWS, GCP, Azure) or checks 17+ zones across 8 free providers worldwide. Replace the `echo` with your actual build commands and you're done.
+The action auto-detects your cloud region (AWS, GCP, Azure) or checks zones across free providers worldwide. Replace the `echo` with your build commands.
 
-## How It Works
+## How it works
 
-1. Runs on a schedule (e.g., hourly)
-2. Fetches real-time fuel mix data and calculates carbon intensity (gCO2eq/kWh)
-3. If below your threshold: sets `grid_clean=true`, your build runs on clean energy
-4. If above: sets `grid_clean=false`, skips the build, reports forecast for next green window
+1. Runs on a schedule (e.g. hourly)
+2. Fetches real-time fuel mix and computes carbon intensity (gCO2eq/kWh)
+3. Below your threshold: sets `grid_clean=true`, the build runs
+4. Above it: sets `grid_clean=false`, skips the build, reports the next green window
 
-**Use cases:** ML training, batch processing, media rendering, database migrations: any non-urgent job that can wait for clean energy.
+Best for non-urgent jobs that can wait for clean energy: ML training, batch processing, media rendering, database migrations.
 
 ## Presets
 
-Instead of looking up zone codes, use a preset:
+Use a preset instead of looking up zone codes:
 
 | Preset | What It Does |
 |--------|-------------|
@@ -61,6 +61,14 @@ Instead of looking up zone codes, use a preset:
     max_carbon_intensity: '200'        # gCO2eq/kWh threshold (default: 250)
 ```
 
+## API keys
+
+**None required.** US, UK, Australia, India, Brazil, South Africa, and the
+worldwide Open-Meteo fallback work with no setup, which covers the `auto:*`
+presets. Optional free tokens add coverage: `entsoe_token` (EU), `electricity_maps_token`
+(global, 200+ zones), `gridstatus_api_key` (US forecasts). `eia_api_key` is
+optional too, only to raise the built-in US demo key's rate limit. See [Inputs](#inputs).
+
 ## Quick Setup Options
 
 ### One-liner (generates workflow file for you)
@@ -73,7 +81,7 @@ Options: `--threshold 200`, `--zones "auto:green"`, `--strategy queue`, `--cron 
 
 ### Reusable workflow (no files to copy)
 
-Other repos can call the carbon check directly:
+Call the carbon check directly from another workflow:
 
 ```yaml
 jobs:
@@ -101,11 +109,11 @@ jobs:
     max_carbon_intensity: '200'
 ```
 
-For EU zones, add a free ENTSO-E token (`entsoe_token`). For other global zones, add a free Electricity Maps token (`electricity_maps_token`). US, UK, Australia, India, Brazil, and South Africa zones need no keys.
+US, UK, Australia, India, Brazil, and South Africa need no keys. EU zones use a free `entsoe_token`; other global zones use a free `electricity_maps_token`.
 
 ### Dispatch mode (trigger a separate workflow)
 
-If you prefer a gatekeeper pattern with a separate heavy workflow:
+A gatekeeper pattern that triggers a separate heavy workflow when green:
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -116,11 +124,45 @@ If you prefer a gatekeeper pattern with a separate heavy workflow:
     github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-The target workflow needs a `workflow_dispatch` trigger. For most users, inline mode (the default, shown at the top) is simpler.
+The target workflow needs a `workflow_dispatch` trigger. Inline mode (the default, shown at the top) is simpler for most users.
 
-## Multi-Zone Routing
+## Routing to a clean region
 
-Check multiple zones and run in the greenest one:
+### Deploy to the greenest region (no special runners)
+
+The most common case: keep CI on a standard GitHub-hosted runner, but send the
+**deployment or workload** to whichever region is cleanest. The action always
+outputs `cloud_region` / `gcp_region` / `azure_region`, so feed them straight
+into your deploy step:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    grid_zones: 'CISO,PJM,GB'
+    max_carbon_intensity: '200'
+
+- if: steps.carbon.outputs.grid_clean == 'true'
+  run: |
+    aws s3 sync ./dist s3://my-bucket --region ${{ steps.carbon.outputs.cloud_region }}
+    # or: terraform apply -var region=${{ steps.carbon.outputs.cloud_region }}
+    # or: gcloud run deploy --region ${{ steps.carbon.outputs.gcp_region }}
+```
+
+| Output | Example |
+|--------|---------|
+| `cloud_region` | `us-west-1` (AWS) |
+| `gcp_region` | `us-west1` (GCP) |
+| `azure_region` | `westus2` (Azure) |
+
+This is usually what matters most: the CI runner is a short-lived machine, while
+the deployed service or batch job is where the real energy is spent.
+
+### Relocating the CI runner itself
+
+To run the build *job* in a specific region, set `runs-on` from the action's
+`runner_label`. This needs a two-job pattern, since `runs-on` is fixed at
+job-definition time:
 
 ```yaml
 jobs:
@@ -145,26 +187,11 @@ jobs:
       - run: echo "Building in ${{ needs.pick-region.outputs.runner }}"
 ```
 
-> **Prerequisite for region routing:** `runs-on: ${{ needs.pick-region.outputs.runner }}`
-> only works if the `runner_label` resolves to a runner that actually exists. The
-> `grid_zones` `zone:label` syntax (e.g. `CISO:us-west-runner`) maps each zone to a
-> runner label, but GitHub-hosted runners (`ubuntu-latest` etc.) have no concept of
-> geographic region, so the labels must match **self-hosted runners** you have
-> registered with those labels, or a provider like [RunsOn](#runson-integration)
-> that interprets region labels. If you only have GitHub-hosted runners, use the
-> time-shift pattern above (gate steps on `grid_clean`) rather than region routing,
-> or consume the `cloud_region` / `gcp_region` / `azure_region` outputs to target
-> regions in your own deploy steps.
-
-The action always outputs cloud regions for all three major providers:
-
-| Output | Example |
-|--------|---------|
-| `cloud_region` | `us-west-1` (AWS) |
-| `gcp_region` | `us-west1` (GCP) |
-| `azure_region` | `westus2` (Azure) |
-
-These are set regardless of which provider you use, useful for routing deployments, caches, or infrastructure.
+The `zone:label` syntax maps each zone to a runner label. **This only works if
+the label matches a runner that exists.** GitHub-hosted runners (`ubuntu-latest`
+etc.) have no region concept, so use **self-hosted runners** registered with those
+labels, or [RunsOn](#runson-integration). With GitHub-hosted runners only, prefer
+the deploy-region pattern above.
 
 ### RunsOn integration
 
@@ -181,9 +208,9 @@ These are set regardless of which provider you use, useful for routing deploymen
 
 The `runner_label` output will be a RunsOn-compatible label like `runs-on=12345/runner=2cpu-linux-x64/region=us-west-1`.
 
-## Escape from Coal-Heavy Grids
+## Escape coal-heavy grids
 
-In India, China, Poland, South Africa, or other coal-dependent regions? Route your jobs to the nearest clean alternative:
+Route jobs from a coal-dependent region to the nearest clean alternative:
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -197,11 +224,11 @@ In India, China, Poland, South Africa, or other coal-dependent regions? Route yo
     max_carbon_intensity: '150'
 ```
 
-## Smart Wait & Queue Strategy
+## Smart wait & queue strategy
 
 ### Wait for a green window
 
-Instead of just checking once, wait up to N minutes for the grid to become clean:
+Wait up to N minutes for the grid to become clean:
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -211,11 +238,11 @@ Instead of just checking once, wait up to N minutes for the grid to become clean
     enable_forecast: 'true'
 ```
 
-The action uses forecast data to sleep efficiently. **Note:** GitHub Actions bills for wait time.
+Forecast data is used to sleep efficiently. **Note:** GitHub Actions bills for wait time.
 
 ### Find the optimal green window
 
-`strategy: queue` searches forecasts across all zones to find the best time within your deadline:
+`strategy: queue` searches forecasts across all zones for the best time within your deadline:
 
 ```yaml
 - uses: peterklingelhofer/carbon-aware-dispatcher@v1
@@ -227,9 +254,9 @@ The action uses forecast data to sleep efficiently. **Note:** GitHub Actions bil
     max_wait: '120'                      # actually wait if window is within 2h
 ```
 
-Outputs `optimal_dispatch_at` (ISO 8601 timestamp) and `optimal_zone`. Great for nightly ML training or weekly reports.
+Outputs `optimal_dispatch_at` (ISO 8601) and `optimal_zone`. Good for nightly ML training or weekly reports.
 
-## Organization-Wide Defaults
+## Organization-wide defaults
 
 Drop a `.github/carbon-policy.yml` in your repo:
 
@@ -242,11 +269,11 @@ strategy: queue
 deadline_hours: 24
 ```
 
-Action inputs always override policy values. This lets platform teams enforce green CI defaults across all workflows.
+Action inputs override policy values, letting platform teams set green CI defaults across all workflows.
 
-## Other CI Platforms
+## Other CI platforms
 
-The core Python script works on any CI platform. Ready-to-use templates in [`ci-templates/`](ci-templates/):
+The core Python script runs on any CI platform. Templates in [`ci-templates/`](ci-templates/):
 
 | Platform | Template | How It Works |
 |----------|----------|-------------|
@@ -256,7 +283,7 @@ The core Python script works on any CI platform. Ready-to-use templates in [`ci-
 
 Set `GRID_ZONE`, `MAX_CARBON`, and optional API tokens as environment variables.
 
-## Example Workflows
+## Example workflows
 
 Ready-to-copy files in [`examples/`](examples/):
 
@@ -271,7 +298,7 @@ Ready-to-copy files in [`examples/`](examples/):
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `grid_zone` | `auto:detect` | Single zone or preset. See [Presets](#presets) and [Supported Zones](#supported-zones). |
+| `grid_zone` | `auto:detect` | Single zone or preset. See [Presets](#presets) and [Supported zones](#supported-zones--providers). |
 | `grid_zones` | `auto:detect` | Comma-separated zones with optional runner labels: `CISO:runner-cal,GB:runner-uk`. Or a preset. |
 | `max_carbon_intensity` | `250` | Maximum gCO2eq/kWh to allow dispatch. |
 | `workflow_id` | none | Workflow to dispatch when green. Omit for inline mode (recommended). |
@@ -308,9 +335,9 @@ Ready-to-copy files in [`examples/`](examples/):
 | `optimal_zone` | Zone for the optimal window (queue strategy). |
 | `suggested_cron` | Suggested cron schedule for green builds based on zone energy type. |
 
-## Supported Zones & Providers
+## Supported zones & providers
 
-The action auto-detects the best provider for each zone. Free providers are checked first.
+The action picks the best provider per zone, checking free providers first.
 
 | Provider | Coverage | API Key | Zones |
 |----------|----------|---------|-------|
@@ -339,7 +366,7 @@ The action auto-detects the best provider for each zone. Free providers are chec
 | South Africa | Heuristic | Coal-dominant, rarely < 650 gCO2eq/kWh. Recommends escape-coal. |
 | Other | Open-Meteo | 48h solar/wind weather forecast. Automatic for 90+ zones. |
 
-### Choosing a Threshold
+### Choosing a threshold
 
 | Region | Typical Range (gCO2eq/kWh) | Suggested Threshold |
 |--------|---------------------------|-------------------|
@@ -351,13 +378,13 @@ The action auto-detects the best provider for each zone. Free providers are chec
 | Poland, Australia (coal states) | 400–800 | `500` or use `auto:escape-coal` |
 | India, South Africa | 600–900 | Use `auto:escape-coal:IN` / `auto:escape-coal:ZA` |
 
-### How Carbon Intensity Is Calculated
+### How carbon intensity is calculated
 
-US zones: real-time hourly fuel mix from EIA, weighted by lifecycle emission factors (Coal: 820, Gas: 490, Oil: 650, Nuclear/Solar/Wind/Hydro: 0 gCO2eq/kWh). UK: pre-calculated by the Carbon Intensity API. Global: direct values from Electricity Maps or ENTSO-E generation mix. Open-Meteo: weather-based estimation from solar irradiance and wind speed.
+Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
 
-## Setup Wizard
+## Setup wizard
 
-Validate your configuration before deploying:
+Validate configuration before deploying:
 
 ```bash
 # Test common zones
@@ -371,9 +398,9 @@ uv run setup_wizard.py --zones "CISO,GB,DE,AU-NSW"
 uv run setup_wizard.py --zones "DE,FR" --electricity-maps-token YOUR_TOKEN
 ```
 
-## Why Carbon-Aware CI/CD
+## Why carbon-aware CI/CD
 
-Data centers consume **2.7% of Europe's energy**. A 2025 study estimates GitHub Actions alone produced **~457 metric tons of CO2e in 2024**, equivalent to the carbon captured by 7,615 urban trees per year ([Saavedra et al., 2025](https://arxiv.org/abs/2510.26413)). Carbon intensity varies dramatically: California swings from 400+ gCO2eq/kWh (evening gas) to near-zero (midday solar). Simply shifting *when* and *where* batch jobs run yields **20-50% carbon reductions** with zero code changes.
+GitHub Actions alone produced an estimated **~457 metric tons of CO2e in 2024** ([Saavedra et al., 2025](https://arxiv.org/abs/2510.26413)). Grid intensity swings widely: California ranges from 400+ gCO2eq/kWh (evening gas) to near-zero (midday solar). Shifting *when* and *where* batch jobs run yields **20-50% carbon reductions** with no code changes.
 
 | Study | Key Finding |
 |-------|-------------|
