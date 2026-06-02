@@ -261,7 +261,7 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
 
 
 def check_multiple_zones(
-    zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token=""
+    zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token="", collect=None
 ):
     """Check carbon intensity for multiple zones, return the best green option.
 
@@ -270,6 +270,10 @@ def check_multiple_zones(
 
     Returns (best_zone, best_intensity, best_runner_label, skipped) where
     skipped is a list of (zone, reason) for zones that could not be checked.
+
+    If collect is a list, every successfully measured zone is appended as a
+    (zone, intensity) tuple (including zones over the threshold), so callers
+    can build a routing comparison without extra API calls.
     """
     best_zone = None
     best_intensity = None
@@ -320,8 +324,11 @@ def check_multiple_zones(
         )
         if is_green is None:
             skipped.append((zone, "API error"))
-        elif is_green and intensity is not None:
-            if best_intensity is None or intensity < best_intensity:
+        elif intensity is not None:
+            # Record every measured zone (green or not) for the comparison panel
+            if collect is not None:
+                collect.append((zone, intensity))
+            if is_green and (best_intensity is None or intensity < best_intensity):
                 best_zone = zone
                 best_intensity = intensity
                 best_label = label
@@ -620,6 +627,7 @@ def _emit_green_result(
     *,
     waited_minutes=0,
     skipped=None,
+    comparison=None,
 ):
     """Emit the shared 'grid is green' outputs, summary, and dispatch/print.
 
@@ -644,12 +652,68 @@ def _emit_green_result(
         waited_minutes=waited_minutes,
         skipped=skipped,
         co2_saved=co2_saved,
+        comparison=comparison,
     )
     if dispatch_mode:
         print(f"\nGrid is clean! Zone {zone} ({intensity} gCO2eq/kWh). Triggering workflow...")
         trigger_workflow(repo, workflow_id, token, ref)
     else:
         print(f"\nGrid is clean! Zone {zone} ({intensity} gCO2eq/kWh)")
+
+
+def render_routing_comparison(measured, chosen_zone):
+    """Render an ASCII bar chart comparing carbon intensity across zones.
+
+    measured: list of (zone, intensity) tuples for every zone we checked.
+    chosen_zone: the zone the workflow was routed to.
+
+    Returns a list of text lines (a fenced code block) showing each zone as a
+    proportional bar, marking the chosen zone and the dirtiest avoided one,
+    plus the delta vs that dirtiest candidate and vs the global average.
+    Returns None when there is nothing meaningful to compare (fewer than two
+    zones with data).
+    """
+    rows = [(z, i) for z, i in measured if i is not None]
+    if len(rows) < 2:
+        return None
+
+    rows.sort(key=lambda r: r[1])
+    cleanest = rows[0]
+    dirtiest = rows[-1]
+    chosen = next((r for r in rows if r[0] == chosen_zone), cleanest)
+
+    peak = dirtiest[1] or 1
+    name_width = max(len(z) for z, _ in rows)
+    bar_width = 10
+
+    lines = ["```text", "Carbon-aware routing"]
+    lines.append("-" * (name_width + 32))
+    for zone, intensity in rows:
+        filled = max(1, round((intensity / peak) * bar_width))
+        bar = "#" * filled + "." * (bar_width - filled)
+        marker = ""
+        if zone == chosen[0]:
+            marker = "  <- routed here (cleanest)"
+        elif zone == dirtiest[0]:
+            marker = "  x  avoided (dirtiest)"
+        lines.append(f"  {zone:<{name_width}}  {bar}  {intensity:>4} gCO2eq/kWh{marker}")
+    lines.append("-" * (name_width + 32))
+
+    delta = dirtiest[1] - chosen[1]
+    if dirtiest[1] > 0:
+        pct_vs_worst = round(delta / dirtiest[1] * 100)
+        lines.append(
+            f"  Avoided up to {delta} gCO2eq/kWh vs the dirtiest candidate "
+            f"({dirtiest[0]}), ~{pct_vs_worst}% lower"
+        )
+    if GLOBAL_AVG_INTENSITY > 0:
+        pct_vs_avg = round((GLOBAL_AVG_INTENSITY - chosen[1]) / GLOBAL_AVG_INTENSITY * 100)
+        lines.append(
+            f"  Routed zone is ~{pct_vs_avg}% below the {GLOBAL_AVG_INTENSITY} "
+            f"gCO2eq/kWh global average"
+        )
+    lines.append("```")
+    return lines
 
 
 def write_job_summary(
@@ -663,8 +727,13 @@ def write_job_summary(
     waited_minutes=0,
     skipped=None,
     co2_saved=0,
+    comparison=None,
 ):
-    """Write a GitHub Actions job summary with carbon intensity results."""
+    """Write a GitHub Actions job summary with carbon intensity results.
+
+    comparison: optional list of (zone, intensity) measurements; when two or
+    more zones were checked, an ASCII routing comparison panel is appended.
+    """
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
         return
@@ -713,6 +782,12 @@ def write_job_summary(
         lines.append(f"| **Skipped Zones** | {skipped_str} |")
 
     lines.append("")
+
+    if comparison:
+        panel = render_routing_comparison(comparison, zone)
+        if panel:
+            lines.extend(panel)
+            lines.append("")
 
     with open(summary_file, "a") as f:
         f.write("\n".join(lines))
@@ -1260,8 +1335,9 @@ def main():
 
     # Multi-zone mode: pick the greenest zone
     else:
+        measured = []
         best_zone, best_intensity, best_label, skipped = check_multiple_zones(
-            zones_config, max_carbon, eia_api_key, emaps_api_key, entsoe_token
+            zones_config, max_carbon, eia_api_key, emaps_api_key, entsoe_token, collect=measured
         )
 
         waited_minutes = 0
@@ -1317,6 +1393,7 @@ def main():
             github_run_id,
             waited_minutes=waited_minutes,
             skipped=skipped,
+            comparison=measured,
         )
 
 
