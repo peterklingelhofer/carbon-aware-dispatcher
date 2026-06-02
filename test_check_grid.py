@@ -1902,10 +1902,11 @@ class TestRoutingComparison:
         panel = check_grid.render_routing_comparison(measured, "BR-NE")
         assert panel is not None
         text = "\n".join(panel)
-        # cleanest is the chosen zone, dirtiest is flagged avoided
+        # chosen zone is marked; the dirtiest is left unmarked (chart speaks for itself)
         assert "BR-NE" in text and "routed here" in text
-        assert "AU-NSW" in text and "avoided" in text
-        # both baselines present
+        assert "AU-NSW" in text
+        assert "avoided (dirtiest)" not in text
+        # both baselines present (delta footer still references the dirtiest)
         assert "dirtiest candidate" in text
         assert "global average" in text
         # fenced for monospace rendering
@@ -1933,7 +1934,7 @@ class TestRoutingComparison:
             with open(path) as f:
                 content = f.read()
             assert "Carbon-aware routing" in content
-            assert "avoided" in content
+            assert "routed here" in content
         finally:
             os.unlink(path)
             os.environ.pop("GITHUB_STEP_SUMMARY", None)

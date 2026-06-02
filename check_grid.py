@@ -691,11 +691,7 @@ def render_routing_comparison(measured, chosen_zone):
     for zone, intensity in rows:
         filled = max(1, round((intensity / peak) * bar_width))
         bar = "#" * filled + "." * (bar_width - filled)
-        marker = ""
-        if zone == chosen[0]:
-            marker = "  <- routed here (cleanest)"
-        elif zone == dirtiest[0]:
-            marker = "  x  avoided (dirtiest)"
+        marker = "  <- routed here (cleanest)" if zone == chosen[0] else ""
         lines.append(f"  {zone:<{name_width}}  {bar}  {intensity:>4} gCO2eq/kWh{marker}")
     lines.append("-" * (name_width + 32))
 
