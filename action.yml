@@ -81,6 +81,10 @@ inputs:
     description: 'Path to organization-wide carbon policy file. Default: .github/carbon-policy.yml. Policy values are used as defaults; action inputs override them.'
     required: false
     default: '.github/carbon-policy.yml'
+  dry_run:
+    description: 'Report-only mode. When true, the action measures the grid and reports what it would do, but never gates the build (grid_clean is always true). Use the would_defer output to see the real verdict. The safe way to adopt: watch the savings for a while, then turn enforcement on.'
+    required: false
+    default: 'false'
 
 outputs:
   grid_clean:
@@ -128,6 +132,12 @@ outputs:
   suggested_cron:
     description: 'Suggested cron expression for scheduling green builds based on the zone energy profile (e.g., solar peak, wind peak, off-peak hydro).'
     value: ${{ steps.grid-check.outputs.suggested_cron }}
+  dry_run:
+    description: 'True when the action ran in report-only mode (dry_run input enabled).'
+    value: ${{ steps.grid-check.outputs.dry_run }}
+  would_defer:
+    description: 'In dry_run mode, "true" if the grid was dirty and the build would have been deferred in enforcement mode. Always check this to see the real verdict, since grid_clean is forced true in dry_run.'
+    value: ${{ steps.grid-check.outputs.would_defer }}
 
 runs:
   using: 'composite'
@@ -162,3 +172,4 @@ runs:
         STRATEGY: ${{ inputs.strategy }}
         DEADLINE_HOURS: ${{ inputs.deadline_hours }}
         CARBON_POLICY_PATH: ${{ inputs.carbon_policy_path }}
+        DRY_RUN: ${{ inputs.dry_run }}
