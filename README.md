@@ -447,6 +447,22 @@ GitHub Actions alone produced an estimated **~457 metric tons of CO2e in 2024** 
 | Zones silently skipped | Zone needs API token that isn't set. Check logs for "Skipping zone" messages. |
 | Zone not found (Electricity Maps) | Zone codes are case-sensitive. Check [app.electricitymaps.com/map](https://app.electricitymaps.com/map). |
 
+### Skipped-zone reasons
+
+In multi-zone mode, the job summary lists any skipped zones with a reason so you
+know whether to act:
+
+| Reason | Meaning | What to do |
+|--------|---------|------------|
+| `auth failed` | The provider rejected the API key/token (HTTP 401/403). | Check the secret is set and valid. |
+| `rate limited` | Hit the provider's rate limit (HTTP 429), even after retries. | Transient; add a paid/registered key, or it clears on its own. |
+| `network error` | Could not reach the provider after retries. | Usually transient; the zone is retried next run. |
+| `HTTP <code>` | An unexpected non-retryable response. | Check the provider's status; the zone code may be wrong. |
+| `no electricity_maps_token` | Zone needs an Electricity Maps token and none was set. | Add `electricity_maps_token`, or use a keyless zone. |
+
+A clean run never blocks on a skipped zone: it routes to the cleanest zone that
+did respond.
+
 All timestamps are UTC (ISO 8601).
 
 ## License
