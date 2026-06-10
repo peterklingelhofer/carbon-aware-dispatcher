@@ -365,7 +365,7 @@ The action picks the best provider per zone, checking free providers first.
 | [EIA](https://www.eia.gov/opendata/) | US (60+ regions) | Free built-in | `CISO`, `ERCO`, `PJM`, `BPAT`, `NYIS`, `MISO`, `ISNE`, `SWPP`... |
 | [UK Carbon Intensity](https://carbonintensity.org.uk/) | UK (18 regions) | None | `GB`, `GB-1`..`GB-17` |
 | [AEMO](https://aemo.com.au/) | Australia (5 states) | None | `AU-NSW`, `AU-QLD`, `AU-VIC`, `AU-SA`, `AU-TAS` |
-| [Grid India](https://report.grid-india.in/) | India (5 regions) | None | `IN-NO`, `IN-SO`, `IN-EA`, `IN-WE`, `IN-NE` |
+| [Grid India](https://report.grid-india.in/) | India (5 regions) | None | `IN-NO`, `IN-SO`, `IN-EA`, `IN-WE`, `IN-NE` (geo-restricted, see note) |
 | [ONS Brazil](https://integra.ons.org.br/) | Brazil (5 regions) | None | `BR-S`, `BR-SE`, `BR-CS`, `BR-NE`, `BR-N` |
 | [Eskom](https://www.eskom.co.za/) | South Africa | None | `ZA` |
 | [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
@@ -374,6 +374,10 @@ The action picks the best provider per zone, checking free providers first.
 | [GridStatus](https://www.gridstatus.io) | US forecasts (7 ISOs) | Free token | `CISO`, `ERCO`, `ISNE`, `MISO`, `NYIS`, `PJM`, `SWPP` |
 
 **Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (catch-all). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
+
+**Reliability notes:**
+- **Grid India** is reachable only from Indian IPs, so it always fails from GitHub-hosted (US/EU) runners. India zones are therefore left out of the curated `auto:*` presets. They still work if you pass `grid_zones: 'IN-SO'` explicitly from a runner inside India.
+- **`auto:detect`** needs a cloud-region environment variable, which GitHub-hosted runners don't provide. On those runners it falls back to `auto:cleanest` (greenest free zone worldwide) and says so in the log. Set `grid_zones` explicitly to pin a region.
 
 ### Forecasts
 

@@ -12,9 +12,7 @@ Free, no API key, no registration. Rate limit: ~10,000 requests/day.
 API: https://api.open-meteo.com/v1/forecast
 """
 
-import requests
-
-from providers.base import DEFAULT_TIMEOUT, FOSSIL_AVG_INTENSITY
+from providers.base import FOSSIL_AVG_INTENSITY, request
 
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 
@@ -218,20 +216,9 @@ def check_carbon_intensity(zone, max_carbon, lat=None, lon=None):
     )
 
     print(f"Checking renewable potential for zone: {zone} (Open-Meteo estimate)...")
-    try:
-        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
-    except requests.RequestException as exc:
-        print(f"::warning::Open-Meteo API error: {exc}")
-        return None, None
-
-    if response.status_code != 200:
-        print(f"::warning::Open-Meteo returned {response.status_code}: {response.text[:200]}")
-        return None, None
-
-    try:
-        data = response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        print("::warning::Invalid JSON from Open-Meteo")
+    # Route through the shared layer for retries, 429 handling, and User-Agent
+    data = request(url, parse="json")
+    if data is None:
         return None, None
 
     current = data.get("current", {})
@@ -264,18 +251,8 @@ def get_forecast(zone, max_carbon, lat=None, lon=None):
     )
 
     print(f"  Fetching Open-Meteo forecast for zone: {zone}...")
-    try:
-        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
-    except requests.RequestException as exc:
-        print(f"::warning::Open-Meteo forecast error: {exc}")
-        return None, None
-
-    if response.status_code != 200:
-        return None, None
-
-    try:
-        data = response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
+    data = request(url, parse="json")
+    if data is None:
         return None, None
 
     hourly = data.get("hourly", {})
