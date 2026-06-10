@@ -14,6 +14,7 @@ from providers import (
     AUTO_GREEN_ZONES,
     ESCAPE_COAL_MAPPINGS,
     PROVIDER_AEMO,
+    PROVIDER_CANADA,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENTSOE,
@@ -21,9 +22,11 @@ from providers import (
     PROVIDER_GRID_INDIA,
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
+    PROVIDER_TAIWAN,
     PROVIDER_UK,
     _time_priority_score,
     aemo,
+    canada,
     detect_provider,
     eia,
     electricity_maps,
@@ -34,6 +37,7 @@ from providers import (
     ons_brazil,
     open_meteo,
     sort_auto_green_by_time,
+    taiwan,
     uk,
 )
 from providers.base import api_request, api_request_with_header, compute_trend
@@ -1899,13 +1903,16 @@ class TestExpandedAutoGreen:
         assert not any(z.startswith("IN-") for z in cleanest)
 
     def test_auto_green_only_free_providers(self):
-        """auto:green should NOT include zones requiring API tokens."""
+        """auto:green is the curated free set; the token-only extras live in
+        auto:green:full, not here."""
         zones = {z["zone"] for z in AUTO_GREEN_ZONES}
-        # These require Electricity Maps or ENTSO-E tokens
-        assert "NO-NO1" not in zones
-        assert "FR" not in zones
-        assert "CA-QC" not in zones
-        assert "NZ-NZN" not in zones
+        full = {z["zone"] for z in __import__("providers").AUTO_GREEN_ZONES_FULL}
+        # Token-tier zones are reserved for auto:green:full
+        assert "NO-NO1" not in zones and "NO-NO1" in full
+        assert "FR" not in zones and "FR" in full
+        assert "NZ-NZN" not in zones and "NZ-NZN" in full
+        # Canada is keyless (IESO / Hydro-Quebec), so CA-QC belongs in auto:green
+        assert "CA-QC" in zones
 
     def test_auto_green_full_includes_token_zones(self):
         """auto:green:full includes both free and token-requiring zones."""
@@ -3288,3 +3295,120 @@ class TestEmitGreenResult:
                     "run-1",
                 )
         mock_trigger.assert_called_once_with("owner/repo", "wf.yml", "tok", "main")
+
+
+# ---------------------------------------------------------------------------
+# Canada provider tests (IESO / AESO / Hydro-Quebec)
+# ---------------------------------------------------------------------------
+
+_IESO_XML = """<?xml version="1.0"?>
+<Document xmlns="http://www.ieso.ca/schema">
+  <DailyData>
+    <HourlyData>
+      <FuelTotal><Fuel>NUCLEAR</Fuel><Output>8000</Output></FuelTotal>
+      <FuelTotal><Fuel>HYDRO</Fuel><Output>4000</Output></FuelTotal>
+      <FuelTotal><Fuel>GAS</Fuel><Output>1000</Output></FuelTotal>
+      <FuelTotal><Fuel>WIND</Fuel><Output>500</Output></FuelTotal>
+    </HourlyData>
+  </DailyData>
+</Document>"""
+
+_AESO_HTML = (
+    "<TR><TD>COAL</TD><TD>1000</TD><TD>800</TD><TD>0</TD></TR>"
+    "<TR><TD>GAS</TD><TD>2000</TD><TD>1500</TD><TD>0</TD></TR>"
+    "<TR><TD>WIND</TD><TD>500</TD><TD>300</TD><TD>0</TD></TR>"
+)
+
+
+class TestCanadaProvider:
+    def test_detect_provider(self):
+        for z in ("CA-ON", "CA-AB", "CA-QC"):
+            assert detect_provider(z) == PROVIDER_CANADA
+
+    def test_quebec_is_fixed_estimate(self):
+        is_green, intensity = canada.check_carbon_intensity("CA-QC", 250)
+        assert is_green is True
+        assert intensity == 30
+
+    @mock.patch("providers.base.requests.get")
+    def test_ieso_ontario_parse(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=200, text=_IESO_XML)
+        is_green, intensity = canada.check_carbon_intensity("CA-ON", 250)
+        # nuclear 8000*12 + hydro 4000*24 + gas 1000*490 + wind 500*12
+        # = 96000 + 96000 + 490000 + 6000 = 688000 / 13500 = 51
+        assert intensity == 51
+        assert is_green is True
+
+    @mock.patch("providers.base.requests.get")
+    def test_aeso_alberta_parse(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=200, text=_AESO_HTML)
+        is_green, intensity = canada.check_carbon_intensity("CA-AB", 250)
+        # coal 800*820 + gas 1500*490 + wind 300*12 = 656000+735000+3600
+        # = 1394600 / 2600 = 536
+        assert intensity == 536
+        assert is_green is False
+
+    @mock.patch("providers.base.requests.get")
+    def test_api_failure_returns_none(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=500, text="err")
+        assert canada.check_carbon_intensity("CA-ON", 250) == (None, None)
+
+    def test_unknown_zone(self):
+        assert canada.check_carbon_intensity("CA-XX", 250) == (None, None)
+
+    def test_no_forecast_or_trend(self):
+        assert canada.get_forecast("CA-ON", 250) == (None, None)
+        assert canada.get_history_trend("CA-ON") is None
+
+    def test_storage_excluded(self):
+        # battery is storage, excluded from the mix
+        mix = {"hydro": 1000, "battery": 5000}
+        assert canada._mix_to_intensity(mix) == 24
+
+
+# ---------------------------------------------------------------------------
+# Taiwan provider tests (Taipower)
+# ---------------------------------------------------------------------------
+
+_TAIPOWER_JSON = (
+    b'{"aaData": ['
+    b'["<b>\\u71c3\\u7164(Coal)</b>", "", "U1", "1000", "5000"],'
+    b'["<b>\\u6c23(LNG)</b>", "", "U2", "1000", "3000"],'
+    b'["<b>\\u6838\\u80fd(Nuclear)</b>", "", "U3", "1000", "2000"],'
+    b'["<b>\\u592a\\u967d\\u80fd(Solar)</b>", "", "U4", "1000", "1000"],'
+    b'["Energy Storage Load", "", "U5", "1000", "200"]'
+    b"]}"
+)
+
+
+class TestTaiwanProvider:
+    def test_detect_provider(self):
+        assert detect_provider("TW") == PROVIDER_TAIWAN
+
+    @mock.patch("providers.base.requests.get")
+    def test_parse_generation(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=200, content=_TAIPOWER_JSON)
+        is_green, intensity = taiwan.check_carbon_intensity("TW", 250)
+        # coal 5000*820 + lng 3000*490 + nuclear 2000*12 + solar 1000*45
+        # = 4100000 + 1470000 + 24000 + 45000 = 5639000 / 11000 = 513
+        # (the "Load" row is skipped as storage charging)
+        assert intensity == 513
+        assert is_green is False
+
+    @mock.patch("providers.base.requests.get")
+    def test_api_failure_returns_none(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=500, content=b"", text="err")
+        assert taiwan.check_carbon_intensity("TW", 250) == (None, None)
+
+    def test_unknown_zone(self):
+        assert taiwan.check_carbon_intensity("TW-XX", 250) == (None, None)
+
+    def test_fuel_mapping(self):
+        assert taiwan._fuel_of("Coal") == "coal"
+        assert taiwan._fuel_of("LNG") == "natural_gas"
+        assert taiwan._fuel_of("Energy Storage Load") is None
+        assert taiwan._fuel_of("Energy Storage") == "battery"
+
+    def test_no_forecast_or_trend(self):
+        assert taiwan.get_forecast("TW", 250) == (None, None)
+        assert taiwan.get_history_trend("TW") is None

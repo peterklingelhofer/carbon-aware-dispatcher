@@ -1,6 +1,6 @@
 # Carbon-Aware Dispatcher
 
-[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-10-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
+[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-12-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
 Run your CI/CD only when the energy grid is clean. One file, no API keys, no configuration.
 
@@ -368,12 +368,14 @@ The action picks the best provider per zone, checking free providers first.
 | [Grid India](https://report.grid-india.in/) | India (5 regions) | None | `IN-NO`, `IN-SO`, `IN-EA`, `IN-WE`, `IN-NE` (geo-restricted, see note) |
 | [ONS Brazil](https://integra.ons.org.br/) | Brazil (5 regions) | None | `BR-S`, `BR-SE`, `BR-CS`, `BR-NE`, `BR-N` |
 | [Eskom](https://www.eskom.co.za/) | South Africa | None | `ZA` |
+| [IESO / AESO / Hydro-Quebec](https://www.ieso.ca/) | Canada (ON, AB, QC) | None | `CA-ON`, `CA-AB`, `CA-QC` |
+| [Taipower](https://www.taipower.com.tw/) | Taiwan | None | `TW` |
 | [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
 | [Electricity Maps](https://www.electricitymaps.com/) | Global (200+) | Free token | Any zone on [their map](https://app.electricitymaps.com/map) |
 | [Open-Meteo](https://open-meteo.com/) | Worldwide (90+) | None | Auto-fallback for any zone with known coordinates |
 | [GridStatus](https://www.gridstatus.io) | US forecasts (7 ISOs) | Free token | `CISO`, `ERCO`, `ISNE`, `MISO`, `NYIS`, `PJM`, `SWPP` |
 
-**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (catch-all). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
+**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > Canada > Taiwan > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (catch-all). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
 
 **Reliability notes:**
 - **Grid India** is reachable only from Indian IPs, so it always fails from GitHub-hosted (US/EU) runners. India zones are therefore left out of the curated `auto:*` presets. They still work if you pass `grid_zones: 'IN-SO'` explicitly from a runner inside India.
@@ -405,7 +407,7 @@ The action picks the best provider per zone, checking free providers first.
 
 ### How carbon intensity is calculated
 
-Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
+Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
 
 ## Setup wizard
 

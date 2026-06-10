@@ -15,6 +15,7 @@ from providers import (
     ESCAPE_COAL_MAPPINGS,
     NEAREST_ZONES_BY_OFFSET,
     PROVIDER_AEMO,
+    PROVIDER_CANADA,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENTSOE,
@@ -22,8 +23,10 @@ from providers import (
     PROVIDER_GRID_INDIA,
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
+    PROVIDER_TAIWAN,
     PROVIDER_UK,
     aemo,
+    canada,
     detect_provider,
     eia,
     electricity_maps,
@@ -34,6 +37,7 @@ from providers import (
     ons_brazil,
     open_meteo,
     sort_auto_green_by_time,
+    taiwan,
     uk,
 )
 from providers.base import (
@@ -118,6 +122,8 @@ _PROVIDER_MODULES = {
     PROVIDER_GRID_INDIA: grid_india,
     PROVIDER_ONS_BRAZIL: ons_brazil,
     PROVIDER_ESKOM: eskom,
+    PROVIDER_CANADA: canada,
+    PROVIDER_TAIWAN: taiwan,
     PROVIDER_ELECTRICITY_MAPS: electricity_maps,
     PROVIDER_EIA: eia,
 }

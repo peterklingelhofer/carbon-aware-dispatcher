@@ -9,9 +9,17 @@ PROVIDER_OPEN_METEO = "open_meteo"
 PROVIDER_GRID_INDIA = "grid_india"
 PROVIDER_ONS_BRAZIL = "ons_brazil"
 PROVIDER_ESKOM = "eskom"
+PROVIDER_CANADA = "canada"
+PROVIDER_TAIWAN = "taiwan"
 
 # Australian NEM region codes (free, no API key)
 AEMO_ZONE_IDS = {"AU-NSW", "AU-QLD", "AU-VIC", "AU-SA", "AU-TAS"}
+
+# Canadian province codes (free, no API key): IESO, AESO, Hydro-Quebec estimate
+CANADA_ZONE_IDS = {"CA-ON", "CA-AB", "CA-QC"}
+
+# Taiwan (free, no API key): Taipower real-time generation feed
+TAIWAN_ZONE_IDS = {"TW"}
 
 # Indian grid region codes (free, no API key)
 GRID_INDIA_ZONE_IDS = {"IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"}
@@ -159,6 +167,9 @@ AUTO_GREEN_ZONES = [
     # Australia (AEMO — no key needed)
     {"zone": "AU-TAS", "runner_label": "oc-tasmania", "utc_offset": 10, "type": "hydro"},
     {"zone": "AU-SA", "runner_label": "au-south", "utc_offset": 9.5, "type": "wind"},
+    # Canada (IESO / Hydro-Quebec — no key needed) — very clean hydro/nuclear
+    {"zone": "CA-QC", "runner_label": "ca-quebec", "utc_offset": -5, "type": "hydro"},
+    {"zone": "CA-ON", "runner_label": "ca-ontario", "utc_offset": -5, "type": "nuclear"},
     # Brazil (ONS — no key needed)
     {"zone": "BR-S", "runner_label": "br-south", "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": "br-northeast", "utc_offset": -3, "type": "wind"},
@@ -213,6 +224,11 @@ AUTO_CLEANEST_ZONES = [
     {"zone": "AU-TAS", "runner_label": None, "utc_offset": 10, "type": "hydro"},
     {"zone": "AU-SA", "runner_label": None, "utc_offset": 9.5, "type": "wind"},
     {"zone": "AU-VIC", "runner_label": None, "utc_offset": 10, "type": "wind"},
+    # Canada (IESO / Hydro-Quebec — no key needed)
+    {"zone": "CA-QC", "runner_label": None, "utc_offset": -5, "type": "hydro"},
+    {"zone": "CA-ON", "runner_label": None, "utc_offset": -5, "type": "nuclear"},
+    # Taiwan (TW) omitted: coal/LNG heavy (~500 gCO2eq/kWh), never the cleanest.
+    # Usable as an explicit zone for teams that must run there.
     # Brazil (ONS — no key needed)
     {"zone": "BR-S", "runner_label": None, "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": None, "utc_offset": -3, "type": "wind"},
@@ -408,6 +424,10 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_ONS_BRAZIL
     if zone in ESKOM_ZONE_IDS:
         return PROVIDER_ESKOM
+    if zone in CANADA_ZONE_IDS:
+        return PROVIDER_CANADA
+    if zone in TAIWAN_ZONE_IDS:
+        return PROVIDER_TAIWAN
     if entsoe_token and zone in ENTSOE_AREA_CODES:
         return PROVIDER_ENTSOE
     # Open-Meteo for zones with known coordinates (free, no key)
