@@ -533,6 +533,103 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     return saved, badge_url
 
 
+def run_dry_run(
+    zones_config,
+    max_carbon,
+    enable_forecast,
+    eia_api_key,
+    gridstatus_api_key,
+    emaps_api_key,
+    entsoe_token,
+    runner_provider,
+    runner_spec,
+    github_run_id,
+):
+    """Report-only mode: measure the grid and report, but never gate the build.
+
+    This is the zero-risk on-ramp. The action runs exactly as before, but
+    instead of blocking on a dirty grid it always sets grid_clean=true (so any
+    existing `if: grid_clean == 'true'` step still runs) and reports what it
+    *would* have done. The honest verdict is exposed via the would_defer output
+    and a clearly-labeled job summary, so teams can watch the savings for a
+    while before turning on enforcement.
+    """
+    measured = []
+    best_zone, best_intensity, best_label, skipped = check_multiple_zones(
+        zones_config, max_carbon, eia_api_key, emaps_api_key, entsoe_token, collect=measured
+    )
+
+    # Pick a representative zone for reporting: the greenest measured one
+    if measured:
+        report_zone, report_intensity = min(measured, key=lambda r: r[1])
+    elif best_zone is not None:
+        report_zone, report_intensity = best_zone, best_intensity
+    else:
+        report_zone = zones_config[0]["zone"]
+        report_intensity = None
+
+    would_defer = report_intensity is not None and report_intensity > max_carbon
+
+    # Never gate: downstream `if: grid_clean == 'true'` steps still run
+    set_output("grid_clean", "true")
+    set_output("dry_run", "true")
+    set_output("would_defer", "true" if would_defer else "false")
+    set_output("grid_zone", report_zone)
+    if report_intensity is not None:
+        set_output("carbon_intensity", str(report_intensity))
+    set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
+
+    co2_saved, badge_url = estimate_carbon_savings(report_intensity)
+    if co2_saved > 0:
+        set_output("co2_saved_grams", str(co2_saved))
+    if badge_url:
+        set_output("carbon_badge_url", badge_url)
+
+    forecast_at = None
+    forecast_intensity = None
+    if would_defer:
+        provider = detect_provider(report_zone, entsoe_token)
+        forecast_at, forecast_intensity = get_forecast(
+            report_zone,
+            max_carbon,
+            provider,
+            gridstatus_api_key,
+            emaps_api_key,
+            entsoe_token,
+            eia_api_key,
+        )
+        if forecast_at and forecast_at != "none_in_forecast":
+            set_output("forecast_green_at", forecast_at)
+            if forecast_intensity is not None:
+                set_output("forecast_intensity", str(forecast_intensity))
+
+    if would_defer:
+        print(
+            f"\n[dry-run] Would DEFER: cleanest zone {report_zone} is "
+            f"{report_intensity} gCO2eq/kWh (over threshold {max_carbon}). "
+            "Build proceeds anyway (report-only mode)."
+        )
+    else:
+        intensity_str = report_intensity if report_intensity is not None else "unknown"
+        print(
+            f"\n[dry-run] Would DISPATCH: zone {report_zone} is "
+            f"{intensity_str} gCO2eq/kWh (within threshold {max_carbon})."
+        )
+
+    write_job_summary(
+        report_zone,
+        report_intensity,
+        not would_defer,
+        max_carbon,
+        forecast_at=forecast_at,
+        forecast_intensity=forecast_intensity,
+        skipped=skipped,
+        co2_saved=co2_saved,
+        comparison=measured,
+        dry_run=True,
+    )
+
+
 def suggest_green_cron(zone):
     """Suggest the optimal cron schedule for a zone based on its energy type.
 
@@ -724,11 +821,14 @@ def write_job_summary(
     skipped=None,
     co2_saved=0,
     comparison=None,
+    dry_run=False,
 ):
     """Write a GitHub Actions job summary with carbon intensity results.
 
     comparison: optional list of (zone, intensity) measurements; when two or
     more zones were checked, an ASCII routing comparison panel is appended.
+    dry_run: when True, the status reflects report-only mode (the build was
+    never gated) and states what the action *would* have done.
     """
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
@@ -736,14 +836,16 @@ def write_job_summary(
 
     lines = ["## Carbon-Aware Dispatcher\n"]
 
-    if is_green:
-        lines.append("| | |")
-        lines.append("|---|---|")
+    lines.append("| | |")
+    lines.append("|---|---|")
+    if dry_run and is_green:
+        lines.append("| **Status** | Report-only: grid clean, would dispatch |")
+    elif dry_run:
+        lines.append("| **Status** | Report-only: grid dirty, would defer (build ran anyway) |")
+    elif is_green:
         lines.append("| **Status** | Grid is clean, workflow dispatched |")
     else:
-        lines.append("| | |")
-        lines.append("|---|---|")
-        lines.append("| **Status** | Grid is dirty, waiting for clean energy |")
+        lines.append("| **Status** | Grid is dirty, build skipped until clean |")
 
     lines.append(f"| **Zone** | `{zone}` |")
 
@@ -1110,6 +1212,7 @@ def main():
     strategy = os.environ.get("STRATEGY", policy.get("strategy", "check")).lower()
     deadline_hours_raw = os.environ.get("DEADLINE_HOURS", policy.get("deadline_hours", ""))
     deadline_hours = _env_float("DEADLINE_HOURS", 24, deadline_hours_raw)
+    dry_run = os.environ.get("DRY_RUN", policy.get("dry_run", "false")).lower() == "true"
 
     # Parse zone(s): action inputs override policy
     grid_zones_str = os.environ.get("GRID_ZONES", "")
@@ -1142,11 +1245,29 @@ def main():
     _emit_token_warnings(zones_config, emaps_api_key, entsoe_token)
 
     print(f"Carbon intensity threshold: {max_carbon} gCO2eq/kWh")
+    if dry_run:
+        print("Dry run: report-only mode, the build is never gated.")
     if strategy == "queue":
         print(f"Strategy: queue (find optimal green window within {deadline_hours}h)")
     if max_wait > 0:
         print(f"Smart wait: up to {max_wait} minutes")
     print(f"Checking {len(zones_config)} zone(s)...\n")
+
+    # Dry run short-circuits every strategy: measure and report, never gate
+    if dry_run:
+        run_dry_run(
+            zones_config,
+            max_carbon,
+            enable_forecast,
+            eia_api_key,
+            gridstatus_api_key,
+            emaps_api_key,
+            entsoe_token,
+            runner_provider,
+            runner_spec,
+            github_run_id,
+        )
+        sys.exit(EXIT_SUCCESS)
 
     # Queue strategy: find the optimal green window across all zones
     # instead of just checking now. Outputs the best time to dispatch.
