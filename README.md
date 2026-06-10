@@ -39,6 +39,24 @@ The action auto-detects your cloud region (AWS, GCP, Azure) or checks zones acro
 
 Best for non-urgent jobs that can wait for clean energy: ML training, batch processing, media rendering, database migrations.
 
+## Try it risk-free (report-only)
+
+Not ready to gate your builds yet? Add the action with `dry_run: 'true'` and it
+changes **nothing** about your workflow: it measures the grid, reports what it
+*would* have done, and estimates the CO2 you'd save, all in the job summary. Run
+it for a week, see the numbers, then turn enforcement on.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    grid_zones: 'auto:green'
+    dry_run: 'true'          # report-only: never blocks the build
+```
+
+In report-only mode `grid_clean` is always `true` (so existing gates keep
+passing); read the `would_defer` output to see the real verdict.
+
 ## Presets
 
 Use a preset instead of looking up zone codes:
@@ -316,6 +334,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `target_ref` | `main` | Git ref for dispatched workflows. |
 | `fail_on_api_error` | `false` | Fail the action on API errors instead of skipping silently. |
 | `carbon_policy_path` | `.github/carbon-policy.yml` | Path to org-wide carbon policy. |
+| `dry_run` | `false` | Report-only mode. Measures and reports but never gates the build (`grid_clean` stays `true`). See [Try it risk-free](#try-it-risk-free-report-only). |
 
 ## Outputs
 
@@ -334,6 +353,8 @@ Ready-to-copy files in [`examples/`](examples/):
 | `optimal_dispatch_at` | Best green window (queue strategy). `now` if already green. |
 | `optimal_zone` | Zone for the optimal window (queue strategy). |
 | `suggested_cron` | Suggested cron schedule for green builds based on zone energy type. |
+| `dry_run` | `true` when the action ran in report-only mode. |
+| `would_defer` | In `dry_run` mode, `true` if the grid was dirty and the build would have been deferred under enforcement. |
 
 ## Supported zones & providers
 
