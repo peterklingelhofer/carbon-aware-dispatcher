@@ -79,6 +79,7 @@ def _clear_env():
         "STRATEGY",
         "DEADLINE_HOURS",
         "CARBON_POLICY_PATH",
+        "DRY_RUN",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -1151,6 +1152,79 @@ class TestInlineMode:
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["grid_clean"] == "true"
         assert output_calls["carbon_intensity"] == "50"
+
+
+class TestDryRun:
+    """Report-only mode never gates the build but reports the real verdict."""
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_dirty_grid_does_not_gate(self, mock_summary, mock_output, mock_check):
+        # Single dirty zone, but dry_run must keep grid_clean true and exit 0
+        mock_check.return_value = (False, 400)
+        os.environ["GRID_ZONES"] = "AU-NSW"
+        os.environ["MAX_CARBON"] = "250"
+        os.environ["DRY_RUN"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["grid_clean"] == "true"  # build is never blocked
+        assert out["would_defer"] == "true"  # but the honest verdict is exposed
+        assert out["dry_run"] == "true"
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_clean_grid_reports_dispatch(self, mock_summary, mock_output, mock_check):
+        mock_check.return_value = (True, 80)
+        os.environ["GRID_ZONES"] = "GB"
+        os.environ["MAX_CARBON"] = "250"
+        os.environ["DRY_RUN"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["grid_clean"] == "true"
+        assert out["would_defer"] == "false"
+
+    @mock.patch("check_grid.trigger_workflow")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_never_dispatches(self, mock_summary, mock_output, mock_check, mock_trigger):
+        # Even in dispatch mode (workflow_id set), dry_run must not trigger
+        mock_check.return_value = (True, 80)
+        os.environ["GRID_ZONES"] = "GB"
+        os.environ["DRY_RUN"] = "true"
+        os.environ["WORKFLOW_ID"] = "heavy.yml"
+        os.environ["GITHUB_TOKEN"] = "tok"
+        os.environ["TARGET_REPO"] = "owner/repo"
+
+        with pytest.raises(SystemExit):
+            check_grid.main()
+        mock_trigger.assert_not_called()
+
+    def test_summary_dry_run_banner(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary("AU-NSW", 400, False, 250, dry_run=True)
+            with open(path) as f:
+                content = f.read()
+            assert "Report-only" in content
+            assert "would defer" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 
 # ---------------------------------------------------------------------------
