@@ -58,6 +58,18 @@ from providers.runners import (
 
 
 @pytest.fixture(autouse=True)
+def _no_real_sleep():
+    """Stop the retry/backoff layer from actually sleeping during tests.
+
+    base.request sleeps RETRY_DELAY seconds between retries on 5xx/429/network
+    errors. Without this, the handful of failure-path tests add ~60s to the
+    suite (and to every CI matrix run) for no behavioral coverage.
+    """
+    with mock.patch("providers.base.time.sleep"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clear_env():
     """Ensure test env vars don't leak between tests."""
     keys = [
