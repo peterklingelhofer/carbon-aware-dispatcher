@@ -198,6 +198,54 @@ class TestApiRequest:
         call_headers = mock_get.call_args[1].get("headers", {})
         assert "auth-token" not in call_headers
 
+
+class TestFailureReason:
+    """request() classifies why a call failed, for actionable skip reasons."""
+
+    @mock.patch("providers.base.requests.get")
+    def test_auth_failed(self, mock_get):
+        from providers import base
+
+        mock_get.return_value = mock.Mock(status_code=403, text="no")
+        base.request("https://x")
+        assert base.last_failure_reason() == "auth failed"
+
+    @mock.patch("providers.base.requests.get")
+    def test_rate_limited(self, mock_get):
+        from providers import base
+
+        mock_get.return_value = mock.Mock(status_code=429, text="slow", headers={})
+        base.request("https://x")
+        assert base.last_failure_reason() == "rate limited"
+
+    @mock.patch("providers.base.requests.get")
+    def test_network_error(self, mock_get):
+        from providers import base
+
+        mock_get.side_effect = requests.RequestException("boom")
+        base.request("https://x")
+        assert base.last_failure_reason() == "network error"
+
+    @mock.patch("providers.base.requests.get")
+    def test_success_resets_reason(self, mock_get):
+        from providers import base
+
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"ok": 1})
+        base.request("https://x")
+        assert base.last_failure_reason() is None
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    def test_dispatcher_surfaces_reason(self, mock_check):
+        from providers import base
+
+        # check_carbon_intensity returns (None, None); base recorded a reason
+        mock_check.return_value = (None, None)
+        base._set_failure_reason("auth failed")
+        _zone, _i, _label, skipped = check_grid.check_multiple_zones(
+            [{"zone": "CISO", "runner_label": None}], 250
+        )
+        assert skipped == [("CISO", "auth failed")]
+
     @mock.patch("providers.base.requests.get")
     def test_success_with_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
@@ -1227,6 +1275,24 @@ class TestDryRun:
         with pytest.raises(SystemExit):
             check_grid.main()
         mock_trigger.assert_not_called()
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_never_fails_build_even_with_fail_on_api_error(
+        self, mock_summary, mock_output, mock_check
+    ):
+        # dry_run must exit 0 even when every zone errors AND fail_on_api_error
+        # is set: report-only never breaks the build
+        mock_check.return_value = (None, None)
+        os.environ["GRID_ZONES"] = "GB,AU-NSW"
+        os.environ["DRY_RUN"] = "true"
+        os.environ["FAIL_ON_API_ERROR"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
 
     def test_summary_dry_run_banner(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
@@ -2618,61 +2684,49 @@ class TestInlineModeDispatch:
 
 
 class TestSetupWizard:
-    def test_provider_names_cover_all_providers(self):
-        """All providers should have display names in the wizard."""
-        from providers import (
-            PROVIDER_AEMO,
-            PROVIDER_EIA,
-            PROVIDER_ELECTRICITY_MAPS,
-            PROVIDER_ENTSOE,
-            PROVIDER_ESKOM,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_UK,
-        )
-        from setup_wizard import _PROVIDER_NAMES
+    def test_wizard_registries_match_dispatcher(self):
+        """The wizard must know every provider the dispatcher routes to, so it
+        can't silently mislabel a zone (e.g. after a new provider is added)."""
+        import check_grid
+        from setup_wizard import _PROVIDER_MODULES, _PROVIDER_NAMES
 
-        for p in [
-            PROVIDER_UK,
-            PROVIDER_EIA,
-            PROVIDER_AEMO,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_ESKOM,
-            PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_ELECTRICITY_MAPS,
-        ]:
-            assert p in _PROVIDER_NAMES, f"Missing display name for {p}"
+        for p in check_grid._PROVIDER_MODULES:
+            assert p in _PROVIDER_NAMES, f"Wizard missing display name for {p}"
+            assert p in _PROVIDER_MODULES, f"Wizard missing module for {p}"
 
-    def test_provider_modules_cover_all_providers(self):
-        """All providers should have modules in the wizard."""
-        from providers import (
-            PROVIDER_AEMO,
-            PROVIDER_EIA,
-            PROVIDER_ELECTRICITY_MAPS,
-            PROVIDER_ENTSOE,
-            PROVIDER_ESKOM,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_UK,
-        )
-        from setup_wizard import _PROVIDER_MODULES
+    @mock.patch("setup_wizard.canada.check_carbon_intensity", return_value=(True, 30))
+    def test_zone_canada(self, mock_check):
+        from setup_wizard import test_zone
 
-        for p in [
-            PROVIDER_UK,
-            PROVIDER_EIA,
-            PROVIDER_AEMO,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_ESKOM,
-            PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_ELECTRICITY_MAPS,
-        ]:
-            assert p in _PROVIDER_MODULES, f"Missing module for {p}"
+        result = test_zone("CA-QC")
+        assert result["status"] == "ok"
+        assert result["intensity"] == 30
+        assert "Canada" in result["provider"]
+
+    @mock.patch("setup_wizard.taiwan.check_carbon_intensity", return_value=(False, 527))
+    def test_zone_taiwan(self, mock_check):
+        from setup_wizard import test_zone
+
+        result = test_zone("TW")
+        assert result["status"] == "ok"
+        assert result["intensity"] == 527
+        assert "Taipower" in result["provider"]
+
+    @mock.patch("setup_wizard.eia.check_carbon_intensity", return_value=(None, None))
+    def test_zone_error_on_no_data(self, mock_check):
+        from setup_wizard import test_zone
+
+        result = test_zone("CISO")
+        assert result["status"] == "error"
+        assert "no data" in result["error"]
+
+    @mock.patch("setup_wizard.uk.check_carbon_intensity", side_effect=RuntimeError("boom"))
+    def test_zone_error_on_exception(self, mock_check):
+        from setup_wizard import test_zone
+
+        result = test_zone("GB")
+        assert result["status"] == "error"
+        assert "boom" in result["error"]
 
     @mock.patch("setup_wizard.uk.check_carbon_intensity", return_value=(True, 100))
     def test_zone_test_uk(self, mock_check):

@@ -45,6 +45,7 @@ from providers.base import (
     DEFAULT_JOB_DURATION_HOURS,
     DEFAULT_TIMEOUT,
     GLOBAL_AVG_INTENSITY,
+    last_failure_reason,
 )
 from providers.runners import (
     detect_cloud_zone,
@@ -329,7 +330,9 @@ def check_multiple_zones(
             zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
         )
         if is_green is None:
-            skipped.append((zone, "API error"))
+            # Surface why it failed (auth failed / rate limited / network error /
+            # ...) instead of a flat "API error", so users can act on it
+            skipped.append((zone, last_failure_reason() or "API error"))
         elif intensity is not None:
             # Record every measured zone (green or not) for the comparison panel
             if collect is not None:

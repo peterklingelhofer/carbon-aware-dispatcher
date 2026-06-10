@@ -87,6 +87,22 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # or misconfigured server cannot stall a CI run for minutes
 MAX_RETRY_AFTER = 60
 
+# Category of the most recent request() failure, so the dispatcher can report
+# *why* a zone was skipped (auth failed / rate limited / network error / ...)
+# rather than a flat "API error". Safe as module state because the dispatcher
+# checks zones sequentially, one request() at a time
+LAST_FAILURE_REASON = None
+
+
+def _set_failure_reason(reason):
+    global LAST_FAILURE_REASON
+    LAST_FAILURE_REASON = reason
+
+
+def last_failure_reason():
+    """Return the category of the most recent request() failure, or None."""
+    return LAST_FAILURE_REASON
+
 
 def _retry_after_seconds(response):
     """Return a capped sleep time from a 429 Retry-After header, or None.
@@ -128,6 +144,9 @@ def request(
     headers = dict(headers or {})
     # Identify ourselves unless the caller already set a UA
     headers.setdefault("User-Agent", USER_AGENT)
+    # Reset the per-call failure reason; set on any failure path below so the
+    # dispatcher can report *why* a zone was skipped (see LAST_FAILURE_REASON)
+    _set_failure_reason(None)
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -142,6 +161,7 @@ def request(
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
                 continue
+            _set_failure_reason("network error")
             return None
 
         if response.status_code == 200:
@@ -153,6 +173,7 @@ def request(
                 return response.json()
             except (ValueError, requests.exceptions.JSONDecodeError):
                 print(f"::warning::Invalid JSON response: {response.text[:200]}")
+                _set_failure_reason("invalid data")
                 return None
 
         print(
@@ -161,6 +182,7 @@ def request(
         )
         if response.status_code in (401, 403):
             print("::error::Authentication failed. Check your API token.")
+            _set_failure_reason("auth failed")
             return None
 
         if attempt < MAX_RETRIES and response.status_code in RETRYABLE_STATUS:
@@ -175,8 +197,11 @@ def request(
 
         if attempt < MAX_RETRIES:
             # non-retryable 4xx, do not hammer the endpoint
+            _set_failure_reason(f"HTTP {response.status_code}")
             return None
 
+    # Retries exhausted on a retryable status (5xx or 429)
+    _set_failure_reason("rate limited" if response.status_code == 429 else "upstream error")
     return None
 
 
