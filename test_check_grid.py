@@ -1714,7 +1714,7 @@ class TestOpenMeteoEstimateIntensity:
 
 
 class TestOpenMeteoCheckCarbonIntensity:
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_green_zone(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -1729,7 +1729,7 @@ class TestOpenMeteoCheckCarbonIntensity:
         assert is_green is True
         assert intensity == round(550 * 0.60 * 0.75)
 
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_dirty_zone(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -1749,7 +1749,7 @@ class TestOpenMeteoCheckCarbonIntensity:
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_with_explicit_lat_lon(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -1763,14 +1763,14 @@ class TestOpenMeteoCheckCarbonIntensity:
         is_green, intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
         assert is_green is True
 
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_api_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_non_200_response(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
@@ -1779,7 +1779,7 @@ class TestOpenMeteoCheckCarbonIntensity:
 
 
 class TestOpenMeteoForecast:
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_finds_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -1795,7 +1795,7 @@ class TestOpenMeteoForecast:
         assert dt is not None
         assert "12:00" in dt
 
-    @mock.patch("providers.open_meteo.requests.get")
+    @mock.patch("providers.base.requests.get")
     def test_no_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,

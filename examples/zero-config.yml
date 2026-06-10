@@ -1,8 +1,9 @@
 # Zero-Config Carbon-Aware Build
 #
-# The simplest possible setup — just add this file.
+# The simplest possible setup: just add this file.
 # No API keys, no secrets, no configuration needed.
-# The action auto-detects your cloud region and checks 17+ zones worldwide.
+# The action auto-detects your cloud region, or checks curated clean zones
+# worldwide across free, keyless providers (US, UK, Australia, Brazil, and more).
 #
 # Copy this file to .github/workflows/carbon-aware-build.yml
 
