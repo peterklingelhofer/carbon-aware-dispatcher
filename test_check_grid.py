@@ -1887,10 +1887,16 @@ class TestExpandedAutoGreen:
         assert "GB-16" in zones
         # Australia (AEMO — free)
         assert "AU-TAS" in zones
-        # India (Grid India — free)
-        assert "IN-SO" in zones
         # Brazil (ONS — free)
         assert "BR-S" in zones
+
+    def test_auto_green_excludes_geowalled_india(self):
+        """Grid India zones are geo-walled (Indian IPs only), so curated
+        presets omit them to keep the default experience clean from CI."""
+        green = {z["zone"] for z in AUTO_GREEN_ZONES}
+        cleanest = {z["zone"] for z in AUTO_CLEANEST_ZONES}
+        assert not any(z.startswith("IN-") for z in green)
+        assert not any(z.startswith("IN-") for z in cleanest)
 
     def test_auto_green_only_free_providers(self):
         """auto:green should NOT include zones requiring API tokens."""
@@ -2343,10 +2349,11 @@ class TestAutoCleanestPreset:
         assert "CISO" in zone_names  # EIA
         assert "GB" in zone_names or "GB-16" in zone_names  # UK
         assert "AU-TAS" in zone_names  # AEMO
-        assert "IN-SO" in zone_names  # Grid India
         assert "BR-S" in zone_names  # ONS Brazil
         # ZA intentionally excluded — ~85% coal (~750 gCO2eq/kWh)
         assert "ZA" not in zone_names
+        # Grid India excluded — geo-walled API, always fails from CI runners
+        assert not any(z.startswith("IN-") for z in zone_names)
 
     def test_auto_cleanest_case_insensitive(self):
         result = check_grid.expand_auto_zones("AUTO:CLEANEST")
@@ -3038,11 +3045,16 @@ class TestAutoNearestPreset:
             assert "GB-16" in zone_ids or "GB" in zone_ids
 
     def test_nearest_with_tz_offset_positive(self):
-        """TZ=UTC+5.5 should resolve to India zones."""
+        """TZ=UTC+5.5 (India) resolves to the nearest reachable clean zones.
+
+        Grid India itself is geo-walled, so the offset maps to Australian
+        clean zones rather than the unreachable IN-* zones."""
         with mock.patch.dict(os.environ, {"TZ": "UTC+5.5"}):
             zones = check_grid.expand_auto_zones("auto:nearest")
             zone_ids = [z["zone"] for z in zones]
-            assert "IN-SO" in zone_ids
+            assert len(zone_ids) > 0
+            assert not any(z.startswith("IN-") for z in zone_ids)
+            assert "AU-TAS" in zone_ids
 
     def test_nearest_with_tz_offset_negative(self):
         """TZ=UTC-8 should resolve to US West zones."""
@@ -3059,11 +3071,12 @@ class TestAutoNearestPreset:
             assert len(zones) > 0
 
     def test_nearest_etc_gmt_inverted(self):
-        """Etc/GMT-5 means UTC+5 (inverted sign)."""
+        """Etc/GMT-5 means UTC+5 (inverted sign), resolving to reachable zones."""
         with mock.patch.dict(os.environ, {"TZ": "Etc/GMT-5"}):
             zones = check_grid.expand_auto_zones("auto:nearest")
             zone_ids = [z["zone"] for z in zones]
-            assert "IN-SO" in zone_ids or "IN-WE" in zone_ids
+            # UTC+5 maps to the AU clean zones (Grid India is geo-walled)
+            assert "AU-TAS" in zone_ids
 
 
 class TestDetectUtcOffset:

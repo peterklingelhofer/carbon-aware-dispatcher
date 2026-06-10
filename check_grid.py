@@ -401,7 +401,11 @@ def expand_auto_zones(zones_str):
         if zone:
             print(f"Auto-detected grid zone: {zone} (from {source})")
             return [{"zone": zone, "runner_label": None}]
-        print("::notice::Could not auto-detect cloud region. Falling back to auto:cleanest.")
+        print(
+            "::notice::No cloud region detected (expected on GitHub-hosted runners, "
+            "which don't expose one). Falling back to auto:cleanest, the greenest free "
+            "zone worldwide. Set grid_zones explicitly to pin a region."
+        )
         return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
 
     if normalized == "auto:nearest":

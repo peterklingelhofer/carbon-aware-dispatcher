@@ -159,11 +159,12 @@ AUTO_GREEN_ZONES = [
     # Australia (AEMO — no key needed)
     {"zone": "AU-TAS", "runner_label": "oc-tasmania", "utc_offset": 10, "type": "hydro"},
     {"zone": "AU-SA", "runner_label": "au-south", "utc_offset": 9.5, "type": "wind"},
-    # India (Grid India — no key needed)
-    {"zone": "IN-SO", "runner_label": "in-south", "utc_offset": 5.5, "type": "solar"},
     # Brazil (ONS — no key needed)
     {"zone": "BR-S", "runner_label": "br-south", "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": "br-northeast", "utc_offset": -3, "type": "wind"},
+    # Grid India zones omitted: the API is reachable only from Indian IPs, so
+    # it always fails from CI runners. Use grid_zones: 'IN-SO' explicitly if you
+    # run from within India.
 ]
 
 # auto:green:full — Extended green-energy zones INCLUDING token-requiring zones.
@@ -178,7 +179,6 @@ AUTO_GREEN_ZONES_FULL = [
     {"zone": "GB", "runner_label": "uk-national", "utc_offset": 0, "type": "wind"},
     {"zone": "AU-TAS", "runner_label": "oc-tasmania", "utc_offset": 10, "type": "hydro"},
     {"zone": "AU-SA", "runner_label": "au-south", "utc_offset": 9.5, "type": "wind"},
-    {"zone": "IN-SO", "runner_label": "in-south", "utc_offset": 5.5, "type": "solar"},
     {"zone": "BR-S", "runner_label": "br-south", "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": "br-northeast", "utc_offset": -3, "type": "wind"},
     # Europe (ENTSO-E or Electricity Maps — token needed)
@@ -213,12 +213,11 @@ AUTO_CLEANEST_ZONES = [
     {"zone": "AU-TAS", "runner_label": None, "utc_offset": 10, "type": "hydro"},
     {"zone": "AU-SA", "runner_label": None, "utc_offset": 9.5, "type": "wind"},
     {"zone": "AU-VIC", "runner_label": None, "utc_offset": 10, "type": "wind"},
-    # India (Grid India — no key needed)
-    {"zone": "IN-SO", "runner_label": None, "utc_offset": 5.5, "type": "solar"},
-    {"zone": "IN-WE", "runner_label": None, "utc_offset": 5.5, "type": "solar"},
     # Brazil (ONS — no key needed)
     {"zone": "BR-S", "runner_label": None, "utc_offset": -3, "type": "hydro"},
     {"zone": "BR-NE", "runner_label": None, "utc_offset": -3, "type": "wind"},
+    # Grid India zones omitted: API reachable only from Indian IPs (always fails
+    # from CI runners). Use grid_zones: 'IN-SO' explicitly if running in India.
     # Note: ZA (South Africa) intentionally excluded — ~85% coal, ~750 gCO2eq/kWh.
     # Use auto:escape-coal:ZA to route away from SA's dirty grid.
     # Open-Meteo estimates (no key needed) — clean regions globally
@@ -307,21 +306,22 @@ NEAREST_ZONES_BY_OFFSET = {
     # UTC+0: UK / Iceland / West Africa
     0: ["GB-16", "GB", "IS", "CISO"],
     # UTC+1: Western/Central Europe
-    1: ["GB-16", "GB", "IS", "CISO", "IN-SO"],
+    1: ["GB-16", "GB", "IS", "CISO"],
     # UTC+2: Eastern Europe / South Africa
-    2: ["GB-16", "GB", "IS", "IN-SO"],
+    2: ["GB-16", "GB", "IS"],
     # UTC+3: East Africa / Middle East / Russia West
-    3: ["IN-SO", "GB-16", "GB", "IS"],
+    3: ["GB-16", "GB", "IS"],
     # UTC+4: Gulf / Russia
-    4: ["IN-SO", "IN-WE", "GB-16", "AU-TAS"],
-    # UTC+5 to 5.5: Pakistan / India
-    5: ["IN-SO", "IN-WE", "AU-TAS", "AU-SA"],
-    5.5: ["IN-SO", "IN-WE", "AU-TAS", "AU-SA"],
+    4: ["GB-16", "AU-TAS", "AU-SA"],
+    # UTC+5 to 5.5: Pakistan / India (Grid India API is geo-walled, so route to
+    # the nearest reachable clean zones instead)
+    5: ["AU-TAS", "AU-SA", "AU-VIC"],
+    5.5: ["AU-TAS", "AU-SA", "AU-VIC"],
     # UTC+6 to 7: Bangladesh / SE Asia
-    6: ["IN-SO", "AU-TAS", "AU-SA", "AU-VIC"],
-    7: ["AU-TAS", "AU-SA", "AU-VIC", "IN-SO"],
+    6: ["AU-TAS", "AU-SA", "AU-VIC"],
+    7: ["AU-TAS", "AU-SA", "AU-VIC"],
     # UTC+8: China / Singapore / Australia West
-    8: ["AU-TAS", "AU-SA", "AU-VIC", "IN-SO"],
+    8: ["AU-TAS", "AU-SA", "AU-VIC"],
     # UTC+9 to 9.5: Japan / Korea / Australia Central
     9: ["AU-TAS", "AU-SA", "AU-VIC", "AU-NSW"],
     9.5: ["AU-SA", "AU-TAS", "AU-VIC"],
