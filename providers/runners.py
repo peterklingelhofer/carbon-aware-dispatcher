@@ -206,6 +206,7 @@ ZONE_TO_AWS_REGION = {
     "IL": "me-south-1",  # Israel -> Bahrain
     "AE": "me-south-1",  # UAE -> Bahrain
     "ZA": "af-south-1",  # South Africa -> Cape Town
+    "KE": "af-south-1",  # Kenya -> Cape Town (nearest AWS region)
     # EIA region rollups (used in some queries)
     "CAL": "us-west-1",
     "NW": "us-west-2",
