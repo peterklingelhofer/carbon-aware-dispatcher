@@ -3102,27 +3102,29 @@ class TestSetupWizard:
 
 
 class TestCloudRegionMappingCompleteness:
-    def test_all_auto_cleanest_zones_have_aws_mapping(self):
-        """All zones in auto:cleanest should have AWS region mappings."""
-        for entry in AUTO_CLEANEST_ZONES:
-            zone = entry["zone"]
-            region = get_cloud_region(zone)
-            # Should not be the default for important zones
-            assert region is not None, f"No AWS region for {zone}"
+    # Every curated preset's zones should have an EXPLICIT cloud-region mapping.
+    # get_cloud_region() falls back to a default (us-east-1) for unmapped zones,
+    # so we assert membership in the mapping dicts rather than "is not None",
+    # which would pass even for a totally unmapped zone.
+    def _preset_zones(self):
+        from providers import AUTO_GREEN_ZONES_FULL
 
-    def test_all_auto_cleanest_zones_have_gcp_mapping(self):
-        """All zones in auto:cleanest should have GCP region mappings."""
-        for entry in AUTO_CLEANEST_ZONES:
-            zone = entry["zone"]
-            region = get_gcp_region(zone)
-            assert region is not None, f"No GCP region for {zone}"
+        zones = set()
+        for preset in (AUTO_GREEN_ZONES, AUTO_CLEANEST_ZONES, AUTO_GREEN_ZONES_FULL):
+            zones.update(e["zone"] for e in preset)
+        return zones
 
-    def test_all_auto_cleanest_zones_have_azure_mapping(self):
-        """All zones in auto:cleanest should have Azure region mappings."""
-        for entry in AUTO_CLEANEST_ZONES:
-            zone = entry["zone"]
-            region = get_azure_region(zone)
-            assert region is not None, f"No Azure region for {zone}"
+    def test_all_preset_zones_have_aws_mapping(self):
+        missing = [z for z in self._preset_zones() if z not in ZONE_TO_AWS_REGION]
+        assert not missing, f"Preset zones missing AWS region: {sorted(missing)}"
+
+    def test_all_preset_zones_have_gcp_mapping(self):
+        missing = [z for z in self._preset_zones() if z not in ZONE_TO_GCP_REGION]
+        assert not missing, f"Preset zones missing GCP region: {sorted(missing)}"
+
+    def test_all_preset_zones_have_azure_mapping(self):
+        missing = [z for z in self._preset_zones() if z not in ZONE_TO_AZURE_REGION]
+        assert not missing, f"Preset zones missing Azure region: {sorted(missing)}"
 
     def test_brazil_se_zone_in_all_clouds(self):
         """BR-SE should have mappings in all three clouds."""
