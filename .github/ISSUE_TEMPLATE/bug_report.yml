@@ -1,0 +1,38 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow step
+      description: The `uses:` block and inputs you ran (redact any secrets).
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: "Paste the action's output, including any ::warning:: or ::error:: lines."
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Action version
+      description: The ref you used (e.g. v1, v1.4.0).
+      placeholder: v1
+    validations:
+      required: true
+  - type: input
+    id: zones
+    attributes:
+      label: Zones / preset
+      description: The grid_zones or grid_zone value (e.g. auto:green, CA-QC).
