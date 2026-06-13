@@ -2654,6 +2654,156 @@ class TestQueueStrategy:
         assert intensity == 80
 
 
+class TestQueueStrategyMain:
+    """Exercise the queue-strategy branch of main() end to end."""
+
+    @mock.patch("check_grid.trigger_workflow")
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_queue_already_green_dispatches_now(
+        self, mock_summary, mock_output, mock_multi, mock_trigger
+    ):
+        # A zone is already green: dispatch immediately, optimal_dispatch_at=now
+        mock_multi.return_value = ("CISO", 90, None, [])
+        os.environ["GRID_ZONES"] = "CISO,GB"
+        os.environ["STRATEGY"] = "queue"
+        os.environ["WORKFLOW_ID"] = "heavy.yml"
+        os.environ["GITHUB_TOKEN"] = "tok"
+        os.environ["TARGET_REPO"] = "owner/repo"
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["optimal_dispatch_at"] == "now"
+        assert out["grid_clean"] == "true"
+        mock_trigger.assert_called_once()
+
+    @mock.patch("check_grid.queue_find_optimal_window")
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_queue_finds_future_window(self, mock_summary, mock_output, mock_multi, mock_window):
+        # Nothing green now, but a future window exists within the deadline
+        mock_multi.return_value = (None, None, None, [])
+        mock_window.return_value = ("CISO", "2026-03-10T14:00Z", 120)
+        os.environ["GRID_ZONES"] = "CISO,GB"
+        os.environ["STRATEGY"] = "queue"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["optimal_dispatch_at"] == "2026-03-10T14:00Z"
+        assert out["optimal_zone"] == "CISO"
+        assert out["grid_clean"] == "false"
+
+    @mock.patch("check_grid.queue_find_optimal_window")
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_queue_no_window_no_fail(self, mock_summary, mock_output, mock_multi, mock_window):
+        mock_multi.return_value = (None, None, None, [])
+        mock_window.return_value = (None, None, None)
+        os.environ["GRID_ZONES"] = "CISO,GB"
+        os.environ["STRATEGY"] = "queue"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["optimal_dispatch_at"] == "none_in_deadline"
+
+    @mock.patch("check_grid.queue_find_optimal_window")
+    @mock.patch("check_grid.check_multiple_zones")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_queue_no_window_fail_on_api_error(
+        self, mock_summary, mock_output, mock_multi, mock_window
+    ):
+        # No window + fail_on_api_error: must exit non-zero
+        mock_multi.return_value = (None, None, None, [])
+        mock_window.return_value = (None, None, None)
+        os.environ["GRID_ZONES"] = "CISO,GB"
+        os.environ["STRATEGY"] = "queue"
+        os.environ["FAIL_ON_API_ERROR"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 1
+
+
+class TestSingleZoneDirtyMain:
+    """Exercise the single-zone dirty and API-error paths of main()."""
+
+    @mock.patch("check_grid.handle_dirty_grid")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_dirty_grid_sets_outputs_no_dispatch(
+        self, mock_summary, mock_output, mock_check, mock_dirty
+    ):
+        mock_check.return_value = (False, 480)
+        mock_dirty.return_value = ("stable", "2026-03-10T03:00Z", 90)
+        os.environ["GRID_ZONE"] = "AU-NSW"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+        mock_dirty.assert_called_once()
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_api_error_skips_without_fail_flag(self, mock_summary, mock_output, mock_check):
+        mock_check.return_value = (None, None)
+        os.environ["GRID_ZONE"] = "CISO"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 0
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["grid_clean"] == "false"
+        assert out["carbon_intensity"] == "unknown"
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_api_error_fails_with_flag(self, mock_summary, mock_output, mock_check):
+        mock_check.return_value = (None, None)
+        os.environ["GRID_ZONE"] = "CISO"
+        os.environ["FAIL_ON_API_ERROR"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        with pytest.raises(SystemExit) as exc:
+            check_grid.main()
+        assert exc.value.code == 1
+
+    @mock.patch("check_grid.smart_wait_single")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_smart_wait_invoked_when_dirty(self, mock_summary, mock_output, mock_check, mock_wait):
+        # Dirty now + max_wait set: smart_wait_single runs and turns it green
+        mock_check.return_value = (False, 400)
+        mock_wait.return_value = (True, 90, 12.0)
+        os.environ["GRID_ZONE"] = "CISO"
+        os.environ["MAX_WAIT"] = "60"
+        os.environ["WORKFLOW_ID"] = ""
+
+        # Green single-zone path returns normally (no sys.exit)
+        check_grid.main()
+        mock_wait.assert_called_once()
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["grid_clean"] == "true"
+
+
 # --- Inline mode simplification test ---
 
 
