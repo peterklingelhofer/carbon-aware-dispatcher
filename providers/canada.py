@@ -10,7 +10,7 @@ Three provinces, three different public feeds:
 import re
 import xml.etree.ElementTree as ET
 
-from providers.base import DEFAULT_FUEL_FACTOR, request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 CANADA_ZONES = {"CA-ON", "CA-AB", "CA-QC"}
 
@@ -19,17 +19,17 @@ IESO_URL = (
 )
 AESO_URL = "http://ets.aeso.ca/ets_web/ip/Market/Reports/CSDReportServlet?contentType=html"
 
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
+# Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS)
 CANADA_EMISSION_FACTORS = {
-    "coal": 820,
-    "natural_gas": 490,
-    "oil": 650,
-    "hydro": 24,
-    "wind": 12,
-    "solar": 45,
-    "nuclear": 12,
-    "biomass": 230,
-    "other": 300,
+    "coal": FUEL_FACTORS["coal"],
+    "natural_gas": FUEL_FACTORS["gas"],
+    "oil": FUEL_FACTORS["oil"],
+    "hydro": FUEL_FACTORS["hydro"],
+    "wind": FUEL_FACTORS["wind"],
+    "solar": FUEL_FACTORS["solar"],
+    "nuclear": FUEL_FACTORS["nuclear"],
+    "biomass": FUEL_FACTORS["biomass"],
+    "other": FUEL_FACTORS["other"],
 }
 
 # Storage is not primary generation, exclude from the weighted mix

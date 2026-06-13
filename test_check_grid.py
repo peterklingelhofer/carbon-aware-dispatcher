@@ -946,6 +946,62 @@ class TestOnsBrazilCheckAndForecast:
 # ---------------------------------------------------------------------------
 
 
+class TestCanonicalFuelFactors:
+    """Every provider sources its factors from base.FUEL_FACTORS, so shared
+    fuels must agree across providers and match the canonical table."""
+
+    def test_shared_fuels_agree_across_providers(self):
+        from providers import aemo, base, canada, entsoe, eskom, grid_india, taiwan
+
+        f = base.FUEL_FACTORS
+        # Coal/hard-coal is the same everywhere it appears
+        assert base.EIA_EMISSION_FACTORS["COL"] == f["coal"]
+        assert canada.CANADA_EMISSION_FACTORS["coal"] == f["coal"]
+        assert taiwan.TAIWAN_EMISSION_FACTORS["coal"] == f["coal"]
+        assert aemo.AEMO_EMISSION_FACTORS["black coal"] == f["coal"]
+        assert eskom.SA_EMISSION_FACTORS["coal"] == f["coal"]
+        assert grid_india.INDIA_EMISSION_FACTORS["coal"] == f["coal"]
+        assert entsoe.ENTSOE_EMISSION_FACTORS["B05"] == f["coal"]
+        # Lignite/brown-coal agree
+        assert aemo.AEMO_EMISSION_FACTORS["brown coal"] == f["lignite"]
+        assert grid_india.INDIA_EMISSION_FACTORS["lignite"] == f["lignite"]
+        assert entsoe.ENTSOE_EMISSION_FACTORS["B02"] == f["lignite"]
+        # Gas agrees
+        assert base.EIA_EMISSION_FACTORS["NG"] == f["gas"]
+        assert entsoe.ENTSOE_EMISSION_FACTORS["B04"] == f["gas"]
+        # Renewables agree
+        assert canada.CANADA_EMISSION_FACTORS["wind"] == f["wind"]
+        assert entsoe.ENTSOE_EMISSION_FACTORS["B19"] == f["wind"]
+        assert taiwan.TAIWAN_EMISSION_FACTORS["hydro"] == f["hydro"]
+
+    def test_default_factor_is_canonical(self):
+        from providers import aemo, base, entsoe
+
+        assert base.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
+        assert aemo.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
+        assert entsoe.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
+
+    def test_every_provider_value_is_in_canonical_table(self):
+        """Every value in every provider's factor dict must come from the
+        canonical FUEL_FACTORS, proving none reintroduced a bare number."""
+        from providers import aemo, base, canada, entsoe, eskom, grid_india, ons_brazil, taiwan
+
+        canonical = set(base.FUEL_FACTORS.values())
+        dicts = [
+            base.EIA_EMISSION_FACTORS,
+            canada.CANADA_EMISSION_FACTORS,
+            taiwan.TAIWAN_EMISSION_FACTORS,
+            aemo.AEMO_EMISSION_FACTORS,
+            eskom.SA_EMISSION_FACTORS,
+            grid_india.INDIA_EMISSION_FACTORS,
+            ons_brazil.BRAZIL_EMISSION_FACTORS,
+            entsoe.ENTSOE_EMISSION_FACTORS,
+        ]
+        for d in dicts:
+            for fuel, value in d.items():
+                assert value in canonical, f"{fuel}={value} not in FUEL_FACTORS"
+
+
 class TestComputeTrend:
     def test_decreasing(self):
         points = [400, 380, 360, 300, 280, 260]
