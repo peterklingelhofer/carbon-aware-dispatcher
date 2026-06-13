@@ -128,7 +128,10 @@ def _estimate_intensity(data):
 def check_carbon_intensity(zone, max_carbon):
     """Check carbon intensity for South Africa.
 
-    Returns (is_green, intensity) or (None, None) on error.
+    Returns (is_green, intensity). Unlike other providers, this never returns
+    (None, None) on API failure: SA's grid is reliably ~85% coal, so a labeled
+    time-of-day estimate is more useful than no answer. Returns (None, None)
+    only for an unknown zone.
     Note: SA grid is typically 700-900 gCO2eq/kWh, rarely "green".
     """
     if zone not in ESKOM_ZONES:
