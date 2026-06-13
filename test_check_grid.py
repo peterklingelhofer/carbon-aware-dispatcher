@@ -402,6 +402,52 @@ class TestUkGetHistoryTrend:
         mock_api.return_value = None
         assert uk.get_history_trend("GB") is None
 
+    @mock.patch("providers.uk.api_request")
+    def test_regional_trend(self, mock_api):
+        # Regional zones nest the points under data.data
+        mock_api.return_value = {
+            "data": {
+                "data": [
+                    {"intensity": {"forecast": 400}},
+                    {"intensity": {"forecast": 380}},
+                    {"intensity": {"forecast": 360}},
+                    {"intensity": {"forecast": 300}},
+                    {"intensity": {"forecast": 280}},
+                    {"intensity": {"forecast": 260}},
+                ]
+            }
+        }
+        assert uk.get_history_trend("GB-16") == "decreasing"
+
+    def test_trend_unknown_zone(self):
+        assert uk.get_history_trend("GB-999") is None
+
+
+class TestUkRegionalForecast:
+    @mock.patch("providers.uk.api_request")
+    def test_regional_forecast_finds_window(self, mock_api):
+        mock_api.return_value = {
+            "data": {
+                "data": [
+                    {"from": "2026-03-10T12:00Z", "intensity": {"forecast": 300}},
+                    {"from": "2026-03-10T14:00Z", "intensity": {"forecast": 90}},
+                ]
+            }
+        }
+        dt, intensity = uk.get_forecast("GB-16", 200)
+        assert dt == "2026-03-10T14:00Z"
+        assert intensity == 90
+
+    def test_forecast_unknown_zone(self):
+        dt, intensity = uk.get_forecast("GB-999", 200)
+        assert dt is None and intensity is None
+
+    @mock.patch("providers.uk.api_request")
+    def test_forecast_malformed_response(self, mock_api):
+        mock_api.return_value = {"data": {"data": [{"oops": True}]}}
+        dt, intensity = uk.get_forecast("GB-16", 200)
+        assert dt is None and intensity is None
+
 
 # ---------------------------------------------------------------------------
 # EIA tests
@@ -810,6 +856,89 @@ class TestGridstatusRenewableForecast:
         result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
         assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 3000
         assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 2000
+
+    @mock.patch("providers.gridstatus._query_dataset")
+    def test_sum_columns_branch(self, mock_query):
+        """ISNE-style sum_columns: sum all numeric forecast columns per row."""
+        iso = None
+        for cfg in gridstatus.GRIDSTATUS_ISO_MAP.values():
+            if cfg.get("sum_columns"):
+                iso = cfg
+                break
+        assert iso is not None, "expected at least one sum_columns ISO"
+        mock_query.side_effect = [
+            # solar dataset: two zones summed
+            [
+                {
+                    "interval_start_utc": "2026-03-10T18:00:00+00:00",
+                    "publish_time_utc": "x",
+                    "zone_a": 1000,
+                    "zone_b": 500,
+                }
+            ],
+            # wind dataset
+            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "zone_a": 800}],
+        ]
+        result = iso and gridstatus._get_renewable_forecast(iso, "key", "2026-03-10")
+        slot = result["2026-03-10T18:00:00+00:00"]
+        assert slot["solar_mw"] == 1500  # 1000 + 500, publish_/interval_ excluded
+        assert slot["wind_mw"] == 800
+
+    @mock.patch("providers.gridstatus.api_request_with_header")
+    def test_query_dataset_none_on_failure(self, mock_req):
+        mock_req.return_value = None
+        assert gridstatus._query_dataset("ds", "key", "2026-03-10") == []
+
+    @mock.patch("providers.gridstatus._query_dataset")
+    def test_load_forecast_parsing(self, mock_query):
+        mock_query.return_value = [
+            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "load_forecast": 12345},
+            {"interval_start_utc": None, "load_forecast": 999},  # skipped (no ts)
+        ]
+        iso = gridstatus.GRIDSTATUS_ISO_MAP["CISO"]
+        result = gridstatus._get_load_forecast(iso, "key", "2026-03-10")
+        assert result == {"2026-03-10T18:00:00+00:00": 12345.0}
+
+    def test_load_forecast_no_dataset(self):
+        # ERCO has load_dataset=None
+        iso = gridstatus.GRIDSTATUS_ISO_MAP["ERCO"]
+        assert gridstatus._get_load_forecast(iso, "key", "2026-03-10") is None
+
+
+class TestOnsBrazilCheckAndForecast:
+    @mock.patch("providers.ons_brazil._fetch_energy_balance")
+    def test_check_api_unavailable(self, mock_fetch):
+        mock_fetch.return_value = None
+        assert ons_brazil.check_carbon_intensity("BR-S", 250) == (None, None)
+
+    @mock.patch("providers.ons_brazil._fetch_energy_balance")
+    def test_check_unparseable_response(self, mock_fetch):
+        mock_fetch.return_value = {"unexpected": "shape"}
+        assert ons_brazil.check_carbon_intensity("BR-S", 250) == (None, None)
+
+    @mock.patch("providers.ons_brazil._fetch_energy_balance")
+    def test_check_success(self, mock_fetch):
+        mock_fetch.return_value = {
+            "sul": {"geracao": {"total": 6000, "hidraulica": 5000, "termica": 1000}}
+        }
+        is_green, intensity = ons_brazil.check_carbon_intensity("BR-S", 250)
+        # hydro 5000*24 + thermal 1000*650 = 120000+650000 = 770000/6000 = 128
+        assert intensity == 128
+        assert is_green is True
+
+    def test_check_unknown_zone(self):
+        assert ons_brazil.check_carbon_intensity("BR-XX", 250) == (None, None)
+
+    def test_forecast_hydro_zone_offpeak_already_green(self):
+        # A high threshold means the off-peak estimate already clears it
+        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
+        assert dt is None and intensity is None
+
+    def test_forecast_finds_window_or_none(self):
+        # With a very low threshold the heuristic should return a string or
+        # the none sentinel, never crash
+        dt, intensity = ons_brazil.get_forecast("BR-NE", 10)
+        assert dt is None or isinstance(dt, str)
 
 
 # ---------------------------------------------------------------------------
