@@ -8,7 +8,7 @@ No authentication required.
 Data source: https://integra.ons.org.br/
 """
 
-from providers.base import request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 # ONS real-time energy balance API
 ONS_API = "https://integra.ons.org.br/api/energiaagora/GetBalancoEnergetico/null"
@@ -23,19 +23,16 @@ ONS_REGIONS = {
     "BR-N": "norte",
 }
 
-# Generation source → emission factors (gCO2eq/kWh)
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
+# Local (Portuguese) fuel labels mapped to canonical factors (see
+# providers.base.FUEL_FACTORS)
 BRAZIL_EMISSION_FACTORS = {
-    "hidraulica": 24,  # Hydro (dominant source ~60-70%)
-    "termica": 650,  # Thermal (gas + coal + biomass mix, oil-class median)
-    "eolica": 12,  # Wind
-    "solar": 45,  # Solar
-    "nuclear": 12,  # Nuclear (Angra 1 & 2)
-    "importacao": 300,  # Import (estimated)
+    "hidraulica": FUEL_FACTORS["hydro"],  # dominant source ~60-70%
+    "termica": FUEL_FACTORS["oil"],  # thermal mix, oil-class median
+    "eolica": FUEL_FACTORS["wind"],
+    "solar": FUEL_FACTORS["solar"],
+    "nuclear": FUEL_FACTORS["nuclear"],  # Angra 1 & 2
+    "importacao": FUEL_FACTORS["other"],  # import (estimated)
 }
-
-# Fallback factor for unknown fuel types (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
 
 
 def _fetch_energy_balance():

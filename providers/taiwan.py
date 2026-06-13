@@ -8,7 +8,7 @@ Updates roughly every 10 minutes.
 import json
 import re
 
-from providers.base import DEFAULT_FUEL_FACTOR, request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 API_URL = "https://www.taipower.com.tw/d006/loadGraph/loadGraph/data/genary.json"
 TAIWAN_ZONES = {"TW"}
@@ -27,17 +27,17 @@ _HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
+# Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS)
 TAIWAN_EMISSION_FACTORS = {
-    "coal": 820,
-    "natural_gas": 490,
-    "oil": 650,
-    "nuclear": 12,
-    "solar": 45,
-    "wind": 12,
-    "hydro": 24,
-    "geothermal": 38,
-    "other": 300,
+    "coal": FUEL_FACTORS["coal"],
+    "natural_gas": FUEL_FACTORS["gas"],
+    "oil": FUEL_FACTORS["oil"],
+    "nuclear": FUEL_FACTORS["nuclear"],
+    "solar": FUEL_FACTORS["solar"],
+    "wind": FUEL_FACTORS["wind"],
+    "hydro": FUEL_FACTORS["hydro"],
+    "geothermal": FUEL_FACTORS["geothermal"],
+    "other": FUEL_FACTORS["other"],
 }
 
 # Storage is not primary generation, exclude from the weighted mix

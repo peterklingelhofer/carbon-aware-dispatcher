@@ -10,7 +10,7 @@ Note: Returns XML, not JSON. We parse it manually (no lxml dependency).
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-from providers.base import request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 ENTSOE_API_BASE = "https://web-api.tp.entsoe.eu/api"
 
@@ -65,38 +65,35 @@ ENTSOE_AREA_CODES = {
 }
 
 # ENTSO-E production type codes → emission factors (gCO2eq/kWh)
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
-# B01-B20 are the standard ENTSO-E PSR type codes
+# ENTSO-E PSR type codes (B01-B20) mapped to canonical factors (see
+# providers.base.FUEL_FACTORS)
 ENTSOE_EMISSION_FACTORS = {
-    "B01": 230,  # Biomass (IPCC dedicated biomass median)
-    "B02": 1050,  # Fossil Brown coal/Lignite
-    "B03": 490,  # Fossil Coal-derived gas
-    "B04": 490,  # Fossil Gas
-    "B05": 820,  # Fossil Hard coal
-    "B06": 650,  # Fossil Oil
-    "B07": 650,  # Fossil Oil shale
-    "B08": 1050,  # Fossil Peat
-    "B09": 38,  # Geothermal
+    "B01": FUEL_FACTORS["biomass"],
+    "B02": FUEL_FACTORS["lignite"],  # Fossil Brown coal/Lignite
+    "B03": FUEL_FACTORS["gas"],  # Fossil Coal-derived gas
+    "B04": FUEL_FACTORS["gas"],  # Fossil Gas
+    "B05": FUEL_FACTORS["coal"],  # Fossil Hard coal
+    "B06": FUEL_FACTORS["oil"],  # Fossil Oil
+    "B07": FUEL_FACTORS["oil"],  # Fossil Oil shale
+    "B08": FUEL_FACTORS["lignite"],  # Fossil Peat (lignite-class)
+    "B09": FUEL_FACTORS["geothermal"],
     # B10 Hydro Pumped Storage is storage, not generation, and is excluded
-    "B11": 24,  # Hydro Run-of-river
-    "B12": 24,  # Hydro Water Reservoir
-    "B13": 17,  # Marine
-    "B14": 12,  # Nuclear
-    "B15": 45,  # Other renewable
-    "B16": 45,  # Solar
-    "B17": 580,  # Waste
-    "B18": 12,  # Wind Offshore
-    "B19": 12,  # Wind Onshore
-    "B20": 300,  # Other
+    "B11": FUEL_FACTORS["hydro"],  # Hydro Run-of-river
+    "B12": FUEL_FACTORS["hydro"],  # Hydro Water Reservoir
+    "B13": FUEL_FACTORS["marine"],
+    "B14": FUEL_FACTORS["nuclear"],
+    "B15": FUEL_FACTORS["solar"],  # Other renewable
+    "B16": FUEL_FACTORS["solar"],
+    "B17": FUEL_FACTORS["waste"],
+    "B18": FUEL_FACTORS["wind"],  # Wind Offshore
+    "B19": FUEL_FACTORS["wind"],  # Wind Onshore
+    "B20": FUEL_FACTORS["other"],
 }
 
 # PSR codes that represent storage, not primary generation
 # Pumped storage discharge is not zero-carbon and double-counts the energy
 # used to pump it, so it is excluded from the weighted-average denominator
 ENTSOE_STORAGE_PSR = {"B10"}
-
-# Fallback factor for unknown PSR codes (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
 
 
 def _local_name(tag):

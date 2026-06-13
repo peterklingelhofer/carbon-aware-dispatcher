@@ -38,20 +38,42 @@ USER_AGENT = (
     "carbon-aware-dispatcher/1.1 (+https://github.com/peterklingelhofer/carbon-aware-dispatcher)"
 )
 
-# Lifecycle emission factors in gCO2eq/kWh by EIA fuel type code
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
+# Canonical lifecycle emission factors in gCO2eq/kWh by generic fuel name.
+# IPCC AR5 (2014) lifecycle medians. This is the single source of truth: every
+# provider maps its own fuel labels to these names instead of hardcoding values,
+# so the numbers can never silently drift apart across providers.
+FUEL_FACTORS = {
+    "coal": 820,
+    "lignite": 1050,  # brown coal / peat-class
+    "gas": 490,
+    "oil": 650,
+    "nuclear": 12,
+    "solar": 45,
+    "wind": 12,
+    "hydro": 24,
+    "geothermal": 38,
+    "biomass": 230,
+    "marine": 17,
+    "waste": 580,
+    # Non-IPCC composite buckets used by some providers:
+    "thermal_mix": 750,  # India "thermal" = blended coal+gas, no single class
+    "other": 300,  # catch-all / imports / unknown-but-counted
+}
+
+# Lifecycle emission factors keyed by EIA fuel type code, sourced from the
+# canonical table above.
 EIA_EMISSION_FACTORS = {
-    "COL": 820,  # Coal
-    "NG": 490,  # Natural Gas
-    "OIL": 650,  # Petroleum
-    "NUC": 12,  # Nuclear
-    "SUN": 45,  # Solar
-    "WND": 12,  # Wind
-    "WAT": 24,  # Hydroelectric
-    "GEO": 38,  # Geothermal
-    "BIO": 230,  # Biomass (IPCC dedicated biomass median)
-    "SNB": 45,  # Solar non-billing (behind-the-meter solar), same as solar
-    "OTH": 300,  # Other / unknown-but-counted
+    "COL": FUEL_FACTORS["coal"],
+    "NG": FUEL_FACTORS["gas"],
+    "OIL": FUEL_FACTORS["oil"],
+    "NUC": FUEL_FACTORS["nuclear"],
+    "SUN": FUEL_FACTORS["solar"],
+    "WND": FUEL_FACTORS["wind"],
+    "WAT": FUEL_FACTORS["hydro"],
+    "GEO": FUEL_FACTORS["geothermal"],
+    "BIO": FUEL_FACTORS["biomass"],
+    "SNB": FUEL_FACTORS["solar"],  # solar non-billing (behind-the-meter)
+    "OTH": FUEL_FACTORS["other"],
     # BAT and PS are storage, not generation, and are excluded from the mix
 }
 
@@ -62,7 +84,7 @@ EIA_EMISSION_FACTORS = {
 EIA_STORAGE_FUELS = {"BAT", "PS"}
 
 # Fallback factor for unknown fuel codes (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
+DEFAULT_FUEL_FACTOR = FUEL_FACTORS["other"]
 
 # Average fossil fuel intensity (gCO2eq/kWh) used to estimate carbon intensity
 # from renewable percentage. Based on typical US fossil mix (~60% gas, ~30% coal, ~10% oil).

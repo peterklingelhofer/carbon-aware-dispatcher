@@ -7,7 +7,7 @@ South Africa's grid is heavily coal-dependent (~80-85% coal).
 Data source: https://www.eskom.co.za/dataportal/
 """
 
-from providers.base import request
+from providers.base import FUEL_FACTORS, request
 
 # Eskom supply/demand data endpoint
 ESKOM_API = "https://www.eskom.co.za/dataportal/wp-content/uploads/2023/generation.json"
@@ -18,26 +18,22 @@ ESKOM_STATUS_API = "https://loadshedding.eskom.co.za/LoadShedding/GetStatus"
 # Eskom zone identifiers
 ESKOM_ZONES = {"ZA"}
 
-# South Africa's grid emission factors (gCO2eq/kWh)
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
-# SA grid is ~85% coal, 5% nuclear, 5% wind/solar, 5% other
+# Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS).
+# SA grid is ~85% coal, 5% nuclear, 5% wind/solar, 5% other.
 SA_EMISSION_FACTORS = {
-    "coal": 820,
-    "nuclear": 12,
-    "hydro": 24,
-    "wind": 12,
-    "solar": 45,
-    "gas": 490,
-    "diesel": 650,
-    "other": 300,
+    "coal": FUEL_FACTORS["coal"],
+    "nuclear": FUEL_FACTORS["nuclear"],
+    "hydro": FUEL_FACTORS["hydro"],
+    "wind": FUEL_FACTORS["wind"],
+    "solar": FUEL_FACTORS["solar"],
+    "gas": FUEL_FACTORS["gas"],
+    "diesel": FUEL_FACTORS["oil"],
+    "other": FUEL_FACTORS["other"],
 }
 
 # Fuel name fragments that represent storage, not primary generation
 # Pumped storage discharge is not zero-carbon, so it is excluded from the mix
 SA_STORAGE_FUELS = ("pumped_storage", "pumped storage", "pumped")
-
-# Fallback factor for unknown fuel types (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
 
 # Known SA grid characteristics for estimation when API is unavailable.
 # SA is ~85% coal with some nuclear and renewables.
@@ -119,9 +115,9 @@ def _estimate_intensity(data):
             return round(weighted_emissions / total_gen)
 
     # Estimation from known grid characteristics
-    # SA: ~85% coal (820), ~5% nuclear (0), ~10% renewables (0)
+    # SA: ~85% coal, ~5% nuclear, ~10% renewables (the latter two ~0 carbon)
     coal_pct = 1.0 - SA_NUCLEAR_PCT - SA_RENEWABLE_PCT
-    estimated = round(coal_pct * 820)
+    estimated = round(coal_pct * FUEL_FACTORS["coal"])
     return estimated
 
 
