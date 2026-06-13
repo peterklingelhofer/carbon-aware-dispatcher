@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
@@ -929,14 +930,20 @@ class TestOnsBrazilCheckAndForecast:
     def test_check_unknown_zone(self):
         assert ons_brazil.check_carbon_intensity("BR-XX", 250) == (None, None)
 
-    def test_forecast_hydro_zone_offpeak_already_green(self):
-        # A high threshold means the off-peak estimate already clears it
-        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
+    def test_forecast_offpeak_already_green_returns_none(self):
+        # Pin the clock to an off-peak hour (10:00 BRT = 13:00 UTC) so the test
+        # is deterministic regardless of when CI runs. Off-peak + high threshold
+        # means the grid is already green, so no future window is needed.
+        fixed = datetime(2026, 3, 10, 13, 0, tzinfo=timezone.utc)
+        with mock.patch("providers.ons_brazil.datetime") as mock_dt:
+            # Only now() is pinned; real datetime construction still works
+            mock_dt.now.return_value = fixed
+            dt, intensity = ons_brazil.get_forecast("BR-S", 500)
         assert dt is None and intensity is None
 
     def test_forecast_finds_window_or_none(self):
         # With a very low threshold the heuristic should return a string or
-        # the none sentinel, never crash
+        # the none sentinel, never crash, at any hour
         dt, intensity = ons_brazil.get_forecast("BR-NE", 10)
         assert dt is None or isinstance(dt, str)
 
@@ -3336,6 +3343,17 @@ class TestReverseRegionMappings:
         major = ["eastus", "westus2", "uksouth", "japaneast"]
         for region in major:
             assert region in AZURE_REGION_TO_ZONE, f"Missing Azure reverse: {region}"
+
+    def test_forward_regions_resolve_in_reverse_map(self):
+        """Every region a zone forward-maps to must exist in the reverse map,
+        or auto:detect (region -> zone) silently can't resolve a runner there."""
+        for cloud, fwd, rev in [
+            ("AWS", ZONE_TO_AWS_REGION, AWS_REGION_TO_ZONE),
+            ("GCP", ZONE_TO_GCP_REGION, GCP_REGION_TO_ZONE),
+            ("Azure", ZONE_TO_AZURE_REGION, AZURE_REGION_TO_ZONE),
+        ]:
+            missing = sorted({r for r in fwd.values() if r not in rev})
+            assert not missing, f"{cloud} regions used but absent from reverse map: {missing}"
 
 
 class TestAutoDetectPreset:
