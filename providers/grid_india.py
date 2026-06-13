@@ -7,7 +7,7 @@ Updates every 5 minutes. No authentication required.
 Data source: https://report.grid-india.in/
 """
 
-from providers.base import request
+from providers.base import FUEL_FACTORS, request
 
 # Grid India real-time generation overview API
 GRID_INDIA_API = "https://report.grid-india.in/ReportData/Generation"
@@ -21,24 +21,20 @@ GRID_INDIA_REGIONS = {
     "IN-NE": "North-Eastern",
 }
 
-# Generation source -> emission factors (gCO2eq/kWh)
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
+# Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS)
 INDIA_EMISSION_FACTORS = {
-    "coal": 820,
-    "thermal": 750,  # blended coal + gas across two IPCC classes
-    "gas": 490,
-    "lignite": 1050,
-    "diesel": 650,
-    "nuclear": 12,
-    "hydro": 24,
-    "solar": 45,
-    "wind": 12,
-    "biomass": 230,  # IPCC dedicated biomass median
-    "other": 300,
+    "coal": FUEL_FACTORS["coal"],
+    "thermal": FUEL_FACTORS["thermal_mix"],  # blended coal + gas across two classes
+    "gas": FUEL_FACTORS["gas"],
+    "lignite": FUEL_FACTORS["lignite"],
+    "diesel": FUEL_FACTORS["oil"],
+    "nuclear": FUEL_FACTORS["nuclear"],
+    "hydro": FUEL_FACTORS["hydro"],
+    "solar": FUEL_FACTORS["solar"],
+    "wind": FUEL_FACTORS["wind"],
+    "biomass": FUEL_FACTORS["biomass"],
+    "other": FUEL_FACTORS["other"],
 }
-
-# Fallback factor for unknown fuel types (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
 
 
 def _fetch_generation_data():

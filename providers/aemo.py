@@ -4,7 +4,7 @@ Covers the five National Electricity Market (NEM) regions of eastern
 Australia. Data from AEMO's public visualisations API.
 """
 
-from providers.base import request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 # AEMO NEM region codes
 AEMO_REGIONS = {
@@ -15,25 +15,22 @@ AEMO_REGIONS = {
     "AU-TAS": "TAS1",
 }
 
-# IPCC AR5 (2014) lifecycle median gCO2eq/kWh
-# Keyed by lowercased AEMO fuel labels so "Black coal"/"Black Coal" both match
+# Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS).
+# Keyed by lowercased AEMO labels so "Black coal"/"Black Coal" both match.
 AEMO_EMISSION_FACTORS = {
-    "black coal": 820,
-    "brown coal": 1050,
-    "gas": 490,
-    "liquid fuel": 650,
-    "solar": 45,
-    "wind": 12,
-    "hydro": 24,
-    "biomass": 230,
-    "other": 300,
+    "black coal": FUEL_FACTORS["coal"],
+    "brown coal": FUEL_FACTORS["lignite"],
+    "gas": FUEL_FACTORS["gas"],
+    "liquid fuel": FUEL_FACTORS["oil"],
+    "solar": FUEL_FACTORS["solar"],
+    "wind": FUEL_FACTORS["wind"],
+    "hydro": FUEL_FACTORS["hydro"],
+    "biomass": FUEL_FACTORS["biomass"],
+    "other": FUEL_FACTORS["other"],
 }
 
 # Storage discharge is not primary generation, exclude from the mix
 AEMO_STORAGE_FUELS = {"battery", "battery (discharging)", "pump storage"}
-
-# Fallback factor for unknown fuel types (warned about, then applied)
-DEFAULT_FUEL_FACTOR = 300
 
 AEMO_FUEL_API = "https://visualisations.aemo.com.au/aemo/apps/api/report/FUEL"
 
