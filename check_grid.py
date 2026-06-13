@@ -15,6 +15,7 @@ from providers import (
     ESCAPE_COAL_MAPPINGS,
     NEAREST_ZONES_BY_OFFSET,
     PROVIDER_AEMO,
+    PROVIDER_CANADA,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENTSOE,
@@ -22,8 +23,10 @@ from providers import (
     PROVIDER_GRID_INDIA,
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
+    PROVIDER_TAIWAN,
     PROVIDER_UK,
     aemo,
+    canada,
     detect_provider,
     eia,
     electricity_maps,
@@ -34,6 +37,7 @@ from providers import (
     ons_brazil,
     open_meteo,
     sort_auto_green_by_time,
+    taiwan,
     uk,
 )
 from providers.base import (
@@ -41,6 +45,7 @@ from providers.base import (
     DEFAULT_JOB_DURATION_HOURS,
     DEFAULT_TIMEOUT,
     GLOBAL_AVG_INTENSITY,
+    last_failure_reason,
 )
 from providers.runners import (
     detect_cloud_zone,
@@ -118,6 +123,8 @@ _PROVIDER_MODULES = {
     PROVIDER_GRID_INDIA: grid_india,
     PROVIDER_ONS_BRAZIL: ons_brazil,
     PROVIDER_ESKOM: eskom,
+    PROVIDER_CANADA: canada,
+    PROVIDER_TAIWAN: taiwan,
     PROVIDER_ELECTRICITY_MAPS: electricity_maps,
     PROVIDER_EIA: eia,
 }
@@ -323,7 +330,9 @@ def check_multiple_zones(
             zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
         )
         if is_green is None:
-            skipped.append((zone, "API error"))
+            # Surface why it failed (auth failed / rate limited / network error /
+            # ...) instead of a flat "API error", so users can act on it
+            skipped.append((zone, last_failure_reason() or "API error"))
         elif intensity is not None:
             # Record every measured zone (green or not) for the comparison panel
             if collect is not None:

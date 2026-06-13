@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an improvement, a new zone, or a new data provider
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The use case, not just the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+  - type: input
+    id: provider
+    attributes:
+      label: New data source (if applicable)
+      description: For a new zone/provider, link the public API and note whether it needs a key.
