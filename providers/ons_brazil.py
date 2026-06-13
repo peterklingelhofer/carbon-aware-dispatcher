@@ -8,6 +8,8 @@ No authentication required.
 Data source: https://integra.ons.org.br/
 """
 
+from datetime import datetime, timedelta, timezone
+
 from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
 
 # ONS real-time energy balance API
@@ -165,8 +167,6 @@ def get_forecast(zone, max_carbon):
 
     Returns (forecast_green_at, forecast_intensity) or (None, None).
     """
-    from datetime import datetime, timedelta, timezone
-
     now_utc = datetime.now(timezone.utc)
     brt = timezone(timedelta(hours=-3))
     now_brt = now_utc.astimezone(brt)
