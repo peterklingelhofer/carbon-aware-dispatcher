@@ -2252,6 +2252,49 @@ class TestWriteJobSummaryWithCo2:
             os.unlink(path)
             os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
+    def test_heuristic_forecast_is_labeled(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary(
+                "ZA",
+                700,
+                False,
+                250,
+                forecast_at="2026-03-10T03:00Z",
+                forecast_intensity=650,
+                forecast_heuristic=True,
+            )
+            content = open(path).read()
+            assert "Next Green Window (estimated)" in content
+            assert "650 gCO2eq/kWh (estimate)" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+    def test_real_forecast_is_not_labeled_estimate(self):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            check_grid.write_job_summary(
+                "GB",
+                300,
+                False,
+                250,
+                forecast_at="2026-03-10T14:00Z",
+                forecast_intensity=90,
+                forecast_heuristic=False,
+            )
+            content = open(path).read()
+            assert "**Next Green Window**" in content
+            assert "(estimated)" not in content
+            assert "(estimate)" not in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
 
 class TestRoutingComparison:
     def test_renders_bars_and_markers(self):
