@@ -12,6 +12,18 @@ PROVIDER_ESKOM = "eskom"
 PROVIDER_CANADA = "canada"
 PROVIDER_TAIWAN = "taiwan"
 
+# Providers whose get_forecast is a time-of-day HEURISTIC (a generalization
+# about that grid's daily pattern), not a measured/published forecast. Output
+# from these should be labeled as an estimate so it is not mistaken for the
+# real day-ahead forecasts that UK/ENTSO-E/GridStatus provide. Open-Meteo is
+# also weather-estimate-based and already self-labels in its own output.
+HEURISTIC_FORECAST_PROVIDERS = {
+    PROVIDER_ESKOM,
+    PROVIDER_GRID_INDIA,
+    PROVIDER_ONS_BRAZIL,
+    PROVIDER_OPEN_METEO,
+}
+
 # Australian NEM region codes (free, no API key)
 AEMO_ZONE_IDS = {"AU-NSW", "AU-QLD", "AU-VIC", "AU-SA", "AU-TAS"}
 

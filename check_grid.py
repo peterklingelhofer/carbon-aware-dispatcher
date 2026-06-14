@@ -13,6 +13,7 @@ from providers import (
     AUTO_GREEN_ZONES,
     AUTO_GREEN_ZONES_FULL,
     ESCAPE_COAL_MAPPINGS,
+    HEURISTIC_FORECAST_PROVIDERS,
     NEAREST_ZONES_BY_OFFSET,
     PROVIDER_AEMO,
     PROVIDER_CANADA,
@@ -600,8 +601,10 @@ def run_dry_run(
 
     forecast_at = None
     forecast_intensity = None
+    forecast_heuristic = False
     if would_defer:
         provider = detect_provider(report_zone, entsoe_token)
+        forecast_heuristic = provider in HEURISTIC_FORECAST_PROVIDERS
         forecast_at, forecast_intensity = get_forecast(
             report_zone,
             max_carbon,
@@ -640,6 +643,7 @@ def run_dry_run(
         co2_saved=co2_saved,
         comparison=measured,
         dry_run=True,
+        forecast_heuristic=forecast_heuristic,
     )
 
 
@@ -835,6 +839,7 @@ def write_job_summary(
     co2_saved=0,
     comparison=None,
     dry_run=False,
+    forecast_heuristic=False,
 ):
     """Write a GitHub Actions job summary with carbon intensity results.
 
@@ -842,6 +847,8 @@ def write_job_summary(
     more zones were checked, an ASCII routing comparison panel is appended.
     dry_run: when True, the status reflects report-only mode (the build was
     never gated) and states what the action *would* have done.
+    forecast_heuristic: when True, the forecast is a time-of-day estimate (not a
+    measured day-ahead forecast), so the row is labeled accordingly.
     """
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
@@ -873,9 +880,11 @@ def write_job_summary(
         lines.append(f"| **Trend** | {trend} |")
 
     if forecast_at and forecast_at != "none_in_forecast":
-        lines.append(f"| **Next Green Window** | {forecast_at} |")
+        label = "Next Green Window (estimated)" if forecast_heuristic else "Next Green Window"
+        lines.append(f"| **{label}** | {forecast_at} |")
         if forecast_intensity is not None:
-            lines.append(f"| **Forecast Intensity** | {forecast_intensity} gCO2eq/kWh |")
+            note = " (estimate)" if forecast_heuristic else ""
+            lines.append(f"| **Forecast Intensity** | {forecast_intensity} gCO2eq/kWh{note} |")
     elif forecast_at == "none_in_forecast":
         lines.append("| **Forecast** | No green window in forecast horizon |")
 
@@ -1455,6 +1464,7 @@ def main():
                 forecast_at=forecast_at,
                 forecast_intensity=forecast_intensity,
                 waited_minutes=waited_minutes,
+                forecast_heuristic=provider in HEURISTIC_FORECAST_PROVIDERS,
             )
             wait_msg = f" (waited {waited_minutes:.0f}m)" if waited_minutes > 0 else ""
             print(
@@ -1500,6 +1510,8 @@ def main():
                 forecast_intensity=forecast_intensity,
                 waited_minutes=waited_minutes,
                 skipped=skipped,
+                forecast_heuristic=detect_provider(first_zone, entsoe_token)
+                in HEURISTIC_FORECAST_PROVIDERS,
             )
             if fail_on_api_error:
                 print("::error::No green zones found and fail_on_api_error is enabled.")
