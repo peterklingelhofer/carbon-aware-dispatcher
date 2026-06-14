@@ -338,51 +338,177 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
     return is_green, intensity
 
 
-def get_forecast(zone, max_carbon, entsoe_token):
-    """Fetch day-ahead generation forecast from ENTSO-E.
+# Variable renewables ENTSO-E publishes a day-ahead forecast for:
+# wind onshore (B19), wind offshore (B18), solar (B16).
+_VRE_PSR = {"B16", "B18", "B19"}
 
-    Returns (forecast_green_at, forecast_intensity) or (None, None).
+# How far ahead to search for a green window
+FORECAST_HORIZON_HOURS = 48
+
+
+def _forecast_series_by_hour(xml_text, psr_filter):
+    """Parse an ENTSO-E forecast document into {hour(UTC): MW}.
+
+    psr_filter limits to specific production types (generation docs); pass None
+    for load documents. Sub-hourly resolutions are averaged within the hour, and
+    multiple matching TimeSeries (e.g. wind + solar) are summed per hour.
     """
-    if not entsoe_token:
-        return None, None
+    if not xml_text or not xml_text.strip():
+        return {}
+    wrapped = f"<root>{xml_text}</root>"
+    try:
+        root = ET.fromstring(wrapped)
+    except ET.ParseError:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return {}
 
+    totals = {}
+    for ts in root.iter():
+        if _local_name(ts.tag) != "TimeSeries":
+            continue
+        if psr_filter is not None:
+            psr = None
+            for el in ts.iter():
+                if _local_name(el.tag) == "psrType" and el.text:
+                    psr = el.text.strip()
+                    break
+            if psr not in psr_filter:
+                continue
+        for period in ts.iter():
+            if _local_name(period.tag) != "Period":
+                continue
+            start_text = None
+            resolution = None
+            for el in period.iter():
+                name = _local_name(el.tag)
+                if name == "start" and el.text and start_text is None:
+                    start_text = el.text.strip()
+                elif name == "resolution" and el.text:
+                    resolution = el.text.strip()
+            if not start_text:
+                continue
+            try:
+                start = datetime.fromisoformat(start_text.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            step = 15 if resolution == "PT15M" else 60
+            buckets = {}
+            for pt in period.iter():
+                if _local_name(pt.tag) != "Point":
+                    continue
+                pos = qty = None
+                for child in pt:
+                    cname = _local_name(child.tag)
+                    if cname == "position" and child.text:
+                        try:
+                            pos = int(child.text.strip())
+                        except ValueError:
+                            pos = None
+                    elif cname == "quantity" and child.text:
+                        try:
+                            qty = float(child.text.strip())
+                        except ValueError:
+                            qty = None
+                if pos is None or qty is None:
+                    continue
+                dt = start + timedelta(minutes=(pos - 1) * step)
+                hour = dt.replace(minute=0, second=0, microsecond=0)
+                buckets.setdefault(hour, []).append(qty)
+            for hour, vals in buckets.items():
+                totals[hour] = totals.get(hour, 0.0) + sum(vals) / len(vals)
+    return totals
+
+
+def _vre_fraction_curve(zone, entsoe_token):
+    """Forecasted variable-renewable share of load, per UTC hour for the horizon.
+
+    Combines the day-ahead wind+solar generation forecast (A69) with the
+    day-ahead total-load forecast (A65). Returns {hour(UTC): fraction 0..1}, or
+    {} if unavailable. A higher VRE share means lower expected carbon intensity.
+    """
     area_code = ENTSOE_AREA_CODES.get(zone)
-    if area_code is None:
-        return None, None
+    if not entsoe_token or area_code is None:
+        return {}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     period_start = now.strftime("%Y%m%d%H00")
-    period_end = (now + timedelta(hours=24)).strftime("%Y%m%d%H00")
+    period_end = (now + timedelta(hours=FORECAST_HORIZON_HOURS)).strftime("%Y%m%d%H00")
 
-    url = (
+    gen_url = (
         f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
-        f"&documentType=A71"  # Generation forecast
-        f"&processType=A01"  # Day ahead
-        f"&in_Domain={area_code}"
-        f"&periodStart={period_start}"
-        f"&periodEnd={period_end}"
+        f"&documentType=A69&processType=A01&in_Domain={area_code}"
+        f"&periodStart={period_start}&periodEnd={period_end}"
+    )
+    load_url = (
+        f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
+        f"&documentType=A65&processType=A01&outBiddingZone_Domain={area_code}"
+        f"&periodStart={period_start}&periodEnd={period_end}"
     )
 
-    print(f"  Fetching ENTSO-E forecast for zone: {zone}...")
-    response = request(url, parse="response")
-    if response is None or response.status_code != 200:
+    gen_resp = request(gen_url, parse="response")
+    load_resp = request(load_url, parse="response")
+    if gen_resp is None or gen_resp.status_code != 200:
+        return {}
+    if load_resp is None or load_resp.status_code != 200:
+        return {}
+
+    vre = _forecast_series_by_hour(gen_resp.text, _VRE_PSR)
+    load = _forecast_series_by_hour(load_resp.text, None)
+    return {
+        hour: min(1.0, max(0.0, vre[hour] / mw_load))
+        for hour, mw_load in load.items()
+        if mw_load > 0 and hour in vre
+    }
+
+
+def get_forecast(zone, max_carbon, entsoe_token):
+    """Forecast the next green window from ENTSO-E day-ahead forecasts.
+
+    Uses the forecasted variable-renewable (wind+solar) share of load to scale
+    the zone's current production intensity hour by hour, then returns the first
+    hour expected below the threshold. This is a real day-ahead signal. It isn't a
+    fixed daily curve.
+
+    Returns (forecast_green_at, forecast_intensity) or (None, None) on error,
+    or ("none_in_forecast", None) when no green hour is found in the horizon.
+    """
+    if not entsoe_token or zone not in ENTSOE_AREA_CODES:
         return None, None
 
-    gen_data = _parse_generation_xml(response.text)
-    if not gen_data:
+    # Current production intensity and VRE share, to anchor the projection
+    current_intensity, _total = production_for_zone(zone, entsoe_token)
+    if current_intensity is None:
         return None, None
 
-    intensity = _intensity_from_gen_data(gen_data)
-    if intensity is None:
+    print(f"  Fetching ENTSO-E day-ahead forecast for zone: {zone}...")
+    curve = _vre_fraction_curve(zone, entsoe_token)
+    if not curve:
         return None, None
 
-    if intensity <= max_carbon:
-        # Forecast shows green within 24h
-        forecast_time = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:00Z")
-        print(f"  Forecast: grid expected to be green ({intensity} gCO2eq/kWh)")
-        return forecast_time, intensity
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    current_frac = curve.get(now)
+    # Without a baseline VRE share we cannot scale; bail to "unknown"
+    if current_frac is None:
+        return None, None
 
-    print("  Forecast: no green window in ENTSO-E 24h forecast horizon.")
+    # Scale intensity by how non-VRE (fossil-ish) share changes vs now. More
+    # renewables -> less fossil -> lower intensity. Clamp the baseline so a
+    # near-100%-renewable now doesn't divide by zero.
+    base_fossil = max(1.0 - current_frac, 0.05)
+    for offset in range(1, FORECAST_HORIZON_HOURS + 1):
+        hour = now + timedelta(hours=offset)
+        frac = curve.get(hour)
+        if frac is None:
+            continue
+        projected = round(current_intensity * (1.0 - frac) / base_fossil)
+        if projected <= max_carbon:
+            dt = hour.strftime("%Y-%m-%dT%H:00Z")
+            print(f"  Forecast: grid expected green at {dt} (~{projected} gCO2eq/kWh)")
+            return dt, projected
+
+    print(f"  Forecast: no green window in ENTSO-E {FORECAST_HORIZON_HOURS}h horizon.")
     return "none_in_forecast", None
 
 

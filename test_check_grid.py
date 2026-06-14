@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -1936,29 +1936,79 @@ class TestEntsoeCheckCarbonIntensity:
 
 
 class TestEntsoeForecast:
-    @mock.patch("providers.base.requests.get")
-    def test_forecast_green(self, mock_get):
-        xml = """
-        <TimeSeries>
-            <MktPSRType><psrType>B19</psrType></MktPSRType>
-            <Period><Point><quantity>900</quantity></Point></Period>
-        </TimeSeries>
-        <TimeSeries>
-            <MktPSRType><psrType>B04</psrType></MktPSRType>
-            <Period><Point><quantity>100</quantity></Point></Period>
-        </TimeSeries>
-        """
-        mock_get.return_value = mock.Mock(status_code=200, text=xml)
-        dt, intensity = entsoe.get_forecast("DE", 250, "token")
-        assert dt is not None
-        # wind B19 = 12, gas B04 = 490: (900*12 + 100*490) / 1000
-        # = (10800 + 49000) / 1000 = 59.8 -> 60
-        assert intensity == 60
-
     def test_no_token(self):
         dt, intensity = entsoe.get_forecast("DE", 250, "")
         assert dt is None
         assert intensity is None
+
+    def test_unknown_zone(self):
+        dt, intensity = entsoe.get_forecast("XX-FAKE", 250, "token")
+        assert dt is None and intensity is None
+
+    def test_series_parser_averages_subhourly(self):
+        # Two 15-min points in the same hour are averaged; matching TimeSeries summed
+        xml = """
+        <TimeSeries><MktPSRType><psrType>B16</psrType></MktPSRType><Period>
+        <timeInterval><start>2026-03-10T00:00Z</start></timeInterval>
+        <resolution>PT15M</resolution>
+        <Point><position>1</position><quantity>100</quantity></Point>
+        <Point><position>2</position><quantity>300</quantity></Point>
+        </Period></TimeSeries>
+        """
+        series = entsoe._forecast_series_by_hour(xml, entsoe._VRE_PSR)
+        # positions 1 and 2 are both in hour 00:00 (15-min steps): avg(100,300)=200
+        hour = list(series)[0]
+        assert series[hour] == 200.0
+
+    def test_series_parser_psr_filter(self):
+        # A non-VRE psrType is excluded when a VRE filter is applied
+        xml = """
+        <TimeSeries><MktPSRType><psrType>B04</psrType></MktPSRType><Period>
+        <timeInterval><start>2026-03-10T00:00Z</start></timeInterval>
+        <resolution>PT60M</resolution>
+        <Point><position>1</position><quantity>500</quantity></Point>
+        </Period></TimeSeries>
+        """
+        assert entsoe._forecast_series_by_hour(xml, entsoe._VRE_PSR) == {}
+        # but parses when no filter (load doc)
+        assert entsoe._forecast_series_by_hour(xml, None) != {}
+
+    @mock.patch("providers.entsoe.production_for_zone")
+    @mock.patch("providers.entsoe._vre_fraction_curve")
+    def test_forecast_finds_greener_hour(self, mock_curve, mock_prod):
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        mock_prod.return_value = (400, 50000)  # dirty now, 20% VRE
+        # now: 20% renewable; +3h: 80% renewable -> much cleaner
+        mock_curve.return_value = {
+            now: 0.20,
+            now + timedelta(hours=1): 0.30,
+            now + timedelta(hours=3): 0.80,
+        }
+        dt, intensity = entsoe.get_forecast("DE", 250, "token")
+        # base_fossil=0.8; +3h projected = 400*(1-0.8)/0.8 = 100 <= 250
+        assert intensity == 100
+        assert dt.endswith("Z")
+
+    @mock.patch("providers.entsoe.production_for_zone")
+    @mock.patch("providers.entsoe._vre_fraction_curve")
+    def test_forecast_no_green_window(self, mock_curve, mock_prod):
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        mock_prod.return_value = (800, 50000)  # very dirty, low VRE throughout
+        mock_curve.return_value = {now: 0.05, now + timedelta(hours=1): 0.06}
+        dt, intensity = entsoe.get_forecast("DE", 50, "token")
+        assert dt == "none_in_forecast"
+        assert intensity is None
+
+    @mock.patch("providers.entsoe.production_for_zone")
+    @mock.patch("providers.entsoe._vre_fraction_curve")
+    def test_forecast_unavailable_curve(self, mock_curve, mock_prod):
+        mock_prod.return_value = (400, 50000)
+        mock_curve.return_value = {}  # forecast API failed
+        assert entsoe.get_forecast("DE", 250, "token") == (None, None)
 
 
 # ---------------------------------------------------------------------------
