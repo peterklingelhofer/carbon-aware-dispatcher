@@ -97,6 +97,7 @@ def _clear_env():
         "DEADLINE_HOURS",
         "CARBON_POLICY_PATH",
         "DRY_RUN",
+        "CONSUMPTION_BASED",
     ]
     old = {k: os.environ.get(k) for k in keys}
     yield
@@ -3876,3 +3877,106 @@ class TestTaiwanProvider:
     def test_no_forecast_or_trend(self):
         assert taiwan.get_forecast("TW", 250) == (None, None)
         assert taiwan.get_history_trend("TW") is None
+
+
+# ---------------------------------------------------------------------------
+# Flow tracing / consumption-based intensity (EU)
+# ---------------------------------------------------------------------------
+
+
+class TestFlowTracing:
+    def test_solver_attributes_imports(self):
+        from providers import flow_tracing as ft
+
+        # IT-NO imports clean FR nuclear -> reads cleaner; NL imports DE coal -> dirtier
+        prod_mw = {"FR": 50000, "IT-NO": 20000, "DE": 60000, "NL": 10000}
+        prod_int = {"FR": 55, "IT-NO": 380, "DE": 420, "NL": 350}
+        flows = {("FR", "IT-NO"): 4000, ("DE", "NL"): 8000}
+        cons = ft.trace_consumption_intensity(prod_mw, prod_int, flows)
+        assert cons["FR"] == 55.0  # exporter unchanged
+        assert cons["IT-NO"] < prod_int["IT-NO"]  # importing clean -> lower
+        assert cons["NL"] > prod_int["NL"]  # importing dirty -> higher
+
+    def test_solver_empty(self):
+        from providers import flow_tracing as ft
+
+        assert ft.trace_consumption_intensity({}, {}, {}) == {}
+
+    def test_solver_ignores_unknown_and_zero_flows(self):
+        from providers import flow_tracing as ft
+
+        prod_mw = {"FR": 1000}
+        prod_int = {"FR": 50}
+        # flow from an unknown zone and a zero flow are both ignored
+        flows = {("XX", "FR"): 500, ("FR", "FR"): 0}
+        assert ft.trace_consumption_intensity(prod_mw, prod_int, flows) == {"FR": 50.0}
+
+    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
+    def test_apply_override_traced_zone(self, mock_compute):
+        mock_compute.return_value = {"IT-NO": 326.0}
+        g, i = check_grid._apply_consumption_intensity("IT-NO", 250, False, 380, "tok")
+        assert i == 326 and g is False
+
+    def test_apply_override_untraced_zone_unchanged(self):
+        g, i = check_grid._apply_consumption_intensity("CISO", 250, True, 100, "tok")
+        assert (g, i) == (True, 100)
+
+    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
+    def test_apply_override_no_value_falls_back(self, mock_compute):
+        mock_compute.return_value = {}  # computation produced nothing for FR
+        g, i = check_grid._apply_consumption_intensity("FR", 250, True, 55, "tok")
+        assert (g, i) == (True, 55)
+
+    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
+    def test_apply_override_flips_verdict_to_green(self, mock_compute):
+        # production 280 (dirty), consumption 240 (green) at threshold 250
+        mock_compute.return_value = {"FR": 240.0}
+        g, i = check_grid._apply_consumption_intensity("FR", 250, False, 280, "tok")
+        assert i == 240 and g is True
+
+    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_main_consumption_mode_end_to_end(
+        self, mock_summary, mock_output, mock_check, mock_compute
+    ):
+        mock_check.return_value = (False, 380)  # FR production dirty
+        mock_compute.return_value = {"FR": 240.0}  # consumption green
+        os.environ["GRID_ZONE"] = "FR"
+        os.environ["ENTSOE_TOKEN"] = "tok"
+        os.environ["CONSUMPTION_BASED"] = "true"
+        os.environ["WORKFLOW_ID"] = ""
+
+        check_grid.main()
+        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert out["grid_clean"] == "true"
+        assert out["carbon_intensity"] == "240"
+
+    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.set_output")
+    @mock.patch("check_grid.write_job_summary")
+    def test_main_consumption_off_uses_production(
+        self, mock_summary, mock_output, mock_check, mock_compute
+    ):
+        mock_check.return_value = (True, 90)
+        os.environ["GRID_ZONE"] = "FR"
+        os.environ["ENTSOE_TOKEN"] = "tok"
+        os.environ.pop("CONSUMPTION_BASED", None)  # default off
+        os.environ["WORKFLOW_ID"] = ""
+
+        check_grid.main()
+        mock_compute.assert_not_called()  # never computed when mode is off
+
+    def test_flow_parse_latest(self):
+        from providers.entsoe import _parse_flow_latest
+
+        xml = (
+            "<TimeSeries><Period>"
+            "<Point><position>1</position><quantity>1200</quantity></Point>"
+            "<Point><position>2</position><quantity>1500</quantity></Point>"
+            "</Period></TimeSeries>"
+        )
+        assert _parse_flow_latest(xml) == 1500.0
+        assert _parse_flow_latest("") is None
