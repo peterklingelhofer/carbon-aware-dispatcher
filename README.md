@@ -388,7 +388,7 @@ The action picks the best provider per zone, checking free providers first.
 |--------|--------|---------|
 | UK | Carbon Intensity API | 48h free forecast, automatic |
 | US | GridStatus.io | Solar/wind/load forecasts. Requires `gridstatus_api_key`. |
-| EU | ENTSO-E | Day-ahead generation. Requires `entsoe_token`. |
+| EU | ENTSO-E | Real day-ahead forecast: wind+solar (A69) and load (A65) forecasts give the hourly renewable share. Requires `entsoe_token`. |
 | India | Heuristic | Solar peak 10am–4pm IST. Southern grid (IN-SO) cleanest. Automatic. |
 | Brazil | Heuristic | Hydro off-peak cleanest. Evening peak 17–21h BRT dirtier. Automatic. |
 | South Africa | Heuristic | Coal-dominant, rarely < 650 gCO2eq/kWh. Recommends escape-coal. |
