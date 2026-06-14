@@ -172,6 +172,32 @@ def _parse_generation_xml(xml_text):
     return results
 
 
+def _parse_flow_latest(xml_text):
+    """Most recent physical-flow value (MW) from an ENTSO-E A11 document.
+
+    A11 (cross-border physical flow) has one <quantity> per <Point> in time
+    order; the last one is the current flow. Returns a float MW, or None.
+    """
+    if not xml_text or not xml_text.strip():
+        return None
+    wrapped = f"<root>{xml_text}</root>"
+    try:
+        root = ET.fromstring(wrapped)
+    except ET.ParseError:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return None
+    latest = None
+    for el in root.iter():
+        if _local_name(el.tag) == "quantity" and el.text:
+            try:
+                latest = float(el.text.strip())
+            except ValueError:
+                continue
+    return latest
+
+
 def _intensity_from_gen_data(gen_data):
     """Weighted carbon intensity from (psr_type, quantity) pairs.
 
@@ -196,6 +222,45 @@ def _intensity_from_gen_data(gen_data):
     if total_gen <= 0:
         return None
     return round(weighted_emissions / total_gen)
+
+
+def _total_generation_mw(gen_data):
+    """Total non-storage generation (MW) from (psr_type, quantity) pairs."""
+    return sum(q for psr, q in gen_data if psr not in ENTSOE_STORAGE_PSR)
+
+
+def production_for_zone(zone, entsoe_token):
+    """Fetch a zone's production intensity AND total generation MW.
+
+    Returns (intensity_gco2_kwh, total_mw) or (None, None) on error. Used by the
+    flow-tracing layer, which needs the MW total (P_i) that check_carbon_intensity
+    discards.
+    """
+    if not entsoe_token:
+        return None, None
+    area_code = ENTSOE_AREA_CODES.get(zone)
+    if area_code is None:
+        return None, None
+
+    now = datetime.now(timezone.utc)
+    period_start = (now - timedelta(hours=1)).strftime("%Y%m%d%H00")
+    period_end = now.strftime("%Y%m%d%H00")
+    url = (
+        f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
+        f"&documentType=A75&processType=A16&in_Domain={area_code}"
+        f"&periodStart={period_start}&periodEnd={period_end}"
+    )
+    response = request(url, parse="response")
+    if response is None or response.status_code != 200:
+        return None, None
+    gen_data = _parse_generation_xml(response.text)
+    if not gen_data:
+        return None, None
+    intensity = _intensity_from_gen_data(gen_data)
+    total_mw = _total_generation_mw(gen_data)
+    if intensity is None or total_mw <= 0:
+        return None, None
+    return intensity, total_mw
 
 
 def check_carbon_intensity(zone, max_carbon, entsoe_token):

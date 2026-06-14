@@ -335,6 +335,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `fail_on_api_error` | `false` | Fail the action on API errors instead of skipping silently. |
 | `carbon_policy_path` | `.github/carbon-policy.yml` | Path to org-wide carbon policy. |
 | `dry_run` | `false` | Report-only mode. Measures and reports but never gates the build (`grid_clean` stays `true`). See [Try it risk-free](#try-it-risk-free-report-only). |
+| `consumption_based` | `false` | Use flow-traced consumption intensity for EU zones (single-zone, needs `entsoe_token`). See [Consumption-based intensity](#consumption-based-intensity-eu). |
 
 ## Outputs
 
@@ -413,10 +414,33 @@ labels the estimates "(estimated)" so the two are easy to tell apart.
 
 Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
 
+### Consumption-based intensity (EU)
+
+By default the action reports **production-based** intensity (a zone's own
+generation mix). Set `consumption_based: 'true'` (single-zone mode, with an
+`entsoe_token`) to instead get **consumption-based** intensity, which flow-traces
+imports and exports across the European network so a zone importing clean French
+nuclear reads cleaner, and one importing German coal reads dirtier:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    grid_zone: 'IT-NO'           # Italy North, a heavy importer
+    consumption_based: 'true'
+    entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
+```
+
+It uses ENTSO-E physical cross-border flows (documentType A11) and solves the
+flow-tracing linear system (Tranberg et al., 2019) with Gauss-Seidel iteration,
+no extra dependencies. Covered zones: FR, DE, NL, BE, CH, AT, ES, PT, IT-NO, PL,
+CZ, GB, IE, DK-DK1. Zones outside this traced network fall back to production
+intensity. Note: this costs extra ENTSO-E calls (one per traced zone plus its
+borders), so enable it only when the import/export correction matters.
+
 ### Known limitations
 
-- **Production-based.** Intensity is computed from each zone's own generation mix. It doesn't account for electricity imported from or exported to neighboring zones (no "flow tracing"). For a well-interconnected grid (much of Europe, the US ISOs), the true consumption intensity can differ: a zone importing clean hydro reads dirtier than reality, and one importing coal reads cleaner. Flow tracing needs cross-zone flow data and a network-wide solver, which is out of scope for a stateless, zero-dependency action. For consumption-based numbers, use a commercial source such as Electricity Maps.
 - **Coverage is best where a free grid-operator API exists.** US, UK, EU (with a free ENTSO-E token), Australia, Canada, Taiwan, Brazil, India, and South Africa use real grid data. Other zones fall back to an Open-Meteo weather estimate, or to Electricity Maps if a token is set. Some regions (e.g. Japan, South Korea, Singapore) have no clean free real-time feed, so measured data there requires an Electricity Maps token.
+- **Consumption-based intensity is EU-only and opt-in** (see above). Other regions report production-based intensity. For global consumption-based data, use a commercial source such as Electricity Maps.
 - **Some forecasts are heuristic** (see [Forecasts](#forecasts)), labeled as estimates in the job summary.
 
 ## Setup wizard

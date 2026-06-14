@@ -85,6 +85,10 @@ inputs:
     description: 'Report-only mode. When true, the action measures the grid and reports what it would do, but never gates the build (grid_clean is always true). Use the would_defer output to see the real verdict. The safe way to adopt: watch the savings for a while, then turn enforcement on.'
     required: false
     default: 'false'
+  consumption_based:
+    description: 'Use consumption-based (flow-traced) carbon intensity for EU zones instead of production-based, accounting for imports/exports between grids. Requires entsoe_token. Single-zone mode only; EU zones in the traced network. Falls back to production intensity for other zones. Costs extra ENTSO-E calls.'
+    required: false
+    default: 'false'
 
 outputs:
   grid_clean:
@@ -173,3 +177,4 @@ runs:
         DEADLINE_HOURS: ${{ inputs.deadline_hours }}
         CARBON_POLICY_PATH: ${{ inputs.carbon_policy_path }}
         DRY_RUN: ${{ inputs.dry_run }}
+        CONSUMPTION_BASED: ${{ inputs.consumption_based }}

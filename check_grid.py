@@ -178,6 +178,35 @@ def check_carbon_intensity(
     return result
 
 
+def _apply_consumption_intensity(zone, max_carbon, is_green, intensity, entsoe_token):
+    """Replace production intensity with flow-traced consumption intensity.
+
+    Only applies to EU zones in the traced network with an ENTSO-E token. On any
+    failure (untraceable zone, no token, computation error) returns the original
+    (is_green, intensity) unchanged, so consumption mode never degrades results.
+    """
+    from providers.flow_tracing import TRACED_ZONES, compute_consumption_intensities
+
+    if zone not in TRACED_ZONES:
+        print(f"  Consumption mode: zone {zone} not in the traced EU network, using production.")
+        return is_green, intensity
+
+    consumption = compute_consumption_intensities(entsoe_token)
+    cons_intensity = consumption.get(zone)
+    if cons_intensity is None:
+        print(f"  Consumption mode: no flow-traced value for {zone}, using production.")
+        return is_green, intensity
+
+    cons_rounded = round(cons_intensity)
+    new_green = cons_rounded <= max_carbon
+    delta = cons_rounded - intensity
+    print(
+        f"  Consumption-based: {cons_rounded} gCO2eq/kWh "
+        f"(production was {intensity}, {delta:+d} from imports/exports)"
+    )
+    return new_green, cons_rounded
+
+
 def get_forecast(
     zone,
     max_carbon,
@@ -1235,6 +1264,10 @@ def main():
     deadline_hours_raw = os.environ.get("DEADLINE_HOURS", policy.get("deadline_hours", ""))
     deadline_hours = _env_float("DEADLINE_HOURS", 24, deadline_hours_raw)
     dry_run = os.environ.get("DRY_RUN", policy.get("dry_run", "false")).lower() == "true"
+    consumption_based = (
+        os.environ.get("CONSUMPTION_BASED", policy.get("consumption_based", "false")).lower()
+        == "true"
+    )
 
     # Parse zone(s): action inputs override policy
     grid_zones_str = os.environ.get("GRID_ZONES", "")
@@ -1400,6 +1433,15 @@ def main():
         is_green, intensity = check_carbon_intensity(
             entry["zone"], max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
         )
+
+        # Consumption-based override (opt-in, EU zones with an ENTSO-E token):
+        # replace production intensity with flow-traced consumption intensity,
+        # which accounts for imports/exports. Falls through silently if the zone
+        # isn't traceable or the computation fails, so behavior is never worse.
+        if consumption_based and intensity is not None:
+            is_green, intensity = _apply_consumption_intensity(
+                entry["zone"], max_carbon, is_green, intensity, entsoe_token
+            )
 
         if is_green is None:
             set_output("grid_clean", "false")
