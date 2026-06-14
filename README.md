@@ -393,6 +393,10 @@ The action picks the best provider per zone, checking free providers first.
 | South Africa | Heuristic | Coal-dominant, rarely < 650 gCO2eq/kWh. Recommends escape-coal. |
 | Other | Open-Meteo | 48h solar/wind weather forecast. Automatic for 90+ zones. |
 
+Heuristic and Open-Meteo forecasts are time-of-day or weather estimates, not
+measured day-ahead forecasts. They are labeled "(estimated)" in the job summary
+so they are not confused with the measured UK / ENTSO-E / GridStatus forecasts.
+
 ### Choosing a threshold
 
 | Region | Typical Range (gCO2eq/kWh) | Suggested Threshold |
@@ -408,6 +412,12 @@ The action picks the best provider per zone, checking free providers first.
 ### How carbon intensity is calculated
 
 Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
+
+### Known limitations
+
+- **Production-based, not consumption-based.** Intensity is computed from each zone's own generation mix. It does not account for electricity imported from or exported to neighboring zones (no "flow tracing"). For a well-interconnected grid (much of Europe, the US ISOs), the true consumption intensity can differ: a zone importing clean hydro reads dirtier than reality, and one importing coal reads cleaner. Flow tracing needs cross-zone flow data and a network-wide solver, which is out of scope for a stateless, zero-dependency action. For consumption-based numbers, use a commercial source such as Electricity Maps.
+- **Coverage is best where a free grid-operator API exists.** US, UK, EU (with a free ENTSO-E token), Australia, Canada, Taiwan, Brazil, India, and South Africa use real grid data. Other zones fall back to an Open-Meteo weather estimate, or to Electricity Maps if a token is set. Some regions (e.g. Japan, South Korea, Singapore) have no clean free real-time feed, so measured data there requires an Electricity Maps token.
+- **Some forecasts are heuristic** (see [Forecasts](#forecasts)), labeled as estimates in the job summary.
 
 ## Setup wizard
 
