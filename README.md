@@ -336,6 +336,9 @@ Ready-to-copy files in [`examples/`](examples/):
 | `carbon_policy_path` | `.github/carbon-policy.yml` | Path to org-wide carbon policy. |
 | `dry_run` | `false` | Report-only mode. Measures and reports but never gates the build (`grid_clean` stays `true`). See [Try it risk-free](#try-it-risk-free-report-only). |
 | `consumption_based` | `false` | Use flow-traced consumption intensity for EU zones (single-zone, needs `entsoe_token`). See [Consumption-based intensity](#consumption-based-intensity-eu). |
+| `ledger` | none | Persist cumulative savings: `gist:<id>` (live badge + dashboard, needs `gist_token`) or `file:<path>`. See [Watch your impact](#watch-your-impact). |
+| `gist_token` | none | Token with `gist` scope for the `gist:` ledger backend. Store as a secret. |
+| `pr_comment` | `false` | Post a sticky carbon-verdict comment on pull requests. Needs `pull-requests: write`. |
 
 ## Outputs
 
@@ -350,12 +353,86 @@ Ready-to-copy files in [`examples/`](examples/):
 | `forecast_green_at` | ISO 8601 timestamp of next predicted green window. |
 | `forecast_intensity` | Predicted intensity at the green window. |
 | `co2_saved_grams` | Estimated grams CO2 saved vs. global average (450 gCO2eq/kWh). |
+| `co2_saved_equivalent` | Human-relatable phrase for this run's saving, e.g. `~1.8 km not driven`. |
 | `carbon_badge_url` | Shields.io badge URL for READMEs: `![carbon](url)` |
+| `co2_saved_total_grams` | Cumulative grams saved across all runs (requires the `ledger` input). |
+| `co2_saved_total_equivalent` | Human-relatable phrase for the lifetime saving (requires `ledger`). |
+| `lifetime_badge_url` | Live shields.io badge URL for lifetime CO2 saved (requires `ledger: gist:<id>`). |
 | `optimal_dispatch_at` | Best green window (queue strategy). `now` if already green. |
 | `optimal_zone` | Zone for the optimal window (queue strategy). |
 | `suggested_cron` | Suggested cron schedule for green builds based on zone energy type. |
 | `dry_run` | `true` when the action ran in report-only mode. |
 | `would_defer` | In `dry_run` mode, `true` if the grid was dirty and the build would have been deferred under enforcement. |
+
+## Watch your impact
+
+Every run estimates the CO2 it saved, but a number that vanishes after one build
+is easy to ignore. These features make the impact persistent and visible to
+everyone who reads the repo, including people who never open the Actions tab.
+
+### Human-relatable equivalents
+
+The job summary, the `co2_saved_equivalent` output, and the PR comment translate
+grams into things people feel: `~1.8 km not driven`, `~14 phone charges`. Factors
+come from the US EPA Greenhouse Gas Equivalencies Calculator, with nothing to enable.
+
+### Lifetime ledger and live badge
+
+Set the `ledger` input to accumulate savings across every run into a lifetime
+total, exposed via `co2_saved_total_grams` and a live, self-updating badge.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    ledger: gist:YOUR_GIST_ID        # or file:.carbon/ledger.json
+    gist_token: ${{ secrets.GIST_TOKEN }}
+```
+
+One-time setup for the gist backend:
+
+1. Create a public gist (any placeholder content) and copy its id from the URL.
+2. Create a personal access token with the `gist` scope and store it as a secret
+   named `GIST_TOKEN`. (The built-in `GITHUB_TOKEN` can't write gists.)
+3. The action writes `carbon-ledger.json` (full data) and `carbon-badge.json`
+   (a shields.io endpoint badge) to the gist on every run.
+
+Embed the live lifetime badge in your README:
+
+```markdown
+![CO2 saved](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/YOUR_USER/YOUR_GIST_ID/raw/carbon-badge.json)
+```
+
+The `file:` backend needs no token and writes a local JSON file, handy for
+self-hosted runners or if you commit the ledger yourself.
+
+### Impact dashboard (GitHub Pages)
+
+[`dashboard/index.html`](dashboard/index.html) is a self-contained, no-build,
+no-CDN page that reads your ledger gist and renders the lifetime total, real-world
+equivalents, and a savings-over-time chart. Drop the `dashboard/` folder on
+GitHub Pages and open it with `?gist=<id>`:
+
+```
+https://YOUR_USER.github.io/YOUR_REPO/?gist=YOUR_GIST_ID
+```
+
+It reads the gist through the CORS-enabled GitHub REST API, so it works for any
+public ledger gist with zero server-side code.
+
+### Sticky PR comment
+
+Set `pr_comment: 'true'` to post the carbon verdict as a single comment on the
+pull request, updated in place on each run, so reviewers see whether the build
+ran on clean energy (and how much it saved) without opening the Actions tab.
+
+```yaml
+permissions:
+  pull-requests: write
+# ...
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    pr_comment: 'true'
+```
 
 ## Supported zones & providers
 
