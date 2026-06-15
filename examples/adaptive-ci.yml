@@ -1,0 +1,67 @@
+# Carbon-Adaptive CI
+#
+# Instead of skipping builds when the grid is dirty, right-size the work to how
+# clean the grid is. The action emits a carbon_tier (green / amber / red) and
+# downstream jobs scale accordingly:
+#   green  -> run the full test matrix + coverage
+#   amber  -> run the critical-path subset only
+#   red    -> run a fast smoke test (or defer heavy work)
+#
+# This keeps CI always making progress while shifting the heaviest compute to the
+# cleanest hours. No API keys needed.
+#
+# Copy to .github/workflows/carbon-adaptive-ci.yml
+
+name: Carbon-Adaptive CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  carbon:
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.carbon.outputs.carbon_tier }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'auto:nearest'
+          # green at/below 120, amber at/below 280, red above
+          tier_thresholds: '120,280'
+
+  test:
+    needs: carbon
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Green runs the full matrix; amber trims to one version; red just smoke.
+        include:
+          - { tier: green, suite: full }
+          - { tier: green, suite: full-extra }
+          - { tier: amber, suite: critical }
+          - { tier: red, suite: smoke }
+    steps:
+      - name: Skip stages above the current tier
+        id: gate
+        run: |
+          current="${{ needs.carbon.outputs.tier }}"
+          want="${{ matrix.tier }}"
+          # Run this matrix entry only when its tier matches the grid's tier,
+          # plus always run the lowest (smoke) so CI never fully stalls.
+          if [ "$current" = "$want" ] || [ "$want" = "red" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Grid tier is '$current'; skipping '$want' suite to save carbon."
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5
+
+      - if: steps.gate.outputs.run == 'true'
+        run: echo "Running '${{ matrix.suite }}' suite at carbon tier '${{ needs.carbon.outputs.tier }}'"
+        # Replace with your real test command for this suite

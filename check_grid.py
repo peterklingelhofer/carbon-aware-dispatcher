@@ -610,6 +610,42 @@ def carbon_equivalents(grams):
     }
 
 
+# Default gCO2eq/kWh boundaries for the carbon tier "dial": at or below the first
+# is green, at or below the second is amber, above is red.
+DEFAULT_TIER_THRESHOLDS = (150.0, 300.0)
+
+
+def parse_tier_thresholds(raw):
+    """Parse "green,amber" gCO2 boundaries; fall back to defaults on bad input."""
+    if not raw:
+        return DEFAULT_TIER_THRESHOLDS
+    try:
+        parts = [float(p.strip()) for p in raw.split(",")]
+    except ValueError:
+        return DEFAULT_TIER_THRESHOLDS
+    if len(parts) != 2 or parts[0] >= parts[1]:
+        return DEFAULT_TIER_THRESHOLDS
+    return (parts[0], parts[1])
+
+
+def classify_tier(intensity, thresholds):
+    """Classify carbon intensity into an adaptive-CI tier.
+
+    Returns (tier, reason) where tier is "green", "amber", "red", or "unknown".
+    Downstream jobs read carbon_tier to right-size their work to the grid instead
+    of skipping entirely: full workloads on green, trimmed on amber, deferred on
+    red.
+    """
+    if intensity is None:
+        return "unknown", "carbon intensity unavailable"
+    green, amber = thresholds
+    if intensity <= green:
+        return "green", f"{intensity:.0f} gCO2eq/kWh: run full workloads"
+    if intensity <= amber:
+        return "amber", f"{intensity:.0f} gCO2eq/kWh: trim non-critical work"
+    return "red", f"{intensity:.0f} gCO2eq/kWh: defer heavy work"
+
+
 # Set once per process when the cumulative ledger is updated, so write_job_summary
 # can append a lifetime row. None when no ledger is configured or the update fails.
 _lifetime_summary = None
@@ -650,7 +686,9 @@ def record_lifetime_savings(saved_grams):
 _pr_comment_done = False
 
 
-def post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run=False):
+def post_pr_comment_once(
+    zone, intensity, is_green, max_carbon, co2_saved=0, dry_run=False, tier="unknown"
+):
     """Post/update the sticky PR comment with the verdict (at most once/process).
 
     No-op unless PR_COMMENT is enabled. Reads the GitHub event context from the
@@ -674,6 +712,7 @@ def post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved=0, dry
         equivalent=equiv,
         lifetime=lifetime,
         dry_run=dry_run,
+        tier=tier,
     )
     pr_comment.post_comment(
         os.environ.get("TARGET_REPO", ""),
@@ -993,9 +1032,17 @@ def write_job_summary(
     forecast_heuristic: when True, the forecast is a time-of-day estimate (not a
     measured day-ahead forecast), so the row is labeled accordingly.
     """
+    # Classify the carbon tier (the adaptive-CI "dial") and emit it as an output
+    # before any early return, so downstream jobs can read it even with no summary
+    thresholds = parse_tier_thresholds(os.environ.get("TIER_THRESHOLDS", ""))
+    tier, tier_reason = classify_tier(intensity, thresholds)
+    if tier != "unknown":
+        set_output("carbon_tier", tier)
+        set_output("carbon_tier_reason", tier_reason)
+
     # Fire the sticky PR comment first so it posts even when there is no job
     # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
-    post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run)
+    post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run, tier)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
@@ -1020,6 +1067,9 @@ def write_job_summary(
         lines.append(f"| **Carbon Intensity** | {intensity} gCO2eq/kWh |")
     else:
         lines.append("| **Carbon Intensity** | unknown |")
+
+    if tier != "unknown":
+        lines.append(f"| **Carbon Tier** | {tier} ({tier_reason}) |")
 
     lines.append(f"| **Threshold** | {max_carbon} gCO2eq/kWh |")
 

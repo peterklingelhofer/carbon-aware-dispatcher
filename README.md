@@ -282,6 +282,26 @@ Forecast data is used to sleep efficiently. **Note:** GitHub Actions bills for w
 
 Outputs `optimal_dispatch_at` (ISO 8601) and `optimal_zone`. Good for nightly ML training or weekly reports.
 
+## Carbon-adaptive CI (the dial)
+
+Skipping builds is a blunt instrument; teams want their CI to run. Instead of a
+binary gate, the action classifies the grid into a `carbon_tier` so downstream
+jobs can *right-size* their work: full matrix when green, critical-path when
+amber, smoke test when red. CI always makes progress; the heaviest compute
+shifts to the cleanest hours.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    tier_thresholds: '120,280'   # green <=120, amber <=280, red above
+```
+
+`carbon_tier` is `green`, `amber`, or `red` (and `carbon_tier_reason` explains
+why). Use it to drive matrix includes, conditional steps, or job-level `if:`.
+See [`examples/adaptive-ci.yml`](examples/adaptive-ci.yml) for a full matrix that
+scales test suites to the tier.
+
 ## Organization-wide defaults
 
 Drop a `.github/carbon-policy.yml` in your repo:
