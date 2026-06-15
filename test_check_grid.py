@@ -2410,6 +2410,42 @@ class TestRecordLifetimeSavings:
             os.environ.pop("LEDGER", None)
 
 
+class TestPostPrCommentOnce:
+    def _reset(self):
+        check_grid._pr_comment_done = False
+
+    def test_noop_when_disabled(self):
+        self._reset()
+        os.environ.pop("PR_COMMENT", None)
+        with mock.patch("check_grid.pr_comment.post_comment") as posted:
+            check_grid.post_pr_comment_once("CISO", 80, True, 250)
+            posted.assert_not_called()
+
+    def test_posts_when_enabled(self):
+        self._reset()
+        try:
+            os.environ["PR_COMMENT"] = "true"
+            with mock.patch("check_grid.pr_comment.post_comment") as posted:
+                check_grid.post_pr_comment_once("CISO", 80, True, 250, co2_saved=1500)
+                posted.assert_called_once()
+                # body is the 5th positional arg
+                body = posted.call_args.args[4]
+                assert "CISO" in body
+        finally:
+            os.environ.pop("PR_COMMENT", None)
+
+    def test_only_once(self):
+        self._reset()
+        try:
+            os.environ["PR_COMMENT"] = "true"
+            with mock.patch("check_grid.pr_comment.post_comment") as posted:
+                check_grid.post_pr_comment_once("CISO", 80, True, 250)
+                check_grid.post_pr_comment_once("CISO", 80, True, 250)
+                assert posted.call_count == 1
+        finally:
+            os.environ.pop("PR_COMMENT", None)
+
+
 class TestWriteJobSummaryWithCo2:
     def test_summary_includes_co2_saved(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:

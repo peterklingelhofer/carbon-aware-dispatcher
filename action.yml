@@ -97,6 +97,10 @@ inputs:
     description: 'A GitHub token with the "gist" scope, used only when ledger is "gist:<id>". Store it as a secret. The default GITHUB_TOKEN cannot write gists, so a small personal access token is required.'
     required: false
     default: ''
+  pr_comment:
+    description: 'When "true" and running on a pull_request, post (and update in place) a sticky comment with the carbon verdict so reviewers see it without opening the Actions tab. Needs github_token with pull-requests:write permission.'
+    required: false
+    default: 'false'
 
 outputs:
   grid_clean:
@@ -200,3 +204,4 @@ runs:
         CONSUMPTION_BASED: ${{ inputs.consumption_based }}
         LEDGER: ${{ inputs.ledger }}
         GIST_TOKEN: ${{ inputs.gist_token }}
+        PR_COMMENT: ${{ inputs.pr_comment }}
