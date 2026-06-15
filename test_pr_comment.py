@@ -57,6 +57,24 @@ class TestBuildComment:
         )
         assert "Carbon tier" not in body
 
+    def test_budget_row_present(self):
+        body = pr_comment.build_comment(
+            is_green=True,
+            zone="GB",
+            intensity=50,
+            max_carbon=250,
+            budget={"state": "warning", "used_pct": 82.5},
+        )
+        assert "Carbon budget" in body
+        assert "82" in body
+        assert "warning" in body
+
+    def test_budget_row_omitted_when_none(self):
+        body = pr_comment.build_comment(
+            is_green=True, zone="GB", intensity=50, max_carbon=250, budget=None
+        )
+        assert "Carbon budget" not in body
+
 
 class TestPrNumberFromEvent:
     def test_pull_request_number(self):
