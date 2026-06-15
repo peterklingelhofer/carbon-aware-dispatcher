@@ -1,5 +1,10 @@
 # Reusable Carbon-Aware Workflow
 #
+# NOTE: This has no "Run workflow" button in the Actions tab on purpose. It is a
+# `workflow_call`-only (reusable) workflow, meant to be called from another
+# workflow via `uses:` (see below), not run directly. For a button you can click
+# to try the action live, use "Carbon-Aware Check (Demo)" instead.
+#
 # Other repos can call this with zero setup:
 #
 #   jobs:

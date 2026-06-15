@@ -1,21 +1,27 @@
 name: Carbon-Aware Check (Demo)
 
 # Manual demo: click "Run workflow" in the Actions tab to check live grid
-# carbon intensity across several zones and render a job summary table.
-# Uses only free, no-key providers by default (UK, US EIA, AEMO, Open-Meteo)
+# carbon intensity and render a job summary table. Uses free, no-key providers
 # so it works with zero secrets configured.
+#
+# Preset choices:
+#   auto:cleanest - checks every free-provider zone worldwide, picks the single
+#                   lowest. Most thorough; makes the most API calls.
+#   auto:green    - a small curated list of usually-clean zones. Fewer calls.
+#   GB,AU-NSW     - a fixed example pair (UK + Australia), keyless and fast.
 
 on:
   workflow_dispatch:
     inputs:
-      grid_zones:
-        description: "Comma-separated zones (or auto:green, auto:cleanest)"
+      preset:
+        description: "Which zones to check"
         required: false
-        type: string
-        # Default to the unlimited free providers (UK + Australia) so the demo
-        # gives a clean result with no API key. Add CISO/FR with an EIA key or
-        # entsoe_token secret for US and European coverage.
-        default: "GB,AU-NSW"
+        type: choice
+        default: "auto:cleanest"
+        options:
+          - "auto:cleanest"   # check every free-provider zone, pick the single lowest worldwide
+          - "auto:green"      # a small curated list of usually-clean zones (fewer API calls)
+          - "GB,AU-NSW"       # a fixed example pair (UK + Australia), keyless and fast
       max_carbon:
         description: "Max carbon intensity threshold (gCO2eq/kWh)"
         required: false
@@ -33,7 +39,7 @@ jobs:
         id: check
         uses: ./
         with:
-          grid_zones: ${{ inputs.grid_zones }}
+          grid_zones: ${{ inputs.preset }}
           max_carbon_intensity: ${{ inputs.max_carbon }}
           electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}
           entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
