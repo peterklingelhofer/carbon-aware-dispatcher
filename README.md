@@ -83,9 +83,9 @@ Use a preset instead of looking up zone codes:
 
 **None required.** US, UK, Australia, India, Brazil, South Africa, and the
 worldwide Open-Meteo fallback work with no setup, which covers the `auto:*`
-presets. Optional free tokens add coverage: `entsoe_token` (EU), `electricity_maps_token`
-(global, 200+ zones), `gridstatus_api_key` (US forecasts). `eia_api_key` is
-optional too, only to raise the built-in US demo key's rate limit. See [Inputs](#inputs).
+presets. Optional free tokens add coverage: `entsoe_token` (EU, 44 zones), `electricity_maps_token`
+(one registered zone on the free tier), `gridstatus_api_key` (US forecasts). `eia_api_key`
+is optional too, only to raise the built-in US demo key's rate limit. See [Inputs](#inputs).
 
 ## Quick Setup Options
 
@@ -322,7 +322,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `workflow_id` | none | Workflow to dispatch when green. Omit for inline mode (recommended). |
 | `github_token` | none | Required when `workflow_id` is set. |
 | `eia_api_key` | none | Higher rate limits for US zones. [Free registration](https://www.eia.gov/opendata/register.php). Built-in demo key works for basic use. |
-| `electricity_maps_token` | none | Global coverage (200+ zones). [Free registration](https://portal.electricitymaps.com/), 50 req/hr. |
+| `electricity_maps_token` | none | One zone per free token (chosen at registration), 50 req/hr. Paid plans cover 200+ zones. [Register](https://portal.electricitymaps.com/). |
 | `entsoe_token` | none | EU coverage (36 countries). [Free registration](https://transparency.entsoe.eu/), 400 req/min. |
 | `gridstatus_api_key` | none | US forecasts (7 ISOs). [Free registration](https://www.gridstatus.io), 1M rows/month. |
 | `max_wait` | `0` | Minutes to wait for green energy. Max 360. Billable time. |
@@ -372,11 +372,11 @@ The action picks the best provider per zone, checking free providers first.
 | [IESO / AESO / Hydro-Quebec](https://www.ieso.ca/) | Canada (ON, AB, QC) | None | `CA-ON`, `CA-AB`, `CA-QC` |
 | [Taipower](https://www.taipower.com.tw/) | Taiwan | None | `TW` |
 | [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
-| [Electricity Maps](https://www.electricitymaps.com/) | Global (200+) | Free token | Any zone on [their map](https://app.electricitymaps.com/map) |
+| [Electricity Maps](https://www.electricitymaps.com/) | 1 zone (free tier) / 200+ (paid) | Token | The single zone registered to your token; see [their map](https://app.electricitymaps.com/map) |
 | [Open-Meteo](https://open-meteo.com/) | Worldwide (90+) | None | Auto-fallback for any zone with known coordinates |
 | [GridStatus](https://www.gridstatus.io) | US forecasts (7 ISOs) | Free token | `CISO`, `ERCO`, `ISNE`, `MISO`, `NYIS`, `PJM`, `SWPP` |
 
-**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > Canada > Taiwan > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (catch-all). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
+**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > Canada > Taiwan > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (last resort; free tier is one registered zone). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
 
 **Reliability notes:**
 - **Grid India** is reachable only from Indian IPs, so it always fails from GitHub-hosted (US/EU) runners. India zones are therefore left out of the curated `auto:*` presets. They still work if you pass `grid_zones: 'IN-SO'` explicitly from a runner inside India.

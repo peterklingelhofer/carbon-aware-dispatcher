@@ -1,9 +1,15 @@
-"""Electricity Maps provider: global coverage, requires free API key.
+"""Electricity Maps provider: requires an API key.
 
-Covers 200+ zones worldwide including Europe, Canada, India, Japan, Australia,
-Latin America, and more. Direct carbon intensity values in gCO2eq/kWh.
+Direct consumption-based carbon intensity in gCO2eq/kWh. Electricity Maps covers
+200+ zones, but the FREE tier is limited to a SINGLE zone, which you choose when
+registering (plus a 50 requests/hour cap). So this provider only works for that
+one registered zone unless you have a paid plan; it is not a global catch-all on
+the free tier. Use the free grid-operator providers for broad coverage and
+register the one Electricity Maps zone you most need (e.g. a region with no free
+feed, such as JP-TK or SG).
 
-Free tier: 50 requests/hour. Register at https://portal.electricitymaps.com/
+Register at https://portal.electricitymaps.com/. Paid plans (200+ zones) are
+sold per country/year, so they cost far more than a flat API key.
 """
 
 from providers.base import api_request_with_header, compute_trend
