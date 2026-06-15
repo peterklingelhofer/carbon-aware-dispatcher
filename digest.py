@@ -20,7 +20,7 @@ SPARK = "▁▂▃▄▅▆▇█"
 
 
 def _headers(token):
-    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    return base.github_headers(token)
 
 
 def _recent_days(today, days):
