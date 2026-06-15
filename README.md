@@ -302,6 +302,34 @@ why). Use it to drive matrix includes, conditional steps, or job-level `if:`.
 See [`examples/adaptive-ci.yml`](examples/adaptive-ci.yml) for a full matrix that
 scales test suites to the tier.
 
+## Carbon budgets as code
+
+Cap how much CO2 your CI is allowed to emit per month. With the [ledger](#watch-your-impact)
+enabled, the action tracks month-to-date emissions and exposes `budget_exceeded`,
+so non-essential builds pause once you hit the cap and resume next month.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+    gist_token: ${{ secrets.GIST_TOKEN }}
+    monthly_budget_grams: '2000'   # 2 kg CO2eq/month
+```
+
+Then gate downstream work on it:
+
+```yaml
+build:
+  needs: carbon
+  if: needs.carbon.outputs.budget_exceeded != 'true'
+```
+
+Outputs: `budget_used_pct`, `budget_remaining_grams`, `budget_exceeded`, and
+`budget_state` (`ok` / `warning` at 80% / `exceeded`). Budgeting needs the
+`ledger` input — that is where month-to-date spend is tracked. See
+[`examples/carbon-budget.yml`](examples/carbon-budget.yml).
+
 ## Organization-wide defaults
 
 Drop a `.github/carbon-policy.yml` in your repo:

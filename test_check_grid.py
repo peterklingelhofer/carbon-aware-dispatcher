@@ -2412,6 +2412,77 @@ class TestCarbonTier:
                 os.environ.pop(k, None)
 
 
+class TestEstimateEmissions:
+    def test_none_intensity_zero(self):
+        assert check_grid.estimate_emissions(None) == 0.0
+
+    def test_proportional_to_intensity(self):
+        # 80 and 320 avoid the banker's-rounding edge of round(1.25, 1)
+        low = check_grid.estimate_emissions(80)
+        high = check_grid.estimate_emissions(320)
+        assert high > low > 0
+        assert high == pytest.approx(low * 4, rel=0.01)
+
+    def test_longer_job_emits_more(self):
+        assert check_grid.estimate_emissions(100, job_minutes=60) > check_grid.estimate_emissions(
+            100, job_minutes=15
+        )
+
+
+class TestCarbonBudget:
+    def _reset(self):
+        check_grid._ledger_recorded = False
+        check_grid._lifetime_summary = None
+        check_grid._budget_summary = None
+
+    def _run(self, ledger_path, budget, emitted):
+        # Seed the ledger with prior emissions this month via a direct record,
+        # then drive the budget output computation.
+        self._reset()
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        os.environ["GITHUB_OUTPUT"] = out.name
+        os.environ["LEDGER"] = f"file:{ledger_path}"
+        os.environ["MONTHLY_BUDGET_GRAMS"] = str(budget)
+        # emitted comes from intensity via estimate_emissions; pick intensity so
+        # that emitted grams ~= the value we want is not necessary — pass directly
+        check_grid.record_lifetime_savings(0, emitted_grams=emitted)
+        with open(out.name) as f:
+            content = f.read()
+        os.unlink(out.name)
+        return content
+
+    def test_under_budget_state_ok(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        try:
+            content = self._run(ledger_path, budget=1000, emitted=100)
+            assert "budget_used_pct=10.0" in content
+            assert "budget_exceeded=false" in content
+            assert "budget_state=ok" in content
+        finally:
+            if os.path.exists(ledger_path):
+                os.unlink(ledger_path)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
+                os.environ.pop(k, None)
+
+    def test_over_budget_exceeded(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        try:
+            content = self._run(ledger_path, budget=50, emitted=80)
+            assert "budget_exceeded=true" in content
+            assert "budget_state=exceeded" in content
+            assert check_grid._budget_summary["exceeded"] is True
+        finally:
+            if os.path.exists(ledger_path):
+                os.unlink(ledger_path)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
+                os.environ.pop(k, None)
+
+
 class TestRecordLifetimeSavings:
     def _reset(self):
         check_grid._ledger_recorded = False

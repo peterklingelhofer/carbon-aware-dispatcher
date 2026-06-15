@@ -36,8 +36,12 @@ def build_comment(
     lifetime="",
     dry_run=False,
     tier="unknown",
+    budget=None,
 ):
-    """Build the sticky comment markdown body (pure)."""
+    """Build the sticky comment markdown body (pure).
+
+    budget, when given, is a dict with used_pct, state, and remaining keys.
+    """
     if dry_run:
         headline = (
             "🌱 Report-only: grid is clean"
@@ -61,6 +65,12 @@ def build_comment(
         lines.append(f"| CO2 saved this run | {_format_grams(co2_saved)}{extra} |")
     if lifetime:
         lines.append(f"| Lifetime CO2 saved | {lifetime} |")
+    if budget:
+        emoji = {"ok": "🟢", "warning": "🟡", "exceeded": "🔴"}.get(budget.get("state"), "")
+        lines.append(
+            f"| Carbon budget | {emoji} {budget.get('used_pct', 0):.0f}% used"
+            f" ({budget.get('state', '')}) |"
+        )
     lines.append("")
     lines.append(f"<sub>via [carbon-aware-dispatcher]({PROJECT_URL})</sub>")
     return "\n".join(lines)
