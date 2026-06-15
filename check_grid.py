@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import requests
 
+import ledger
 from providers import (
     AUTO_CLEANEST_ZONES,
     AUTO_ESCAPE_COAL_ZONES,
@@ -608,6 +609,42 @@ def carbon_equivalents(grams):
     }
 
 
+# Set once per process when the cumulative ledger is updated, so write_job_summary
+# can append a lifetime row. None when no ledger is configured or the update fails.
+_lifetime_summary = None
+_ledger_recorded = False
+
+
+def record_lifetime_savings(saved_grams):
+    """Append this run's savings to the cumulative ledger (at most once/process).
+
+    Reads the LEDGER config and optional GIST_TOKEN from the environment, records
+    via the ledger module, and emits the lifetime outputs. No-op when no ledger
+    is configured. Never raises: bookkeeping must not break CI.
+    """
+    global _lifetime_summary, _ledger_recorded
+    if _ledger_recorded:
+        return
+    config = os.environ.get("LEDGER", "")
+    if not config:
+        return
+    _ledger_recorded = True
+
+    token = os.environ.get("GIST_TOKEN", "")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    summary = ledger.record_savings(config, token, saved_grams, date_str)
+    if not summary:
+        return
+
+    _lifetime_summary = summary
+    set_output("co2_saved_total_grams", str(round(summary["total_grams"], 1)))
+    equiv = carbon_equivalents(summary["total_grams"])
+    if equiv["phrase"]:
+        set_output("co2_saved_total_equivalent", equiv["phrase"])
+    if summary.get("badge_url"):
+        set_output("lifetime_badge_url", summary["badge_url"])
+
+
 def set_savings_outputs(co2_saved, badge_url):
     """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
     if co2_saved and co2_saved > 0:
@@ -617,6 +654,7 @@ def set_savings_outputs(co2_saved, badge_url):
             set_output("co2_saved_equivalent", equiv["phrase"])
     if badge_url:
         set_output("carbon_badge_url", badge_url)
+    record_lifetime_savings(co2_saved or 0)
 
 
 def run_dry_run(
@@ -965,6 +1003,9 @@ def write_job_summary(
         equiv = carbon_equivalents(co2_saved)
         if equiv["phrase"]:
             lines.append(f"| **That's like** | {equiv['phrase']} |")
+
+    if _lifetime_summary:
+        lines.append(f"| **Lifetime CO2 Saved** | {_lifetime_summary['message']} |")
 
     if skipped:
         skipped_str = ", ".join(f"`{z}` ({r})" for z, r in skipped)
