@@ -21,6 +21,7 @@ from providers import base
 
 LEDGER_FILENAME = "carbon-ledger.json"
 BADGE_FILENAME = "carbon-badge.json"
+STATUS_BADGE_FILENAME = "carbon-now.json"
 GIST_API = "https://api.github.com/gists"
 
 # Keep at most a year of daily history so the gist/dashboard stays small.
@@ -100,6 +101,44 @@ def badge_payload(data):
         "message": f"{format_total(grams)} over {runs} builds",
         "color": "brightgreen" if grams > 0 else "lightgrey",
     }
+
+
+def status_badge_payload(zone, intensity, tier):
+    """Build a shields.io payload for the live current-grid status badge."""
+    color = {"green": "brightgreen", "amber": "yellow", "red": "red"}.get(tier, "blue")
+    return {
+        "schemaVersion": 1,
+        "label": "grid now",
+        "message": f"{zone} {intensity} gCO2eq/kWh",
+        "color": color,
+    }
+
+
+def write_status_badge(gist_id, token, zone, intensity, tier):
+    """Write the live status badge to the gist; return its shields URL or None."""
+    if not token or not gist_id:
+        return None
+    body = {
+        "files": {
+            STATUS_BADGE_FILENAME: {
+                "content": json.dumps(status_badge_payload(zone, intensity, tier), indent=2)
+            }
+        }
+    }
+    resp = base.request(
+        f"{GIST_API}/{gist_id}",
+        method="PATCH",
+        headers=_gist_headers(token),
+        json_body=body,
+        parse="json",
+    )
+    if resp is None:
+        return None
+    owner = (resp.get("owner") or {}).get("login")
+    if not owner:
+        return None
+    raw = f"https://gist.githubusercontent.com/{owner}/{gist_id}/raw/{STATUS_BADGE_FILENAME}"
+    return f"https://img.shields.io/endpoint?url={raw}"
 
 
 def parse_config(config):

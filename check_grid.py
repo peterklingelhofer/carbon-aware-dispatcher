@@ -860,6 +860,30 @@ def post_pr_comment_once(
     )
 
 
+# Live current-grid status badge, written once per process to the ledger gist.
+_status_badge_done = False
+
+
+def emit_status_badge(zone, intensity, tier):
+    """Write the live current-grid badge to the gist (at most once/process).
+
+    No-op unless the ledger is a gist and we have a measured intensity. Sets
+    status_badge_url. Never raises: a badge write must not break CI.
+    """
+    global _status_badge_done
+    if _status_badge_done or intensity is None:
+        return
+    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
+    if backend != "gist" or not location:
+        return
+    _status_badge_done = True
+    url = ledger.write_status_badge(
+        location, os.environ.get("GIST_TOKEN", ""), zone, intensity, tier
+    )
+    if url:
+        set_output("status_badge_url", url)
+
+
 # Marginal-emissions (WattTime) status, when credentials are configured.
 _marginal_summary = None
 _marginal_done = False
@@ -1251,6 +1275,9 @@ def write_job_summary(
 
     # Emit the marginal-emissions signal (no-op unless WattTime creds are set)
     emit_marginal_outputs()
+
+    # Publish the live current-grid badge (no-op unless a gist ledger is set)
+    emit_status_badge(zone, intensity, tier)
 
     # Fire the sticky PR comment first so it posts even when there is no job
     # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
