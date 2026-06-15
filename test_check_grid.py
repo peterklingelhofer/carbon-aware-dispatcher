@@ -2351,6 +2351,67 @@ class TestSetSavingsOutputs:
             os.environ.pop("GITHUB_OUTPUT", None)
 
 
+class TestCarbonTier:
+    def test_parse_defaults_on_empty(self):
+        assert check_grid.parse_tier_thresholds("") == check_grid.DEFAULT_TIER_THRESHOLDS
+
+    def test_parse_valid(self):
+        assert check_grid.parse_tier_thresholds("120,280") == (120.0, 280.0)
+
+    def test_parse_bad_order_falls_back(self):
+        assert check_grid.parse_tier_thresholds("300,100") == check_grid.DEFAULT_TIER_THRESHOLDS
+
+    def test_parse_garbage_falls_back(self):
+        assert check_grid.parse_tier_thresholds("abc") == check_grid.DEFAULT_TIER_THRESHOLDS
+
+    def test_parse_wrong_count_falls_back(self):
+        assert check_grid.parse_tier_thresholds("100") == check_grid.DEFAULT_TIER_THRESHOLDS
+
+    def test_classify_green(self):
+        tier, reason = check_grid.classify_tier(80, (150, 300))
+        assert tier == "green"
+        assert "full" in reason
+
+    def test_classify_amber(self):
+        tier, _ = check_grid.classify_tier(200, (150, 300))
+        assert tier == "amber"
+
+    def test_classify_red(self):
+        tier, _ = check_grid.classify_tier(500, (150, 300))
+        assert tier == "red"
+
+    def test_classify_boundary_is_inclusive(self):
+        assert check_grid.classify_tier(150, (150, 300))[0] == "green"
+        assert check_grid.classify_tier(300, (150, 300))[0] == "amber"
+
+    def test_classify_unknown_on_none(self):
+        tier, _ = check_grid.classify_tier(None, (150, 300))
+        assert tier == "unknown"
+
+    def test_summary_sets_tier_output(self):
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            out_path = f.name
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
+            sum_path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = out_path
+            os.environ["GITHUB_STEP_SUMMARY"] = sum_path
+            os.environ["TIER_THRESHOLDS"] = "120,280"
+            check_grid.write_job_summary("CISO", 90, True, 250)
+            with open(out_path) as f:
+                out = f.read()
+            with open(sum_path) as f:
+                summary = f.read()
+            assert "carbon_tier=green" in out
+            assert "carbon_tier_reason=" in out
+            assert "Carbon Tier" in summary
+        finally:
+            for p in (out_path, sum_path):
+                os.unlink(p)
+            for k in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "TIER_THRESHOLDS"):
+                os.environ.pop(k, None)
+
+
 class TestRecordLifetimeSavings:
     def _reset(self):
         check_grid._ledger_recorded = False

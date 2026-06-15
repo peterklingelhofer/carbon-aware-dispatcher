@@ -101,6 +101,10 @@ inputs:
     description: 'When "true" and running on a pull_request, post (and update in place) a sticky comment with the carbon verdict so reviewers see it without opening the Actions tab. Needs github_token with pull-requests:write permission.'
     required: false
     default: 'false'
+  tier_thresholds:
+    description: 'Two gCO2eq/kWh boundaries "green,amber" for the carbon_tier dial. At or below the first is green (run full workloads), at or below the second is amber (trim work), above is red (defer heavy work). Lets downstream jobs scale to the grid instead of skipping. Default: "150,300".'
+    required: false
+    default: '150,300'
 
 outputs:
   grid_clean:
@@ -109,6 +113,12 @@ outputs:
   carbon_intensity:
     description: 'The carbon intensity reading in gCO2eq/kWh, or "unknown" on API error.'
     value: ${{ steps.grid-check.outputs.carbon_intensity }}
+  carbon_tier:
+    description: 'Adaptive-CI dial for the selected zone: "green" (run full workloads), "amber" (trim non-critical work), or "red" (defer heavy work). Boundaries set by tier_thresholds.'
+    value: ${{ steps.grid-check.outputs.carbon_tier }}
+  carbon_tier_reason:
+    description: 'Human-readable explanation of the carbon_tier classification.'
+    value: ${{ steps.grid-check.outputs.carbon_tier_reason }}
   grid_zone:
     description: 'The zone that was selected (useful in multi-zone mode).'
     value: ${{ steps.grid-check.outputs.grid_zone }}
@@ -205,3 +215,4 @@ runs:
         LEDGER: ${{ inputs.ledger }}
         GIST_TOKEN: ${{ inputs.gist_token }}
         PR_COMMENT: ${{ inputs.pr_comment }}
+        TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}

@@ -35,6 +35,7 @@ def build_comment(
     equivalent="",
     lifetime="",
     dry_run=False,
+    tier="unknown",
 ):
     """Build the sticky comment markdown body (pure)."""
     if dry_run:
@@ -51,6 +52,9 @@ def build_comment(
     lines = [MARKER, "", f"### {headline}", "", "| | |", "|---|---|", f"| Zone | `{zone}` |"]
     if intensity is not None:
         lines.append(f"| Carbon intensity | {intensity} gCO2eq/kWh |")
+    if tier and tier != "unknown":
+        # The tier word (green/amber/red) is the status
+        lines.append(f"| Carbon tier | {tier} |")
     lines.append(f"| Threshold | {max_carbon} gCO2eq/kWh |")
     if co2_saved and co2_saved > 0:
         extra = f" ({equivalent})" if equivalent else ""

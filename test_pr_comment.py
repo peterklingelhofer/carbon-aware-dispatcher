@@ -44,6 +44,19 @@ class TestBuildComment:
         )
         assert "500 g" in body
 
+    def test_tier_row_present(self):
+        body = pr_comment.build_comment(
+            is_green=True, zone="GB", intensity=50, max_carbon=250, tier="green"
+        )
+        assert "Carbon tier" in body
+        assert "green" in body
+
+    def test_tier_omitted_when_unknown(self):
+        body = pr_comment.build_comment(
+            is_green=True, zone="GB", intensity=50, max_carbon=250, tier="unknown"
+        )
+        assert "Carbon tier" not in body
+
 
 class TestPrNumberFromEvent:
     def test_pull_request_number(self):
