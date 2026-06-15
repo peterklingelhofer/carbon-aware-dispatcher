@@ -32,17 +32,20 @@ def empty_ledger():
     return {"schemaVersion": 1, "totals": {}, "history": []}
 
 
-def merge_entry(data, saved_grams, date_str):
-    """Fold one run's savings into the ledger, aggregating history by day.
+def merge_entry(data, saved_grams, date_str, emitted_grams=0):
+    """Fold one run's savings and emissions into the ledger, aggregating by day.
 
-    Pure: returns a new dict, never mutates the input. Negative savings are
+    Pure: returns a new dict, never mutates the input. Negative values are
     clamped to zero so a dirty-grid run still counts as a build without
-    subtracting from the lifetime total.
+    subtracting from the running totals. emitted_grams is the actual CO2 the run
+    produced on the grid, used for carbon budgeting.
     """
     saved = max(0.0, float(saved_grams or 0))
+    emitted = max(0.0, float(emitted_grams or 0))
 
     totals = dict(data.get("totals") or {})
     totals["co2_saved_grams"] = round(float(totals.get("co2_saved_grams", 0)) + saved, 1)
+    totals["co2_emitted_grams"] = round(float(totals.get("co2_emitted_grams", 0)) + emitted, 1)
     totals["runs"] = int(totals.get("runs", 0)) + 1
     totals.setdefault("first_run", date_str)
     totals["last_run"] = date_str
@@ -51,15 +54,32 @@ def merge_entry(data, saved_grams, date_str):
     if history and history[-1].get("date") == date_str:
         last = history[-1]
         last["saved_g"] = round(float(last.get("saved_g", 0)) + saved, 1)
+        last["emitted_g"] = round(float(last.get("emitted_g", 0)) + emitted, 1)
         last["runs"] = int(last.get("runs", 0)) + 1
     else:
-        history.append({"date": date_str, "saved_g": round(saved, 1), "runs": 1})
+        history.append(
+            {
+                "date": date_str,
+                "saved_g": round(saved, 1),
+                "emitted_g": round(emitted, 1),
+                "runs": 1,
+            }
+        )
 
     return {
         "schemaVersion": 1,
         "totals": totals,
         "history": history[-HISTORY_CAP:],
     }
+
+
+def month_to_date_emitted(data, month_prefix):
+    """Sum emitted gCO2 for history days within the given YYYY-MM prefix."""
+    total = 0.0
+    for h in data.get("history") or []:
+        if str(h.get("date", "")).startswith(month_prefix):
+            total += float(h.get("emitted_g", 0))
+    return round(total, 1)
 
 
 def format_total(grams):
@@ -144,7 +164,7 @@ def _gist_write(gist_id, token, data):
     )
 
 
-def _summary(data, badge_url):
+def _summary(data, badge_url, month=None):
     totals = data.get("totals") or {}
     grams = float(totals.get("co2_saved_grams", 0))
     runs = int(totals.get("runs", 0))
@@ -153,28 +173,32 @@ def _summary(data, badge_url):
         "total_runs": runs,
         "message": f"{format_total(grams)} over {runs} builds",
         "badge_url": badge_url,
+        "emitted_total": float(totals.get("co2_emitted_grams", 0)),
+        "emitted_mtd": month_to_date_emitted(data, month) if month else 0,
     }
 
 
-def record_savings(config, token, saved_grams, date_str):
-    """Append this run's savings to the configured ledger and return a summary.
+def record_savings(config, token, saved_grams, date_str, emitted_grams=0):
+    """Append this run to the configured ledger and return a summary.
 
-    Returns a dict with total_grams, total_runs, message, and badge_url (gist
-    only), or None when the ledger is disabled or an IO/auth step fails. Never
-    raises: failures degrade to a warning so CI is never broken by bookkeeping.
+    Returns a dict with total_grams, total_runs, message, badge_url (gist only),
+    emitted_total, and emitted_mtd (this month's emissions, for budgeting), or
+    None when the ledger is disabled or an IO/auth step fails. Never raises:
+    failures degrade to a warning so CI is never broken by bookkeeping.
     """
     backend, location = parse_config(config)
     if not backend or not location:
         return None
+    month = date_str[:7]
 
     if backend == "file":
-        data = merge_entry(_load_file(location), saved_grams, date_str)
+        data = merge_entry(_load_file(location), saved_grams, date_str, emitted_grams)
         try:
             _save_file(location, data)
         except OSError as exc:
             print(f"::warning::Could not write ledger file {location}: {exc}")
             return None
-        return _summary(data, None)
+        return _summary(data, None, month)
 
     # gist backend
     if not token:
@@ -184,7 +208,7 @@ def record_savings(config, token, saved_grams, date_str):
         )
         return None
     current, owner = _gist_read(location, token)
-    data = merge_entry(current, saved_grams, date_str)
+    data = merge_entry(current, saved_grams, date_str, emitted_grams)
     if _gist_write(location, token, data) is None:
         print("::warning::Could not update ledger gist; skipping ledger update")
         return None
@@ -192,4 +216,4 @@ def record_savings(config, token, saved_grams, date_str):
     if owner:
         raw = f"https://gist.githubusercontent.com/{owner}/{location}/raw/{BADGE_FILENAME}"
         badge_url = f"https://img.shields.io/endpoint?url={raw}"
-    return _summary(data, badge_url)
+    return _summary(data, badge_url, month)

@@ -581,6 +581,18 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     return saved, badge_url
 
 
+def estimate_emissions(intensity, job_minutes=None):
+    """Estimate gCO2 emitted by this CI run on a grid of the given intensity.
+
+    The counterpart to estimate_carbon_savings: what the run actually produced,
+    used for carbon budgeting. Returns grams, or 0 when intensity is unknown.
+    """
+    if intensity is None:
+        return 0.0
+    duration_hours = (job_minutes / 60) if job_minutes else DEFAULT_JOB_DURATION_HOURS
+    return round(max(0.0, intensity) * CI_JOB_POWER_KW * duration_hours, 1)
+
+
 def carbon_equivalents(grams):
     """Translate grams of CO2 into relatable real-world equivalents.
 
@@ -650,26 +662,76 @@ def classify_tier(intensity, thresholds):
 # can append a lifetime row. None when no ledger is configured or the update fails.
 _lifetime_summary = None
 _ledger_recorded = False
+# Carbon-budget status for the current month, when a budget is configured.
+_budget_summary = None
 
 
-def record_lifetime_savings(saved_grams):
-    """Append this run's savings to the cumulative ledger (at most once/process).
+def _emit_budget_outputs(summary):
+    """Compute and emit carbon-budget outputs from this month's emissions.
+
+    Reads MONTHLY_BUDGET_GRAMS; no-op when unset. Sets budget_used_pct,
+    budget_remaining_grams, budget_exceeded, and budget_state, and stores the
+    result so the summary and PR comment can show it. Workflows enforce by
+    gating on the budget_exceeded output.
+    """
+    global _budget_summary
+    raw = os.environ.get("MONTHLY_BUDGET_GRAMS", "")
+    if not raw:
+        return
+    try:
+        budget = float(raw)
+    except ValueError:
+        print(f"::warning::Invalid MONTHLY_BUDGET_GRAMS '{raw}'; ignoring budget")
+        return
+    if budget <= 0:
+        return
+
+    mtd = float(summary.get("emitted_mtd", 0))
+    used_pct = round(mtd / budget * 100, 1)
+    remaining = round(budget - mtd, 1)
+    exceeded = mtd >= budget
+    state = "exceeded" if exceeded else ("warning" if used_pct >= 80 else "ok")
+
+    set_output("budget_used_pct", str(used_pct))
+    set_output("budget_remaining_grams", str(remaining))
+    set_output("budget_exceeded", "true" if exceeded else "false")
+    set_output("budget_state", state)
+    _budget_summary = {
+        "budget": budget,
+        "mtd": mtd,
+        "used_pct": used_pct,
+        "remaining": remaining,
+        "exceeded": exceeded,
+        "state": state,
+    }
+    if exceeded:
+        print(
+            f"::warning::Carbon budget exceeded: {mtd:.0f} of {budget:.0f} gCO2eq this "
+            "month. Gate on the budget_exceeded output to defer non-essential builds."
+        )
+
+
+def record_lifetime_savings(saved_grams, emitted_grams=0):
+    """Append this run to the cumulative ledger (at most once/process).
 
     Reads the LEDGER config and optional GIST_TOKEN from the environment, records
-    via the ledger module, and emits the lifetime outputs. No-op when no ledger
-    is configured. Never raises: bookkeeping must not break CI.
+    savings and emissions via the ledger module, then emits the lifetime and
+    carbon-budget outputs. No-op when no ledger is configured. Never raises:
+    bookkeeping must not break CI.
     """
     global _lifetime_summary, _ledger_recorded
     if _ledger_recorded:
         return
     config = os.environ.get("LEDGER", "")
     if not config:
+        if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
+            print("::warning::MONTHLY_BUDGET_GRAMS needs the ledger input to track spend")
         return
     _ledger_recorded = True
 
     token = os.environ.get("GIST_TOKEN", "")
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    summary = ledger.record_savings(config, token, saved_grams, date_str)
+    summary = ledger.record_savings(config, token, saved_grams, date_str, emitted_grams)
     if not summary:
         return
 
@@ -680,6 +742,8 @@ def record_lifetime_savings(saved_grams):
         set_output("co2_saved_total_equivalent", equiv["phrase"])
     if summary.get("badge_url"):
         set_output("lifetime_badge_url", summary["badge_url"])
+
+    _emit_budget_outputs(summary)
 
 
 # Fire the sticky PR comment at most once per process.
@@ -713,6 +777,7 @@ def post_pr_comment_once(
         lifetime=lifetime,
         dry_run=dry_run,
         tier=tier,
+        budget=_budget_summary,
     )
     pr_comment.post_comment(
         os.environ.get("TARGET_REPO", ""),
@@ -723,7 +788,7 @@ def post_pr_comment_once(
     )
 
 
-def set_savings_outputs(co2_saved, badge_url):
+def set_savings_outputs(co2_saved, badge_url, intensity=None):
     """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
     if co2_saved and co2_saved > 0:
         set_output("co2_saved_grams", str(co2_saved))
@@ -732,7 +797,7 @@ def set_savings_outputs(co2_saved, badge_url):
             set_output("co2_saved_equivalent", equiv["phrase"])
     if badge_url:
         set_output("carbon_badge_url", badge_url)
-    record_lifetime_savings(co2_saved or 0)
+    record_lifetime_savings(co2_saved or 0, estimate_emissions(intensity))
 
 
 def run_dry_run(
@@ -782,7 +847,7 @@ def run_dry_run(
     set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
 
     co2_saved, badge_url = estimate_carbon_savings(report_intensity)
-    set_savings_outputs(co2_saved, badge_url)
+    set_savings_outputs(co2_saved, badge_url, report_intensity)
 
     forecast_at = None
     forecast_intensity = None
@@ -939,7 +1004,7 @@ def _emit_green_result(
     set_output("carbon_intensity", str(intensity))
     set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
     co2_saved, badge_url = estimate_carbon_savings(intensity)
-    set_savings_outputs(co2_saved, badge_url)
+    set_savings_outputs(co2_saved, badge_url, intensity)
     write_job_summary(
         zone,
         intensity,
@@ -1099,6 +1164,13 @@ def write_job_summary(
 
     if _lifetime_summary:
         lines.append(f"| **Lifetime CO2 Saved** | {_lifetime_summary['message']} |")
+
+    if _budget_summary:
+        b = _budget_summary
+        lines.append(
+            f"| **Carbon Budget** | {b['mtd']:.0f} / {b['budget']:.0f} gCO2eq this month "
+            f"({b['used_pct']:.0f}%, {b['state']}) |"
+        )
 
     if skipped:
         skipped_str = ", ".join(f"`{z}` ({r})" for z, r in skipped)
@@ -1569,7 +1641,7 @@ def main():
                             set_output("grid_clean", "true")
                             set_output("carbon_intensity", str(intensity))
                             co2_saved, badge_url = estimate_carbon_savings(intensity)
-                            set_savings_outputs(co2_saved, badge_url)
+                            set_savings_outputs(co2_saved, badge_url, intensity)
                             if dispatch_mode:
                                 print("\nGrid is green after queue wait! Dispatching...")
                                 trigger_workflow(repo, workflow_id, token, ref)

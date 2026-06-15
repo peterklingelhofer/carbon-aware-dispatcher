@@ -105,6 +105,10 @@ inputs:
     description: 'Two gCO2eq/kWh boundaries "green,amber" for the carbon_tier dial. At or below the first is green (run full workloads), at or below the second is amber (trim work), above is red (defer heavy work). Lets downstream jobs scale to the grid instead of skipping. Default: "150,300".'
     required: false
     default: '150,300'
+  monthly_budget_grams:
+    description: 'Carbon budget for the current month in gCO2eq (e.g. "2000" for 2 kg). Requires the ledger input to track month-to-date emissions. Sets the budget_* outputs; gate your build with "if: steps.X.outputs.budget_exceeded != \"true\"". Empty disables budgeting.'
+    required: false
+    default: ''
 
 outputs:
   grid_clean:
@@ -161,6 +165,18 @@ outputs:
   lifetime_badge_url:
     description: 'Shields.io endpoint-badge URL showing lifetime CO2 saved, backed by the ledger gist. Embed in README: ![carbon](url)'
     value: ${{ steps.grid-check.outputs.lifetime_badge_url }}
+  budget_used_pct:
+    description: 'Percent of the monthly carbon budget used so far (requires monthly_budget_grams + ledger).'
+    value: ${{ steps.grid-check.outputs.budget_used_pct }}
+  budget_remaining_grams:
+    description: 'Grams of CO2 left in the monthly carbon budget (requires monthly_budget_grams + ledger).'
+    value: ${{ steps.grid-check.outputs.budget_remaining_grams }}
+  budget_exceeded:
+    description: '"true" when this month''s emissions have reached the budget. Gate builds with "if: ... != ''true''".'
+    value: ${{ steps.grid-check.outputs.budget_exceeded }}
+  budget_state:
+    description: 'Carbon budget state: "ok", "warning" (>=80% used), or "exceeded".'
+    value: ${{ steps.grid-check.outputs.budget_state }}
   optimal_dispatch_at:
     description: 'ISO 8601 timestamp of the optimal green window (strategy=queue). "now" if already green, "none_in_deadline" if no window found.'
     value: ${{ steps.grid-check.outputs.optimal_dispatch_at }}
@@ -216,3 +232,4 @@ runs:
         GIST_TOKEN: ${{ inputs.gist_token }}
         PR_COMMENT: ${{ inputs.pr_comment }}
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
+        MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}

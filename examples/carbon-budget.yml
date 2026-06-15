@@ -1,0 +1,52 @@
+# Carbon Budget as Code
+#
+# Cap your CI's monthly carbon emissions. The action tracks month-to-date
+# emissions in the ledger and exposes budget_exceeded; gate non-essential builds
+# on it so they pause once you hit the cap and resume next month.
+#
+# Setup (see examples/track-impact.yml for the gist + GIST_TOKEN steps):
+#   - ledger + gist_token wired up (budgeting needs the ledger to track spend)
+#   - monthly_budget_grams set to your cap, e.g. 2000 gCO2eq (2 kg) per month
+#
+# Copy to .github/workflows/carbon-budget.yml
+
+name: Carbon Budget
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    outputs:
+      exceeded: ${{ steps.carbon.outputs.budget_exceeded }}
+      used: ${{ steps.carbon.outputs.budget_used_pct }}
+      state: ${{ steps.carbon.outputs.budget_state }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'auto:green'
+          ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+          gist_token: ${{ secrets.GIST_TOKEN }}
+          monthly_budget_grams: '2000'   # 2 kg CO2eq per month
+
+  build:
+    needs: budget
+    # Skip non-essential builds once the monthly carbon budget is spent
+    if: needs.budget.outputs.exceeded != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          echo "Within carbon budget (${{ needs.budget.outputs.used }}% used, ${{ needs.budget.outputs.state }})"
+          # Add your build/test/deploy commands here
+
+  over-budget-notice:
+    needs: budget
+    if: needs.budget.outputs.exceeded == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "::warning::Monthly carbon budget spent. Non-essential builds paused until next month."
