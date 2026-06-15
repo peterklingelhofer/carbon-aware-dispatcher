@@ -4,24 +4,29 @@ name: Carbon-Aware Check (Demo)
 # carbon intensity and render a job summary table. Uses free, no-key providers
 # so it works with zero secrets configured.
 #
-# Preset choices:
-#   auto:cleanest - checks every free-provider zone worldwide, picks the single
-#                   lowest. Most thorough; makes the most API calls.
-#   auto:green    - a small curated list of usually-clean zones. Fewer calls.
-#   GB,AU-NSW     - a fixed example pair (UK + Australia), keyless and fast.
+# Two ways to choose zones in the run window:
+#   - preset: pick auto:cleanest (all free zones, lowest wins), auto:green (small
+#     curated list), or the GB,AU-NSW example.
+#   - custom_zones: type any comma-separated zones (e.g. CISO,GB,FR); when set it
+#     overrides the preset. This is how you check arbitrary combinations.
 
 on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "Which zones to check"
+        description: "Preset (ignored if 'custom zones' is filled). auto:cleanest = check every free-provider zone worldwide, pick the single lowest (most thorough, most API calls). auto:green = small curated list of usually-clean zones (fewer calls). GB,AU-NSW = fixed keyless example."
         required: false
         type: choice
         default: "auto:cleanest"
         options:
-          - "auto:cleanest"   # check every free-provider zone, pick the single lowest worldwide
-          - "auto:green"      # a small curated list of usually-clean zones (fewer API calls)
-          - "GB,AU-NSW"       # a fixed example pair (UK + Australia), keyless and fast
+          - "auto:cleanest"
+          - "auto:green"
+          - "GB,AU-NSW"
+      custom_zones:
+        description: "Custom zones, comma-separated (e.g. CISO,GB,FR,BR-NE). Overrides the preset when set. See the README for zone codes. EU/global zones may need a token secret."
+        required: false
+        type: string
+        default: ""
       max_carbon:
         description: "Max carbon intensity threshold (gCO2eq/kWh)"
         required: false
@@ -39,7 +44,8 @@ jobs:
         id: check
         uses: ./
         with:
-          grid_zones: ${{ inputs.preset }}
+          # custom_zones overrides the preset when the user fills it in
+          grid_zones: ${{ inputs.custom_zones != '' && inputs.custom_zones || inputs.preset }}
           max_carbon_intensity: ${{ inputs.max_carbon }}
           electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}
           entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
