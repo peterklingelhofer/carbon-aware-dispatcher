@@ -1575,6 +1575,13 @@ def queue_find_optimal_window(
 
 
 def main():
+    # Digest mode: summarize the ledger into a GitHub issue and exit
+    if os.environ.get("MODE", "").strip().lower() == "digest":
+        import digest
+
+        digest.run(os.environ)
+        return
+
     # Determine mode: dispatch (workflow_id set) or inline (just set outputs)
     workflow_id = os.environ.get("WORKFLOW_ID", "")
     dispatch_mode = bool(workflow_id)
