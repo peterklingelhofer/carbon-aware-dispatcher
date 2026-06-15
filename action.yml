@@ -113,6 +113,10 @@ inputs:
     description: 'Blend cloud cost with carbon when picking among multiple zones. 0 (default) = pick the cleanest zone only; 1 = pick the cheapest only; 0.5 = balance both. Uses the public Azure Retail Prices API (no key) keyed off each zone''s nearest Azure region. No effect in single-zone mode.'
     required: false
     default: '0'
+  cost_price_map:
+    description: 'Optional JSON object of zone -> USD/hour to price ANY cloud (AWS, GCP, on-prem) for cost+carbon ranking, e.g. {"CISO":"0.09","GB":"0.11"}. Zones not listed fall back to live Azure pricing. Only used when cost_weight > 0.'
+    required: false
+    default: ''
   notify_webhook:
     description: 'Webhook URL to post a short carbon-event notification to. Auto-detects Slack (hooks.slack.com), Discord (discord.com), or falls back to a generic JSON POST. Empty disables notifications. Put the URL in a secret.'
     required: false
@@ -213,7 +217,7 @@ outputs:
     description: 'Carbon budget state: "ok", "warning" (>=80% used), or "exceeded".'
     value: ${{ steps.grid-check.outputs.budget_state }}
   selected_cost_usd_hr:
-    description: 'Representative Azure VM USD/hour price for the selected zone when cost_weight > 0.'
+    description: 'USD/hour price for the selected zone when cost_weight > 0 (from cost_price_map or live Azure pricing).'
     value: ${{ steps.grid-check.outputs.selected_cost_usd_hr }}
   marginal_percentile:
     description: 'WattTime marginal co2_moer percentile (0-100, lower = cleaner) when WattTime creds are set.'
@@ -278,6 +282,7 @@ runs:
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
         MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}
         COST_WEIGHT: ${{ inputs.cost_weight }}
+        COST_PRICE_MAP: ${{ inputs.cost_price_map }}
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
         NOTIFY_ON: ${{ inputs.notify_on }}
         MODE: ${{ inputs.mode }}

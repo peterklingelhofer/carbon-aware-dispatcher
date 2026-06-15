@@ -2458,6 +2458,47 @@ class TestCostCarbonRanking:
         price.side_effect = [0.10, None]
         assert check_grid.rank_by_cost_carbon(candidates, 0.5) is None
 
+    def test_load_price_map_empty(self):
+        os.environ.pop("COST_PRICE_MAP", None)
+        assert check_grid._load_price_map() == {}
+
+    def test_load_price_map_parses_json(self):
+        try:
+            os.environ["COST_PRICE_MAP"] = '{"CISO": "0.09", "GB": "0.11"}'
+            assert check_grid._load_price_map() == {"CISO": "0.09", "GB": "0.11"}
+        finally:
+            os.environ.pop("COST_PRICE_MAP", None)
+
+    def test_load_price_map_bad_json(self):
+        try:
+            os.environ["COST_PRICE_MAP"] = "{not json"
+            assert check_grid._load_price_map() == {}
+        finally:
+            os.environ.pop("COST_PRICE_MAP", None)
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_price_map_used_before_azure(self, azure):
+        azure.return_value = 99.0  # should not be consulted for mapped zones
+        zone_price = check_grid._zone_price("CISO", {"CISO": "0.07"})
+        assert zone_price == 0.07
+        azure.assert_not_called()
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_price_map_falls_back_to_azure(self, azure):
+        azure.return_value = 0.12
+        assert check_grid._zone_price("GB", {"CISO": "0.07"}) == 0.12
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_multi_cloud_price_map_ranking(self, azure):
+        # All prices from the map (any cloud); cheapest wins at cost_weight=1
+        try:
+            os.environ["COST_PRICE_MAP"] = '{"CISO": "0.20", "GB": "0.05"}'
+            zone, _, _ = check_grid.rank_by_cost_carbon([("CISO", 50, "l1"), ("GB", 60, "l2")], 1.0)
+            assert zone == "GB"
+            azure.assert_not_called()
+        finally:
+            os.environ.pop("COST_PRICE_MAP", None)
+
     @mock.patch("check_grid.azure_pricing.get_region_price")
     def test_single_candidate_zero_span(self, price):
         # One candidate: price and carbon spans are both zero; must not divide by 0

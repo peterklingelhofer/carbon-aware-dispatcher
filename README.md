@@ -254,6 +254,18 @@ The chosen zone minimizes `cost_weight x price + (1 - cost_weight) x carbon`
 the winner's price. If pricing is unavailable it falls back to carbon-only. No
 effect in single-zone mode. See [`examples/cost-aware-routing.yml`](examples/cost-aware-routing.yml).
 
+**Other clouds (AWS/GCP/on-prem):** only Azure has a free live pricing API, so
+to price any other cloud, supply your own rates via `cost_price_map` — a JSON
+object of `zone -> USD/hour`. Mapped zones use your prices; the rest fall back to
+live Azure:
+
+```yaml
+with:
+  grid_zones: 'CISO,GB,FR'
+  cost_weight: '0.5'
+  cost_price_map: '{"CISO":"0.096","GB":"0.101","FR":"0.088"}'
+```
+
 ## Escape coal-heavy grids
 
 Route jobs from a coal-dependent region to the nearest clean alternative:
