@@ -22,7 +22,7 @@ on:
           - "auto:cleanest"
           - "auto:green"
       custom_zones:
-        description: "Custom zones, comma-separated (e.g. CISO,GB,FR,BR-NE). Overrides the preset when set. See the README for zone codes. EU/global zones may need a token secret."
+        description: "Custom zones, comma-separated (e.g. CISO,GB,FR,BR-NE). See the README for zone codes. EU/global zones may need a token secret."
         required: false
         type: string
         default: ""
