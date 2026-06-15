@@ -125,6 +125,22 @@ inputs:
     description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (schedule it weekly; needs ledger + github_token with issues:write).'
     required: false
     default: 'check'
+  watttime_username:
+    description: 'WattTime username for the optional marginal-emissions signal (free for CAISO_NORTH). Put it in a secret.'
+    required: false
+    default: ''
+  watttime_password:
+    description: 'WattTime password for the marginal-emissions signal. Put it in a secret.'
+    required: false
+    default: ''
+  marginal_region:
+    description: 'WattTime region for the marginal signal. Default: CAISO_NORTH (the only free region; others need WattTime Pro).'
+    required: false
+    default: 'CAISO_NORTH'
+  marginal_max_percentile:
+    description: 'Marginal is considered clean when the co2_moer percentile is at or below this (0-100, lower = cleaner). Sets marginal_clean. Default: 33.'
+    required: false
+    default: '33'
 
 outputs:
   grid_clean:
@@ -196,6 +212,12 @@ outputs:
   selected_cost_usd_hr:
     description: 'Representative Azure VM USD/hour price for the selected zone when cost_weight > 0.'
     value: ${{ steps.grid-check.outputs.selected_cost_usd_hr }}
+  marginal_percentile:
+    description: 'WattTime marginal co2_moer percentile (0-100, lower = cleaner) when WattTime creds are set.'
+    value: ${{ steps.grid-check.outputs.marginal_percentile }}
+  marginal_clean:
+    description: '"true" when the marginal percentile is at or below marginal_max_percentile. Gate flexible compute on this for marginal-aware timing.'
+    value: ${{ steps.grid-check.outputs.marginal_clean }}
   optimal_dispatch_at:
     description: 'ISO 8601 timestamp of the optimal green window (strategy=queue). "now" if already green, "none_in_deadline" if no window found.'
     value: ${{ steps.grid-check.outputs.optimal_dispatch_at }}
@@ -256,3 +278,7 @@ runs:
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
         NOTIFY_ON: ${{ inputs.notify_on }}
         MODE: ${{ inputs.mode }}
+        WATTTIME_USERNAME: ${{ inputs.watttime_username }}
+        WATTTIME_PASSWORD: ${{ inputs.watttime_password }}
+        MARGINAL_REGION: ${{ inputs.marginal_region }}
+        MARGINAL_MAX_PERCENTILE: ${{ inputs.marginal_max_percentile }}

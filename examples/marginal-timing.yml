@@ -1,0 +1,44 @@
+# Marginal-Aware Timing (WattTime)
+#
+# Marginal emissions (MOER) reflect the generator that responds to YOUR added
+# load — the right signal for deciding when to run flexible compute, which
+# average intensity can't capture. This gates a job on WattTime's free marginal
+# signal: run only when the margin is in the cleanest third of the last two weeks.
+#
+# Setup:
+#   - Register at https://watttime.org/ (free tier covers CAISO_NORTH)
+#   - Add WATTTIME_USERNAME and WATTTIME_PASSWORD repository secrets
+#
+# Copy to .github/workflows/marginal-timing.yml
+
+name: Marginal-Aware Timing
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # check every 30 min
+  workflow_dispatch:
+
+jobs:
+  margin:
+    runs-on: ubuntu-latest
+    outputs:
+      clean: ${{ steps.carbon.outputs.marginal_clean }}
+      pct: ${{ steps.carbon.outputs.marginal_percentile }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'CISO'
+          watttime_username: ${{ secrets.WATTTIME_USERNAME }}
+          watttime_password: ${{ secrets.WATTTIME_PASSWORD }}
+          marginal_region: 'CAISO_NORTH'
+          marginal_max_percentile: '33'   # run only in the cleanest third
+
+  flexible-job:
+    needs: margin
+    if: needs.margin.outputs.clean == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: echo "Running flexible compute at the ${{ needs.margin.outputs.pct }}th marginal percentile"
+        # Put deferrable, energy-heavy work here (batch jobs, model training, etc.)

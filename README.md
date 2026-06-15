@@ -350,6 +350,27 @@ Outputs: `budget_used_pct`, `budget_remaining_grams`, `budget_exceeded`, and
 `ledger` input — that is where month-to-date spend is tracked. See
 [`examples/carbon-budget.yml`](examples/carbon-budget.yml).
 
+## Marginal emissions (WattTime)
+
+Average grid intensity tells you how clean the grid is overall; **marginal**
+emissions (MOER) tell you the emissions of the generator that responds to *your*
+added load — the signal that actually matters for deciding *when* to shift
+flexible compute. With free WattTime credentials, the action emits a
+`marginal_percentile` (0–100, lower = cleaner) and a `marginal_clean` flag:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    watttime_username: ${{ secrets.WATTTIME_USERNAME }}
+    watttime_password: ${{ secrets.WATTTIME_PASSWORD }}
+    marginal_max_percentile: '33'   # clean = cleanest third of the last 2 weeks
+```
+
+Gate deferrable work on `marginal_clean == 'true'`. WattTime's free tier covers
+`CAISO_NORTH`; other regions need WattTime Pro. See
+[`examples/marginal-timing.yml`](examples/marginal-timing.yml).
+
 ## Weekly digest
 
 Run the action in `mode: digest` on a schedule to post (and keep updating) a
@@ -431,6 +452,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | [`carbon-budget.yml`](examples/carbon-budget.yml) | Cap monthly CO2 and pause non-essential builds over budget |
 | [`cost-aware-routing.yml`](examples/cost-aware-routing.yml) | Pick a zone that is both clean and cheap |
 | [`weekly-digest.yml`](examples/weekly-digest.yml) | Weekly impact issue from the ledger |
+| [`marginal-timing.yml`](examples/marginal-timing.yml) | Gate flexible compute on WattTime marginal emissions |
 
 ## Inputs
 
