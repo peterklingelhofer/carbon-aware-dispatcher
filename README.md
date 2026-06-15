@@ -350,6 +350,29 @@ Outputs: `budget_used_pct`, `budget_remaining_grams`, `budget_exceeded`, and
 `ledger` input, which is where month-to-date spend is tracked. See
 [`examples/carbon-budget.yml`](examples/carbon-budget.yml).
 
+## Doctor mode (diagnostics)
+
+To check that a zone works and your token is wired up, run the action in
+`mode: doctor` for a one-click health check. It probes each configured zone,
+shows which provider handles it, whether a required token is set or missing,
+and whether live data actually came back, plus which optional features are on.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    mode: 'doctor'
+    grid_zones: 'GB,FR,CISO'   # blank probes a keyless sample
+```
+
+Output (job summary):
+
+| Zone | Provider | Token | Status | Detail |
+|---|---|---|---|---|
+| `GB` | uk_carbon_intensity | n/a | OK | 203 gCO2eq/kWh |
+| `FR` | open_meteo | n/a | OK | 550 gCO2eq/kWh |
+
+See [`examples/doctor.yml`](examples/doctor.yml).
+
 ## Marginal emissions (WattTime)
 
 Average grid intensity tells you how clean the grid is overall; **marginal**
@@ -453,6 +476,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | [`cost-aware-routing.yml`](examples/cost-aware-routing.yml) | Pick a zone that's both clean and cheap |
 | [`weekly-digest.yml`](examples/weekly-digest.yml) | Weekly impact issue from the ledger |
 | [`marginal-timing.yml`](examples/marginal-timing.yml) | Gate flexible compute on WattTime marginal emissions |
+| [`doctor.yml`](examples/doctor.yml) | One-click diagnostic of zones, tokens, and live data |
 
 ## Inputs
 

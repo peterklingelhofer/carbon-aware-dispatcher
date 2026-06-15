@@ -122,7 +122,7 @@ inputs:
     required: false
     default: 'green,exceeded'
   mode:
-    description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (schedule it weekly; needs ledger + github_token with issues:write).'
+    description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (needs ledger + github_token with issues:write). "doctor" probes your configured zones and prints a diagnostic table of which work, which need a token, and whether live data flows.'
     required: false
     default: 'check'
   watttime_username:
