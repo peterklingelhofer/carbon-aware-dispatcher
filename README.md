@@ -532,6 +532,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `co2_saved_total_grams` | Cumulative grams saved across all runs (requires the `ledger` input). |
 | `co2_saved_total_equivalent` | Human-relatable phrase for the lifetime saving (requires `ledger`). |
 | `lifetime_badge_url` | Live shields.io badge URL for lifetime CO2 saved (requires `ledger: gist:<id>`). |
+| `status_badge_url` | Live shields.io badge URL for the current grid zone/intensity/tier (requires `ledger: gist:<id>`). |
 | `optimal_dispatch_at` | Best green window (queue strategy). `now` if already green. |
 | `optimal_zone` | Zone for the optimal window (queue strategy). |
 | `suggested_cron` | Suggested cron schedule for green builds based on zone energy type. |
@@ -578,6 +579,14 @@ Embed the live lifetime badge in your README:
 
 The `file:` backend needs no token and writes a local JSON file, handy for
 self-hosted runners or if you commit the ledger yourself.
+
+A second, **live current-grid** badge is published alongside it (`carbon-now.json`),
+showing the latest zone, intensity, and tier color, and exposed via the
+`status_badge_url` output:
+
+```markdown
+![grid now](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/YOUR_USER/YOUR_GIST_ID/raw/carbon-now.json)
+```
 
 ### Impact dashboard (GitHub Pages)
 

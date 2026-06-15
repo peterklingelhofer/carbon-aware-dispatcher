@@ -197,6 +197,9 @@ outputs:
   lifetime_badge_url:
     description: 'Shields.io endpoint-badge URL showing lifetime CO2 saved, backed by the ledger gist. Embed in README: ![carbon](url)'
     value: ${{ steps.grid-check.outputs.lifetime_badge_url }}
+  status_badge_url:
+    description: 'Shields.io endpoint-badge URL showing the live current grid zone, intensity, and tier color, backed by the ledger gist.'
+    value: ${{ steps.grid-check.outputs.status_badge_url }}
   budget_used_pct:
     description: 'Percent of the monthly carbon budget used so far (requires monthly_budget_grams + ledger).'
     value: ${{ steps.grid-check.outputs.budget_used_pct }}
