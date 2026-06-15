@@ -183,8 +183,11 @@ def request(
         try:
             # Dispatch to the verb-specific helper so the mockable seam stays
             # requests.get / requests.post, matching the rest of the codebase
-            if method.upper() == "POST":
+            verb = method.upper()
+            if verb == "POST":
                 response = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+            elif verb == "PATCH":
+                response = requests.patch(url, headers=headers, json=json_body, timeout=timeout)
             else:
                 response = requests.get(url, headers=headers, timeout=timeout)
         except requests.RequestException as exc:
