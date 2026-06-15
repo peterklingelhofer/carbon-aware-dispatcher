@@ -1,0 +1,32 @@
+# Carbon-Aware Dispatcher — Doctor
+#
+# A one-click diagnostic. Run it from the Actions tab to see, for your zones,
+# which provider handles each, whether a token is set or missing, and whether
+# live carbon data is actually flowing — plus which optional features are on.
+# Great for first-time setup and debugging "why is there no data?".
+#
+# Copy to .github/workflows/carbon-doctor.yml
+
+name: Carbon Doctor
+
+on:
+  workflow_dispatch:
+    inputs:
+      zones:
+        description: "Zones to probe (comma-separated). Leave blank for a keyless sample."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        with:
+          mode: 'doctor'
+          grid_zones: ${{ inputs.zones }}
+          # Pass any tokens you want to verify:
+          entsoe_token: ${{ secrets.ENTSOE_TOKEN }}
+          eia_api_key: ${{ secrets.EIA_API_KEY }}
+          electricity_maps_token: ${{ secrets.ELECTRICITY_MAPS_TOKEN }}

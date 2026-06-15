@@ -1625,12 +1625,114 @@ def queue_find_optimal_window(
     return best_zone, best_time, best_intensity
 
 
+# Providers that require a token/key, mapped to the env var that supplies it.
+TOKEN_ENV_BY_PROVIDER = {
+    PROVIDER_ENTSOE: "ENTSOE_TOKEN",
+    PROVIDER_ELECTRICITY_MAPS: "ELECTRICITY_MAPS_TOKEN",
+    PROVIDER_EIA: "EIA_API_KEY",
+}
+
+
+def probe_zone(zone, max_carbon, eia_api_key, emaps_api_key, entsoe_token):
+    """Probe one zone for doctor mode: detect provider and attempt a live read."""
+    provider = detect_provider(zone, entsoe_token)
+    token_env = TOKEN_ENV_BY_PROVIDER.get(provider)
+    token_status = "n/a"
+    if token_env:
+        token_status = "set" if os.environ.get(token_env) else "MISSING"
+    _, intensity = check_carbon_intensity(
+        zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
+    )
+    if intensity is not None:
+        status, detail = "OK", f"{intensity} gCO2eq/kWh"
+    else:
+        status, detail = "FAIL", (last_failure_reason() or "no data")
+    return {
+        "zone": zone,
+        "provider": provider,
+        "token": token_status,
+        "status": status,
+        "detail": detail,
+    }
+
+
+def _enabled_features(env):
+    """Return a list of (feature, status) describing optional configuration."""
+
+    def on(key):
+        return "on" if env.get(key) else "off"
+
+    try:
+        cost = "on" if float(env.get("COST_WEIGHT", "0") or 0) > 0 else "off"
+    except ValueError:
+        cost = "off"
+    return [
+        ("Ledger", on("LEDGER")),
+        ("Carbon budget", on("MONTHLY_BUDGET_GRAMS")),
+        ("Notifications", on("NOTIFY_WEBHOOK")),
+        ("PR comment", on("PR_COMMENT")),
+        ("Cost+carbon", cost),
+        ("Marginal (WattTime)", on("WATTTIME_USERNAME")),
+        ("Consumption-based", on("CONSUMPTION_BASED")),
+    ]
+
+
+def render_doctor_report(results, features):
+    """Build the doctor diagnostic markdown (pure)."""
+    lines = ["## Carbon-Aware Dispatcher — doctor\n", "### Zone connectivity", ""]
+    lines.append("| Zone | Provider | Token | Status | Detail |")
+    lines.append("|---|---|---|---|---|")
+    for r in results:
+        lines.append(
+            f"| `{r['zone']}` | {r['provider']} | {r['token']} | {r['status']} | {r['detail']} |"
+        )
+    lines += ["", "### Optional features", "", "| Feature | Status |", "|---|---|"]
+    for name, status in features:
+        lines.append(f"| {name} | {status} |")
+    return lines
+
+
+def run_doctor():
+    """Diagnostic mode: probe configured zones and report config health."""
+    max_carbon = _env_float("MAX_CARBON", 250.0)
+    eia_api_key = os.environ.get("EIA_API_KEY", "")
+    emaps_api_key = os.environ.get("ELECTRICITY_MAPS_TOKEN", "")
+    entsoe_token = os.environ.get("ENTSOE_TOKEN", "")
+
+    zones_str = os.environ.get("GRID_ZONES", "") or os.environ.get("GRID_ZONE", "")
+    if zones_str.strip():
+        zones = [z["zone"] for z in parse_zones_input(zones_str)]
+    else:
+        zones = ["GB", "AU-NSW"]
+        print("doctor: no zones configured; probing a keyless sample (GB, AU-NSW)")
+
+    results = [probe_zone(z, max_carbon, eia_api_key, emaps_api_key, entsoe_token) for z in zones]
+    report = render_doctor_report(results, _enabled_features(os.environ))
+    text = "\n".join(report)
+    print(text)
+
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        try:
+            with open(summary_file, "a") as f:
+                f.write(text + "\n")
+        except OSError:
+            pass
+    ok = sum(1 for r in results if r["status"] == "OK")
+    print(f"doctor: {ok}/{len(results)} zones returned live data")
+
+
 def main():
+    mode = os.environ.get("MODE", "").strip().lower()
     # Digest mode: summarize the ledger into a GitHub issue and exit
-    if os.environ.get("MODE", "").strip().lower() == "digest":
+    if mode == "digest":
         import digest
 
         digest.run(os.environ)
+        return
+    # Doctor mode: probe configured zones and report config health, then exit
+    if mode == "doctor":
+        run_doctor()
         return
 
     # Determine mode: dispatch (workflow_id set) or inline (just set outputs)
