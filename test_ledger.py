@@ -64,6 +64,14 @@ class TestMergeEntry:
         assert ledger.month_to_date_emitted(d, "2026-06") == 50
         assert ledger.month_to_date_emitted(d, "2026-05") == 100
 
+    def test_month_to_date_emitted_year_boundary(self):
+        # The YYYY-MM prefix must not bleed across years
+        d = ledger.empty_ledger()
+        d = ledger.merge_entry(d, 0, "2025-01-15", emitted_grams=70)  # prior year, same month num
+        d = ledger.merge_entry(d, 0, "2026-01-10", emitted_grams=30)
+        assert ledger.month_to_date_emitted(d, "2026-01") == 30
+        assert ledger.month_to_date_emitted(d, "2025-01") == 70
+
     def test_history_capped(self):
         d = ledger.empty_ledger()
         for i in range(ledger.HISTORY_CAP + 20):
