@@ -1,5 +1,6 @@
 """Carbon-Aware Dispatcher - checks grid carbon intensity and dispatches workflows."""
 
+import json
 import os
 import sys
 import time as _time
@@ -326,19 +327,52 @@ def _cost_weight():
     return max(0.0, min(1.0, _soft_float("COST_WEIGHT", 0.0)))
 
 
+def _load_price_map():
+    """Parse COST_PRICE_MAP (JSON of zone -> USD/hr), or {} on absent/bad input.
+
+    Lets users price ANY cloud (AWS, GCP, on-prem) by supplying their own per-zone
+    rates, since only Azure has a free live pricing API. Zones not in the map fall
+    back to live Azure pricing.
+    """
+    raw = os.environ.get("COST_PRICE_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        print("::warning::Invalid COST_PRICE_MAP JSON; ignoring it")
+        return {}
+    if not isinstance(data, dict):
+        print("::warning::COST_PRICE_MAP must be a JSON object of zone -> price; ignoring")
+        return {}
+    return data
+
+
+def _zone_price(zone, price_map):
+    """Resolve a zone's USD/hr price: user-supplied map first, then live Azure."""
+    if zone in price_map:
+        try:
+            return float(price_map[zone])
+        except (TypeError, ValueError):
+            print(f"::warning::Non-numeric COST_PRICE_MAP value for '{zone}'; ignoring it")
+    return azure_pricing.get_region_price(get_azure_region(zone))
+
+
 def rank_by_cost_carbon(candidates, cost_weight):
     """Pick the best (zone, intensity, label) by a cost+carbon blend.
 
-    candidates: list of (zone, intensity, label). Fetches a representative
-    regional VM price per zone, min-max normalizes price and carbon across the
-    candidates, and minimizes cost_weight*price + (1 - cost_weight)*carbon.
-    Returns None to fall back to carbon-only ranking when any price is missing.
+    candidates: list of (zone, intensity, label). Prices each zone from the
+    user-supplied COST_PRICE_MAP (any cloud) or live Azure pricing, min-max
+    normalizes price and carbon across the candidates, and minimizes
+    cost_weight*price + (1 - cost_weight)*carbon. Returns None to fall back to
+    carbon-only ranking when any price is missing.
     """
     if not candidates:
         return None
+    price_map = _load_price_map()
     prices = []
     for zone, _, _ in candidates:
-        price = azure_pricing.get_region_price(get_azure_region(zone))
+        price = _zone_price(zone, price_map)
         if price is None:
             print(f"::warning::No price for zone '{zone}'; using carbon-only ranking")
             return None
