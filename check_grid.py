@@ -44,6 +44,7 @@ from providers import (
     sort_auto_green_by_time,
     taiwan,
     uk,
+    watttime,
 )
 from providers.base import (
     CI_JOB_POWER_KW,
@@ -859,6 +860,46 @@ def post_pr_comment_once(
     )
 
 
+# Marginal-emissions (WattTime) status, when credentials are configured.
+_marginal_summary = None
+_marginal_done = False
+
+
+def emit_marginal_outputs():
+    """Emit WattTime marginal-emissions outputs (at most once/process).
+
+    No-op unless WATTTIME_USERNAME/PASSWORD are set. Logs in, reads the free
+    co2_moer signal-index percentile for the region (lower = cleaner), and sets
+    marginal_percentile and marginal_clean. Never raises: degrades to a warning.
+    """
+    global _marginal_summary, _marginal_done
+    if _marginal_done:
+        return
+    username = os.environ.get("WATTTIME_USERNAME", "")
+    password = os.environ.get("WATTTIME_PASSWORD", "")
+    if not username or not password:
+        return
+    _marginal_done = True
+
+    region = os.environ.get("MARGINAL_REGION", "") or watttime.DEFAULT_REGION
+    max_pct = _soft_float("MARGINAL_MAX_PERCENTILE", 33.0)
+    token = watttime.login(username, password)
+    if not token:
+        print("::warning::WattTime login failed; skipping marginal-emissions signal")
+        return
+    pct = watttime.get_marginal_index(region, token)
+    if pct is None:
+        print(f"::warning::No WattTime marginal signal for region {region}")
+        return
+
+    clean = pct <= max_pct
+    set_output("marginal_percentile", str(pct))
+    set_output("marginal_clean", "true" if clean else "false")
+    _marginal_summary = {"region": region, "percentile": pct, "clean": clean, "max_pct": max_pct}
+    status = "clean" if clean else "dirty"
+    print(f"  Marginal ({region}): {pct}th percentile MOER ({status}, threshold {max_pct:.0f})")
+
+
 # Fire the outbound notification at most once per process.
 _notify_done = False
 
@@ -1208,6 +1249,9 @@ def write_job_summary(
     if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
         record_lifetime_savings(0, 0)
 
+    # Emit the marginal-emissions signal (no-op unless WattTime creds are set)
+    emit_marginal_outputs()
+
     # Fire the sticky PR comment first so it posts even when there is no job
     # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
     post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run, tier)
@@ -1276,6 +1320,13 @@ def write_job_summary(
         lines.append(
             f"| **Carbon Budget** | {b['mtd']:.0f} / {b['budget']:.0f} gCO2eq this month "
             f"({b['used_pct']:.0f}%, {b['state']}) |"
+        )
+
+    if _marginal_summary:
+        m = _marginal_summary
+        verdict = "clean" if m["clean"] else "dirty"
+        lines.append(
+            f"| **Marginal ({m['region']})** | {m['percentile']}th percentile MOER ({verdict}) |"
         )
 
     if skipped:
