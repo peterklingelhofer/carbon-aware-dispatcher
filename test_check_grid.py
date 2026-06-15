@@ -2288,6 +2288,69 @@ class TestEstimateCarbonSavings:
         assert "brightgreen" in badge_url
 
 
+class TestCarbonEquivalents:
+    def test_zero_and_none_have_empty_phrase(self):
+        for grams in (0, None, -5):
+            eq = check_grid.carbon_equivalents(grams)
+            assert eq["phrase"] == ""
+            assert eq["km_driven"] == 0
+            assert eq["phone_charges"] == 0
+
+    def test_small_amount_uses_phone_charges(self):
+        # 50 g is under a km of driving, so the phrase should be phone charges
+        eq = check_grid.carbon_equivalents(50)
+        assert "phone charges" in eq["phrase"]
+        # 50 / 8.22 ~= 6 charges
+        assert eq["phone_charges"] == pytest.approx(50 / 8.22, rel=0.01)
+
+    def test_large_amount_uses_km_driven(self):
+        # 1000 g => 4 km driven, comfortably over the 1 km switchover
+        eq = check_grid.carbon_equivalents(1000)
+        assert "km not driven" in eq["phrase"]
+        assert eq["km_driven"] == pytest.approx(4.0, rel=0.01)
+
+    def test_switchover_at_one_km(self):
+        # Exactly 250 g == 1 km, should report km (>= 1)
+        eq = check_grid.carbon_equivalents(250)
+        assert "km not driven" in eq["phrase"]
+
+    def test_tree_years_present(self):
+        eq = check_grid.carbon_equivalents(21000)
+        assert eq["tree_years"] == pytest.approx(1.0, rel=0.01)
+
+
+class TestSetSavingsOutputs:
+    def test_emits_equivalent_output(self):
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = path
+            check_grid.set_savings_outputs(1000, "https://img.shields.io/badge/x")
+            with open(path) as f:
+                content = f.read()
+            assert "co2_saved_grams=1000" in content
+            assert "co2_saved_equivalent=" in content
+            assert "km not driven" in content
+            assert "carbon_badge_url=" in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_OUTPUT", None)
+
+    def test_no_savings_emits_nothing(self):
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = path
+            check_grid.set_savings_outputs(0, None)
+            with open(path) as f:
+                content = f.read()
+            assert "co2_saved_grams" not in content
+            assert "co2_saved_equivalent" not in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_OUTPUT", None)
+
+
 class TestWriteJobSummaryWithCo2:
     def test_summary_includes_co2_saved(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:

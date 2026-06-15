@@ -101,6 +101,15 @@ CI_JOB_POWER_KW = 0.05
 # Default estimated CI job duration in hours (15 minutes).
 DEFAULT_JOB_DURATION_HOURS = 0.25
 
+# Real-world equivalence factors for translating grams of CO2 into relatable
+# units. Sourced from the US EPA Greenhouse Gas Equivalencies Calculator.
+# Average passenger car: ~400 gCO2/mile = ~250 gCO2/km.
+CO2_GRAMS_PER_KM_DRIVEN = 250
+# One smartphone charged: ~8.22 gCO2 (EPA).
+CO2_GRAMS_PER_PHONE_CHARGE = 8.22
+# CO2 sequestered by one tree in a year: ~21 kg = 21000 gCO2 (EPA, ~0.06 g/min).
+CO2_GRAMS_PER_TREE_YEAR = 21000
+
 
 # Status codes worth retrying: transient server errors and rate limiting
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}

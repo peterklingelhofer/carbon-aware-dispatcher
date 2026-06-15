@@ -43,6 +43,9 @@ from providers import (
 )
 from providers.base import (
     CI_JOB_POWER_KW,
+    CO2_GRAMS_PER_KM_DRIVEN,
+    CO2_GRAMS_PER_PHONE_CHARGE,
+    CO2_GRAMS_PER_TREE_YEAR,
     DEFAULT_JOB_DURATION_HOURS,
     DEFAULT_TIMEOUT,
     GLOBAL_AVG_INTENSITY,
@@ -576,6 +579,46 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     return saved, badge_url
 
 
+def carbon_equivalents(grams):
+    """Translate grams of CO2 into relatable real-world equivalents.
+
+    Numbers like "12 g CO2" mean little on their own, so we convert to units a
+    non-engineer can feel. Returns a dict with the numeric equivalents plus a
+    short human-readable "phrase" that picks the most relatable unit for the
+    magnitude (phone charges for tiny amounts, km not driven for larger ones).
+    Returns zeros and an empty phrase when there is nothing to report.
+    """
+    if not grams or grams <= 0:
+        return {"km_driven": 0, "phone_charges": 0, "tree_years": 0, "phrase": ""}
+
+    km = grams / CO2_GRAMS_PER_KM_DRIVEN
+    charges = grams / CO2_GRAMS_PER_PHONE_CHARGE
+    tree_years = grams / CO2_GRAMS_PER_TREE_YEAR
+
+    if km >= 1:
+        phrase = f"~{km:.1f} km not driven"
+    else:
+        phrase = f"~{charges:.0f} phone charges"
+
+    return {
+        "km_driven": round(km, 3),
+        "phone_charges": round(charges, 1),
+        "tree_years": round(tree_years, 4),
+        "phrase": phrase,
+    }
+
+
+def set_savings_outputs(co2_saved, badge_url):
+    """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
+    if co2_saved and co2_saved > 0:
+        set_output("co2_saved_grams", str(co2_saved))
+        equiv = carbon_equivalents(co2_saved)
+        if equiv["phrase"]:
+            set_output("co2_saved_equivalent", equiv["phrase"])
+    if badge_url:
+        set_output("carbon_badge_url", badge_url)
+
+
 def run_dry_run(
     zones_config,
     max_carbon,
@@ -623,10 +666,7 @@ def run_dry_run(
     set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
 
     co2_saved, badge_url = estimate_carbon_savings(report_intensity)
-    if co2_saved > 0:
-        set_output("co2_saved_grams", str(co2_saved))
-    if badge_url:
-        set_output("carbon_badge_url", badge_url)
+    set_savings_outputs(co2_saved, badge_url)
 
     forecast_at = None
     forecast_intensity = None
@@ -783,10 +823,7 @@ def _emit_green_result(
     set_output("carbon_intensity", str(intensity))
     set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
     co2_saved, badge_url = estimate_carbon_savings(intensity)
-    if co2_saved > 0:
-        set_output("co2_saved_grams", str(co2_saved))
-    if badge_url:
-        set_output("carbon_badge_url", badge_url)
+    set_savings_outputs(co2_saved, badge_url)
     write_job_summary(
         zone,
         intensity,
@@ -925,6 +962,9 @@ def write_job_summary(
             lines.append(f"| **Est. CO2 Saved** | {co2_saved / 1000:.1f} kg vs global avg |")
         else:
             lines.append(f"| **Est. CO2 Saved** | {co2_saved:.0f} g vs global avg |")
+        equiv = carbon_equivalents(co2_saved)
+        if equiv["phrase"]:
+            lines.append(f"| **That's like** | {equiv['phrase']} |")
 
     if skipped:
         skipped_str = ", ".join(f"`{z}` ({r})" for z, r in skipped)
@@ -1395,10 +1435,7 @@ def main():
                             set_output("grid_clean", "true")
                             set_output("carbon_intensity", str(intensity))
                             co2_saved, badge_url = estimate_carbon_savings(intensity)
-                            if co2_saved > 0:
-                                set_output("co2_saved_grams", str(co2_saved))
-                            if badge_url:
-                                set_output("carbon_badge_url", badge_url)
+                            set_savings_outputs(co2_saved, badge_url)
                             if dispatch_mode:
                                 print("\nGrid is green after queue wait! Dispatching...")
                                 trigger_workflow(repo, workflow_id, token, ref)
