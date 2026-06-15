@@ -113,6 +113,14 @@ inputs:
     description: 'Blend cloud cost with carbon when picking among multiple zones. 0 (default) = pick the cleanest zone only; 1 = pick the cheapest only; 0.5 = balance both. Uses the public Azure Retail Prices API (no key) keyed off each zone''s nearest Azure region. No effect in single-zone mode.'
     required: false
     default: '0'
+  notify_webhook:
+    description: 'Webhook URL to post a short carbon-event notification to. Auto-detects Slack (hooks.slack.com), Discord (discord.com), or falls back to a generic JSON POST. Empty disables notifications. Put the URL in a secret.'
+    required: false
+    default: ''
+  notify_on:
+    description: 'Comma-separated events to notify on: green (grid clean/dispatched), dirty (deferred), exceeded (carbon budget blown), or always. Default: "green,exceeded".'
+    required: false
+    default: 'green,exceeded'
 
 outputs:
   grid_clean:
@@ -241,3 +249,5 @@ runs:
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
         MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}
         COST_WEIGHT: ${{ inputs.cost_weight }}
+        NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
+        NOTIFY_ON: ${{ inputs.notify_on }}

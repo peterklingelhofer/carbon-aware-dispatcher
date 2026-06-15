@@ -350,6 +350,21 @@ Outputs: `budget_used_pct`, `budget_remaining_grams`, `budget_exceeded`, and
 `ledger` input, which is where month-to-date spend is tracked. See
 [`examples/carbon-budget.yml`](examples/carbon-budget.yml).
 
+## Notifications
+
+Get pinged when something actionable happens: the grid goes clean, a build is
+deferred, or your carbon budget is blown. Point `notify_webhook` at a Slack,
+Discord, or generic webhook (the payload shape is auto-detected from the URL):
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  with:
+    notify_webhook: ${{ secrets.SLACK_WEBHOOK }}
+    notify_on: 'green,exceeded'   # green | dirty | exceeded | always
+```
+
+Notifications never fail the build; a webhook error degrades to a warning.
+
 ## Organization-wide defaults
 
 Drop a `.github/carbon-policy.yml` in your repo:
@@ -419,6 +434,8 @@ Ready-to-copy files in [`examples/`](examples/):
 | `tier_thresholds` | `150,300` | Two gCO2eq/kWh boundaries `green,amber` for the `carbon_tier` dial. See [Carbon-adaptive CI](#carbon-adaptive-ci-the-dial). |
 | `monthly_budget_grams` | none | Monthly carbon cap in gCO2eq. Needs `ledger`. See [Carbon budgets](#carbon-budgets-as-code). |
 | `cost_weight` | `0` | Blend cloud cost with carbon when choosing among zones (0 = clean only, 1 = cheap only). See [Cost + carbon routing](#cost--carbon-routing). |
+| `notify_webhook` | none | Webhook URL for carbon-event notifications (Slack/Discord/generic). See [Notifications](#notifications). |
+| `notify_on` | `green,exceeded` | Events to notify on: `green`, `dirty`, `exceeded`, or `always`. |
 
 ## Outputs
 
