@@ -1234,6 +1234,33 @@ def render_routing_comparison(measured, chosen_zone):
     return lines
 
 
+def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run=False):
+    """Emit every run signal and side effect for the chosen zone.
+
+    Classifies the carbon tier and fires the budget, marginal, status-badge, PR
+    comment, and notification emitters (each a no-op unless its feature is
+    configured). Returns (tier, tier_reason) for the caller's summary row. All
+    emitters are idempotent, so calling this once per run is safe.
+    """
+    thresholds = parse_tier_thresholds(os.environ.get("TIER_THRESHOLDS", ""))
+    tier, tier_reason = classify_tier(intensity, thresholds)
+    if tier != "unknown":
+        set_output("carbon_tier", tier)
+        set_output("carbon_tier_reason", tier_reason)
+
+    # Ensure budget outputs are emitted on every path (including dirty-grid
+    # deferrals where no savings were recorded), so gating on budget_exceeded
+    # works regardless of the dispatch decision. Idempotent.
+    if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
+        record_lifetime_savings(0, 0)
+
+    emit_marginal_outputs()
+    emit_status_badge(zone, intensity, tier)
+    post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run, tier)
+    notify_once(zone, intensity, is_green, tier, dry_run)
+    return tier, tier_reason
+
+
 def write_job_summary(
     zone,
     intensity,
@@ -1258,33 +1285,10 @@ def write_job_summary(
     forecast_heuristic: when True, the forecast is a time-of-day estimate (not a
     measured day-ahead forecast), so the row is labeled accordingly.
     """
-    # Classify the carbon tier (the adaptive-CI "dial") and emit it as an output
-    # before any early return, so downstream jobs can read it even with no summary
-    thresholds = parse_tier_thresholds(os.environ.get("TIER_THRESHOLDS", ""))
-    tier, tier_reason = classify_tier(intensity, thresholds)
-    if tier != "unknown":
-        set_output("carbon_tier", tier)
-        set_output("carbon_tier_reason", tier_reason)
-
-    # Ensure budget outputs are emitted on every path (including dirty-grid
-    # deferrals where no savings were recorded), so gating on budget_exceeded
-    # works regardless of the dispatch decision. Idempotent: a no-op once the
-    # green/report path has already recorded this run.
-    if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
-        record_lifetime_savings(0, 0)
-
-    # Emit the marginal-emissions signal (no-op unless WattTime creds are set)
-    emit_marginal_outputs()
-
-    # Publish the live current-grid badge (no-op unless a gist ledger is set)
-    emit_status_badge(zone, intensity, tier)
-
-    # Fire the sticky PR comment first so it posts even when there is no job
-    # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
-    post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run, tier)
-
-    # Outbound webhook notification (no-op unless NOTIFY_WEBHOOK is set)
-    notify_once(zone, intensity, is_green, tier, dry_run)
+    # Emit all run signals/side effects (tier, budget, marginal, badge, PR
+    # comment, notification) before any early return, so they fire even when
+    # there is no job summary file (e.g. local runs).
+    tier, tier_reason = emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved, dry_run)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:

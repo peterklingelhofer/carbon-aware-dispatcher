@@ -137,7 +137,12 @@ def write_status_badge(gist_id, token, zone, intensity, tier):
     owner = (resp.get("owner") or {}).get("login")
     if not owner:
         return None
-    raw = f"https://gist.githubusercontent.com/{owner}/{gist_id}/raw/{STATUS_BADGE_FILENAME}"
+    return _shields_endpoint(owner, gist_id, STATUS_BADGE_FILENAME)
+
+
+def _shields_endpoint(owner, gist_id, filename):
+    """Build the shields.io endpoint-badge URL for a raw gist file."""
+    raw = f"https://gist.githubusercontent.com/{owner}/{gist_id}/raw/{filename}"
     return f"https://img.shields.io/endpoint?url={raw}"
 
 
@@ -169,7 +174,7 @@ def _save_file(path, data):
 
 
 def _gist_headers(token):
-    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    return base.github_headers(token)
 
 
 def _gist_read(gist_id, token):
@@ -251,8 +256,5 @@ def record_savings(config, token, saved_grams, date_str, emitted_grams=0):
     if _gist_write(location, token, data) is None:
         print("::warning::Could not update ledger gist; skipping ledger update")
         return None
-    badge_url = None
-    if owner:
-        raw = f"https://gist.githubusercontent.com/{owner}/{location}/raw/{BADGE_FILENAME}"
-        badge_url = f"https://img.shields.io/endpoint?url={raw}"
+    badge_url = _shields_endpoint(owner, location, BADGE_FILENAME) if owner else None
     return _summary(data, badge_url, month)
