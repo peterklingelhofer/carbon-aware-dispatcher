@@ -2469,6 +2469,69 @@ class TestCostCarbonRanking:
         assert check_grid.rank_by_cost_carbon([], 0.5) is None
 
 
+class TestMarginalOutputs:
+    def _reset(self):
+        check_grid._marginal_done = False
+        check_grid._marginal_summary = None
+
+    def test_noop_without_creds(self):
+        self._reset()
+        os.environ.pop("WATTTIME_USERNAME", None)
+        os.environ.pop("WATTTIME_PASSWORD", None)
+        check_grid.emit_marginal_outputs()
+        assert check_grid._marginal_summary is None
+
+    @mock.patch("check_grid.watttime.get_marginal_index")
+    @mock.patch("check_grid.watttime.login")
+    def test_clean_when_below_threshold(self, login, idx):
+        self._reset()
+        login.return_value = "tok"
+        idx.return_value = 20
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        try:
+            os.environ["GITHUB_OUTPUT"] = out.name
+            os.environ["WATTTIME_USERNAME"] = "u"
+            os.environ["WATTTIME_PASSWORD"] = "p"
+            os.environ["MARGINAL_MAX_PERCENTILE"] = "33"
+            check_grid.emit_marginal_outputs()
+            with open(out.name) as f:
+                content = f.read()
+            assert "marginal_percentile=20" in content
+            assert "marginal_clean=true" in content
+            assert check_grid._marginal_summary["clean"] is True
+        finally:
+            os.unlink(out.name)
+            for k in (
+                "GITHUB_OUTPUT",
+                "WATTTIME_USERNAME",
+                "WATTTIME_PASSWORD",
+                "MARGINAL_MAX_PERCENTILE",
+            ):
+                os.environ.pop(k, None)
+
+    @mock.patch("check_grid.watttime.get_marginal_index")
+    @mock.patch("check_grid.watttime.login")
+    def test_dirty_when_above_threshold(self, login, idx):
+        self._reset()
+        login.return_value = "tok"
+        idx.return_value = 90
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        try:
+            os.environ["GITHUB_OUTPUT"] = out.name
+            os.environ["WATTTIME_USERNAME"] = "u"
+            os.environ["WATTTIME_PASSWORD"] = "p"
+            check_grid.emit_marginal_outputs()
+            with open(out.name) as f:
+                content = f.read()
+            assert "marginal_clean=false" in content
+        finally:
+            os.unlink(out.name)
+            for k in ("GITHUB_OUTPUT", "WATTTIME_USERNAME", "WATTTIME_PASSWORD"):
+                os.environ.pop(k, None)
+
+
 class TestEstimateEmissions:
     def test_none_intensity_zero(self):
         assert check_grid.estimate_emissions(None) == 0.0
