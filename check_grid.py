@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import requests
 
 import ledger
+import pr_comment
 from providers import (
     AUTO_CLEANEST_ZONES,
     AUTO_ESCAPE_COAL_ZONES,
@@ -645,6 +646,44 @@ def record_lifetime_savings(saved_grams):
         set_output("lifetime_badge_url", summary["badge_url"])
 
 
+# Fire the sticky PR comment at most once per process.
+_pr_comment_done = False
+
+
+def post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run=False):
+    """Post/update the sticky PR comment with the verdict (at most once/process).
+
+    No-op unless PR_COMMENT is enabled. Reads the GitHub event context from the
+    environment and degrades to a warning on any failure so CI is never broken.
+    """
+    global _pr_comment_done
+    if _pr_comment_done:
+        return
+    if os.environ.get("PR_COMMENT", "").lower() != "true":
+        return
+    _pr_comment_done = True
+
+    equiv = carbon_equivalents(co2_saved)["phrase"] if co2_saved else ""
+    lifetime = _lifetime_summary["message"] if _lifetime_summary else ""
+    body = pr_comment.build_comment(
+        is_green=is_green,
+        zone=zone,
+        intensity=intensity,
+        max_carbon=max_carbon,
+        co2_saved=co2_saved,
+        equivalent=equiv,
+        lifetime=lifetime,
+        dry_run=dry_run,
+    )
+    pr_comment.post_comment(
+        os.environ.get("TARGET_REPO", ""),
+        os.environ.get("GITHUB_TOKEN", ""),
+        os.environ.get("GITHUB_EVENT_NAME", ""),
+        os.environ.get("GITHUB_EVENT_PATH", ""),
+        body,
+    )
+
+
 def set_savings_outputs(co2_saved, badge_url):
     """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
     if co2_saved and co2_saved > 0:
@@ -954,6 +993,10 @@ def write_job_summary(
     forecast_heuristic: when True, the forecast is a time-of-day estimate (not a
     measured day-ahead forecast), so the row is labeled accordingly.
     """
+    # Fire the sticky PR comment first so it posts even when there is no job
+    # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
+    post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run)
+
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
         return
