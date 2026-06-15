@@ -2351,6 +2351,65 @@ class TestSetSavingsOutputs:
             os.environ.pop("GITHUB_OUTPUT", None)
 
 
+class TestRecordLifetimeSavings:
+    def _reset(self):
+        check_grid._ledger_recorded = False
+        check_grid._lifetime_summary = None
+
+    def test_no_ledger_config_is_noop(self):
+        self._reset()
+        os.environ.pop("LEDGER", None)
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = path
+            check_grid.record_lifetime_savings(100)
+            with open(path) as f:
+                assert "co2_saved_total_grams" not in f.read()
+            assert check_grid._lifetime_summary is None
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_OUTPUT", None)
+
+    def test_file_ledger_sets_outputs_and_summary(self):
+        self._reset()
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            out_path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = out_path
+            os.environ["LEDGER"] = f"file:{ledger_path}"
+            check_grid.record_lifetime_savings(100)
+            with open(out_path) as f:
+                content = f.read()
+            assert "co2_saved_total_grams=100" in content
+            assert "co2_saved_total_equivalent=" in content
+            assert check_grid._lifetime_summary["total_runs"] == 1
+        finally:
+            for p in (ledger_path, out_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.environ.pop("GITHUB_OUTPUT", None)
+            os.environ.pop("LEDGER", None)
+
+    def test_records_at_most_once_per_process(self):
+        self._reset()
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        try:
+            os.environ["LEDGER"] = f"file:{ledger_path}"
+            check_grid.record_lifetime_savings(100)
+            check_grid.record_lifetime_savings(100)  # second call must be ignored
+            assert check_grid._lifetime_summary["total_runs"] == 1
+        finally:
+            if os.path.exists(ledger_path):
+                os.unlink(ledger_path)
+            os.environ.pop("LEDGER", None)
+
+
 class TestWriteJobSummaryWithCo2:
     def test_summary_includes_co2_saved(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
