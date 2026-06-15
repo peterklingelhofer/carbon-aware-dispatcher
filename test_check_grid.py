@@ -2388,6 +2388,10 @@ class TestCarbonTier:
         tier, _ = check_grid.classify_tier(None, (150, 300))
         assert tier == "unknown"
 
+    def test_classify_negative_intensity_is_green(self):
+        # Negative intensity should not crash; treated as cleanest (green)
+        assert check_grid.classify_tier(-10, (150, 300))[0] == "green"
+
     def test_summary_sets_tier_output(self):
         with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
             out_path = f.name
@@ -2454,6 +2458,13 @@ class TestCostCarbonRanking:
         price.side_effect = [0.10, None]
         assert check_grid.rank_by_cost_carbon(candidates, 0.5) is None
 
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_single_candidate_zero_span(self, price):
+        # One candidate: price and carbon spans are both zero; must not divide by 0
+        price.side_effect = [0.10]
+        zone, intensity, label = check_grid.rank_by_cost_carbon([("CISO", 50, "l1")], 0.5)
+        assert zone == "CISO"
+
     def test_empty_candidates(self):
         assert check_grid.rank_by_cost_carbon([], 0.5) is None
 
@@ -2473,6 +2484,12 @@ class TestEstimateEmissions:
         assert check_grid.estimate_emissions(100, job_minutes=60) > check_grid.estimate_emissions(
             100, job_minutes=15
         )
+
+    def test_negative_intensity_clamped(self):
+        assert check_grid.estimate_emissions(-50) == 0.0
+
+    def test_negative_job_minutes_clamped(self):
+        assert check_grid.estimate_emissions(100, job_minutes=-5) == 0.0
 
 
 class TestCarbonBudget:
@@ -2522,9 +2539,52 @@ class TestCarbonBudget:
             assert "budget_exceeded=true" in content
             assert "budget_state=exceeded" in content
             assert check_grid._budget_summary["exceeded"] is True
+            # remaining is clamped to 0, never negative
+            assert "budget_remaining_grams=0" in content
         finally:
             if os.path.exists(ledger_path):
                 os.unlink(ledger_path)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
+                os.environ.pop(k, None)
+
+    def test_warning_at_80_percent(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        try:
+            content = self._run(ledger_path, budget=1000, emitted=800)
+            assert "budget_state=warning" in content
+            assert "budget_exceeded=false" in content
+        finally:
+            if os.path.exists(ledger_path):
+                os.unlink(ledger_path)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
+                os.environ.pop(k, None)
+
+    def test_budget_emitted_on_dirty_path(self):
+        # On a dirty grid (no savings recorded), budget gating must still work:
+        # write_job_summary force-records so budget_exceeded is emitted
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        self._reset()
+        try:
+            os.environ["GITHUB_OUTPUT"] = out.name
+            os.environ["LEDGER"] = f"file:{ledger_path}"
+            os.environ["MONTHLY_BUDGET_GRAMS"] = "1000"
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            # dirty grid: is_green False, no set_savings_outputs call beforehand
+            check_grid.write_job_summary("PL", 600, False, 250)
+            with open(out.name) as f:
+                content = f.read()
+            assert "budget_exceeded=" in content
+            assert "budget_state=" in content
+        finally:
+            for p in (out.name, ledger_path):
+                if os.path.exists(p):
+                    os.unlink(p)
             for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
                 os.environ.pop(k, None)
 
