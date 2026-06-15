@@ -117,6 +117,22 @@ def _env_int(name, default, raw=None):
     return _convert_env(name, raw, default, int)
 
 
+def _soft_float(name, default=None):
+    """Read name as a float, warning and returning default on malformed input.
+
+    Unlike _env_float, this never exits: it is for optional tuning inputs where a
+    bad value should degrade gracefully rather than break CI.
+    """
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"::warning::Invalid {name} '{raw}'; ignoring")
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Provider dispatch registry — maps provider IDs to modules.
 # Each module must have: check_carbon_intensity(zone, max_carbon, *extra_args)
@@ -305,15 +321,7 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
 
 def _cost_weight():
     """Read COST_WEIGHT (0..1) from the environment, clamped. 0 = carbon only."""
-    raw = os.environ.get("COST_WEIGHT", "")
-    if not raw:
-        return 0.0
-    try:
-        w = float(raw)
-    except ValueError:
-        print(f"::warning::Invalid COST_WEIGHT '{raw}'; ignoring cost weighting")
-        return 0.0
-    return max(0.0, min(1.0, w))
+    return max(0.0, min(1.0, _soft_float("COST_WEIGHT", 0.0)))
 
 
 def rank_by_cost_carbon(candidates, cost_weight):
@@ -658,6 +666,7 @@ def estimate_emissions(intensity, job_minutes=None):
     if intensity is None:
         return 0.0
     duration_hours = (job_minutes / 60) if job_minutes else DEFAULT_JOB_DURATION_HOURS
+    duration_hours = max(0.0, duration_hours)
     return round(max(0.0, intensity) * CI_JOB_POWER_KW * duration_hours, 1)
 
 
@@ -743,20 +752,13 @@ def _emit_budget_outputs(summary):
     gating on the budget_exceeded output.
     """
     global _budget_summary
-    raw = os.environ.get("MONTHLY_BUDGET_GRAMS", "")
-    if not raw:
-        return
-    try:
-        budget = float(raw)
-    except ValueError:
-        print(f"::warning::Invalid MONTHLY_BUDGET_GRAMS '{raw}'; ignoring budget")
-        return
-    if budget <= 0:
+    budget = _soft_float("MONTHLY_BUDGET_GRAMS")
+    if not budget or budget <= 0:
         return
 
     mtd = float(summary.get("emitted_mtd", 0))
     used_pct = round(mtd / budget * 100, 1)
-    remaining = round(budget - mtd, 1)
+    remaining = round(max(0.0, budget - mtd), 1)
     exceeded = mtd >= budget
     state = "exceeded" if exceeded else ("warning" if used_pct >= 80 else "ok")
 
@@ -1172,6 +1174,13 @@ def write_job_summary(
     if tier != "unknown":
         set_output("carbon_tier", tier)
         set_output("carbon_tier_reason", tier_reason)
+
+    # Ensure budget outputs are emitted on every path (including dirty-grid
+    # deferrals where no savings were recorded), so gating on budget_exceeded
+    # works regardless of the dispatch decision. Idempotent: a no-op once the
+    # green/report path has already recorded this run.
+    if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
+        record_lifetime_savings(0, 0)
 
     # Fire the sticky PR comment first so it posts even when there is no job
     # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
