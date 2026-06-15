@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Carbon-Aware Dispatcher: Impact Dashboard</title>
+<!--
+  Self-contained impact dashboard for the carbon-aware-dispatcher ledger.
+  No build step, no frameworks, no CDN: drop this folder on GitHub Pages and
+  point it at your ledger gist.
+
+  Usage:
+    1. Run the action with `ledger: "gist:<id>"` so it writes carbon-ledger.json
+       to a public gist.
+    2. Open this page with ?gist=<id> in the URL, e.g.
+       https://<you>.github.io/<repo>/?gist=abc123
+       (or hard-code GIST_ID below and skip the query string).
+
+  The page reads the gist through the GitHub REST API, which is CORS-enabled and
+  works unauthenticated for public gists (rate limited to ~60 requests/hour).
+-->
+<style>
+  :root {
+    --bg: #0f1410;
+    --card: #18211a;
+    --ink: #e8f0e8;
+    --muted: #8aa088;
+    --green: #4caf50;
+    --accent: #7be08a;
+    --bar: #3f8f4d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  header h1 { font-size: 1.35rem; margin: 0 0 4px; font-weight: 650; }
+  header p { color: var(--muted); margin: 0 0 28px; font-size: 0.95rem; }
+  .hero {
+    background: var(--card);
+    border: 1px solid #243026;
+    border-radius: 14px;
+    padding: 28px;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .hero .total { font-size: 3rem; font-weight: 750; color: var(--accent); letter-spacing: -1px; }
+  .hero .sub { color: var(--muted); font-size: 1rem; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 24px; }
+  .stat {
+    background: var(--card);
+    border: 1px solid #243026;
+    border-radius: 12px;
+    padding: 18px;
+    text-align: center;
+  }
+  .stat .n { font-size: 1.5rem; font-weight: 700; }
+  .stat .l { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+  .panel {
+    background: var(--card);
+    border: 1px solid #243026;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 0.95rem; margin: 0 0 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  svg { width: 100%; height: auto; display: block; }
+  .bar { fill: var(--bar); }
+  .bar:hover { fill: var(--accent); }
+  .axis { stroke: #2c3a2e; stroke-width: 1; }
+  .axis-label { fill: var(--muted); font-size: 10px; }
+  footer { color: var(--muted); font-size: 0.82rem; text-align: center; margin-top: 32px; }
+  footer a { color: var(--accent); }
+  .msg { text-align: center; color: var(--muted); padding: 48px 0; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .hero .total { font-size: 2.2rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Carbon-Aware Dispatcher</h1>
+    <p>Cumulative CO₂ saved by scheduling CI/CD on clean energy.</p>
+  </header>
+  <div id="app"><div class="msg">Loading impact data…</div></div>
+  <footer>
+    Powered by <a href="https://github.com/peterklingelhofer/carbon-aware-dispatcher">carbon-aware-dispatcher</a>.
+    Equivalences via the US EPA Greenhouse Gas Equivalencies Calculator.
+  </footer>
+</div>
+
+<script>
+  // Edit this to hard-code your gist id, or pass ?gist=<id> in the URL.
+  const GIST_ID = "";
+
+  // Real-world equivalence factors (must match providers/base.py).
+  const G_PER_KM = 250;
+  const G_PER_PHONE_CHARGE = 8.22;
+  const G_PER_TREE_YEAR = 21000;
+
+  const app = document.getElementById("app");
+  const params = new URLSearchParams(location.search);
+  const gistId = params.get("gist") || GIST_ID;
+  const ledgerUrl = params.get("ledger");
+
+  function fmtGrams(g) {
+    return g >= 1000 ? (g / 1000).toFixed(1) + " kg" : Math.round(g) + " g";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function showMessage(html) {
+    app.innerHTML = '<div class="msg">' + html + "</div>";
+  }
+
+  function barChart(history) {
+    if (!history || !history.length) return "";
+    const days = history.slice(-60); // most recent 60 days
+    const W = 840, H = 200, pad = 24;
+    const max = Math.max(...days.map(d => d.saved_g), 1);
+    const bw = (W - pad * 2) / days.length;
+    let bars = "";
+    days.forEach((d, i) => {
+      const h = ((d.saved_g || 0) / max) * (H - pad * 2);
+      const x = pad + i * bw;
+      const y = H - pad - h;
+      bars += `<rect class="bar" x="${x + 1}" y="${y}" width="${Math.max(bw - 2, 1)}" height="${h}"><title>${escapeHtml(d.date)}: ${fmtGrams(d.saved_g || 0)} (${d.runs || 0} runs)</title></rect>`;
+    });
+    const first = escapeHtml(days[0].date);
+    const last = escapeHtml(days[days.length - 1].date);
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily CO2 saved">
+      <line class="axis" x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" />
+      ${bars}
+      <text class="axis-label" x="${pad}" y="${H - 6}">${first}</text>
+      <text class="axis-label" x="${W - pad}" y="${H - 6}" text-anchor="end">${last}</text>
+      <text class="axis-label" x="${pad}" y="14">peak ${fmtGrams(max)}/day</text>
+    </svg>`;
+  }
+
+  function render(data) {
+    const totals = data.totals || {};
+    const grams = Number(totals.co2_saved_grams || 0);
+    const runs = Number(totals.runs || 0);
+    const km = grams / G_PER_KM;
+    const charges = grams / G_PER_PHONE_CHARGE;
+    const trees = grams / G_PER_TREE_YEAR;
+
+    const range = totals.first_run && totals.last_run
+      ? `${escapeHtml(totals.first_run)} to ${escapeHtml(totals.last_run)}`
+      : "none";
+
+    app.innerHTML = `
+      <div class="hero">
+        <div class="total">${fmtGrams(grams)}</div>
+        <div class="sub">CO₂ saved across ${runs.toLocaleString()} builds</div>
+      </div>
+      <div class="grid">
+        <div class="stat"><div class="n">${km >= 1 ? km.toFixed(1) : km.toFixed(2)} km</div><div class="l">not driven</div></div>
+        <div class="stat"><div class="n">${Math.round(charges).toLocaleString()}</div><div class="l">phone charges</div></div>
+        <div class="stat"><div class="n">${trees.toFixed(3)}</div><div class="l">tree-years of CO₂</div></div>
+      </div>
+      <div class="panel">
+        <h2>Daily savings</h2>
+        ${barChart(data.history) || '<div class="msg">No history yet.</div>'}
+      </div>
+      <div class="panel">
+        <h2>Details</h2>
+        <div class="l" style="color:var(--muted)">Tracking window: ${range}</div>
+      </div>`;
+  }
+
+  async function load() {
+    try {
+      let data;
+      if (ledgerUrl) {
+        const res = await fetch(ledgerUrl);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        data = await res.json();
+      } else if (gistId) {
+        const res = await fetch("https://api.github.com/gists/" + encodeURIComponent(gistId), {
+          headers: { Accept: "application/vnd.github+json" },
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const gist = await res.json();
+        const file = (gist.files || {})["carbon-ledger.json"];
+        if (!file || !file.content) throw new Error("carbon-ledger.json not found in gist");
+        data = JSON.parse(file.content);
+      } else {
+        showMessage('No data source. Add <code>?gist=&lt;id&gt;</code> to the URL, or set GIST_ID in this file.');
+        return;
+      }
+      render(data);
+    } catch (err) {
+      showMessage("Could not load ledger: " + escapeHtml(err.message));
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>
