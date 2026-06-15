@@ -311,6 +311,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | [`multi-cloud-routing.yml`](examples/multi-cloud-routing.yml) | Route to greenest AWS/GCP/Azure region |
 | [`queue-strategy.yml`](examples/queue-strategy.yml) | Find optimal green window within a deadline |
 | [`escape-coal.yml`](examples/escape-coal.yml) | Escape dirty grids (India, China, Poland, SA) |
+| [`track-impact.yml`](examples/track-impact.yml) | All-in-one: lifetime ledger, live badge, and sticky PR comment |
 
 ## Inputs
 
