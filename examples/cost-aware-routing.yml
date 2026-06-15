@@ -1,0 +1,46 @@
+# Cost + Carbon Routing
+#
+# Among multiple candidate zones, pick one that is both clean AND cheap. The
+# action blends each zone's carbon intensity with a representative cloud price
+# (via the public Azure Retail Prices API, no key) and selects the best by a
+# weight you set:
+#   cost_weight: 0   -> cleanest zone only (default)
+#   cost_weight: 1   -> cheapest zone only
+#   cost_weight: 0.5 -> balance cost and carbon
+#
+# Copy to .github/workflows/cost-aware-routing.yml
+
+name: Cost-Aware Carbon Routing
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      zone: ${{ steps.carbon.outputs.grid_zone }}
+      region: ${{ steps.carbon.outputs.azure_region }}
+      intensity: ${{ steps.carbon.outputs.carbon_intensity }}
+      price: ${{ steps.carbon.outputs.selected_cost_usd_hr }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          # Candidate zones across regions with different price/carbon trade-offs
+          grid_zones: 'CISO,GB,FR,AU-NSW'
+          cost_weight: '0.5'   # balance cheap and clean
+
+  deploy:
+    needs: route
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          echo "Selected zone:   ${{ needs.route.outputs.zone }}"
+          echo "Azure region:    ${{ needs.route.outputs.region }}"
+          echo "Carbon:          ${{ needs.route.outputs.intensity }} gCO2eq/kWh"
+          echo "Price:           ${{ needs.route.outputs.price }} USD/hr"
+          # Deploy to needs.route.outputs.region here
