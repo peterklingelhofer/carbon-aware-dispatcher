@@ -109,6 +109,10 @@ inputs:
     description: 'Carbon budget for the current month in gCO2eq (e.g. "2000" for 2 kg). Requires the ledger input to track month-to-date emissions. Sets the budget_* outputs; gate your build with "if: steps.X.outputs.budget_exceeded != \"true\"". Empty disables budgeting.'
     required: false
     default: ''
+  cost_weight:
+    description: 'Blend cloud cost with carbon when picking among multiple zones. 0 (default) = pick the cleanest zone only; 1 = pick the cheapest only; 0.5 = balance both. Uses the public Azure Retail Prices API (no key) keyed off each zone''s nearest Azure region. No effect in single-zone mode.'
+    required: false
+    default: '0'
 
 outputs:
   grid_clean:
@@ -177,6 +181,9 @@ outputs:
   budget_state:
     description: 'Carbon budget state: "ok", "warning" (>=80% used), or "exceeded".'
     value: ${{ steps.grid-check.outputs.budget_state }}
+  selected_cost_usd_hr:
+    description: 'Representative Azure VM USD/hour price for the selected zone when cost_weight > 0.'
+    value: ${{ steps.grid-check.outputs.selected_cost_usd_hr }}
   optimal_dispatch_at:
     description: 'ISO 8601 timestamp of the optimal green window (strategy=queue). "now" if already green, "none_in_deadline" if no window found.'
     value: ${{ steps.grid-check.outputs.optimal_dispatch_at }}
@@ -233,3 +240,4 @@ runs:
         PR_COMMENT: ${{ inputs.pr_comment }}
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
         MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}
+        COST_WEIGHT: ${{ inputs.cost_weight }}
