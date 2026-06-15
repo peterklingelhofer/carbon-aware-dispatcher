@@ -2,6 +2,14 @@
 
 [![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-12-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
+<!--
+  Live lifetime-CO2-saved badge, powered by this repo eating its own dog food
+  (.github/workflows/self-track.yml). Once you have created the ledger gist and
+  set the CARBON_LEDGER_GIST variable, replace GIST_ID below and add this badge
+  to the row above:
+  ![CO2 saved](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/peterklingelhofer/GIST_ID/raw/carbon-badge.json)
+-->
+
 Run your CI/CD only when the energy grid is clean. One file, no API keys, no configuration.
 
 ```yaml
