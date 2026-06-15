@@ -15,7 +15,9 @@ class TestMergeEntry:
         assert data["totals"]["runs"] == 1
         assert data["totals"]["first_run"] == "2026-06-14"
         assert data["totals"]["last_run"] == "2026-06-14"
-        assert data["history"] == [{"date": "2026-06-14", "saved_g": 100, "runs": 1}]
+        assert data["history"] == [
+            {"date": "2026-06-14", "saved_g": 100, "emitted_g": 0, "runs": 1}
+        ]
 
     def test_accumulates_across_days(self):
         d = ledger.merge_entry(ledger.empty_ledger(), 100, "2026-06-13")
@@ -30,7 +32,12 @@ class TestMergeEntry:
         d = ledger.merge_entry(ledger.empty_ledger(), 100, "2026-06-14")
         d = ledger.merge_entry(d, 40, "2026-06-14")
         assert len(d["history"]) == 1
-        assert d["history"][0] == {"date": "2026-06-14", "saved_g": 140, "runs": 2}
+        assert d["history"][0] == {
+            "date": "2026-06-14",
+            "saved_g": 140,
+            "emitted_g": 0,
+            "runs": 2,
+        }
         assert d["totals"]["runs"] == 2
 
     def test_negative_savings_clamped_but_counts_run(self):
@@ -42,6 +49,20 @@ class TestMergeEntry:
         original = ledger.empty_ledger()
         ledger.merge_entry(original, 100, "2026-06-14")
         assert original == {"schemaVersion": 1, "totals": {}, "history": []}
+
+    def test_tracks_emitted(self):
+        d = ledger.merge_entry(ledger.empty_ledger(), 100, "2026-06-14", emitted_grams=30)
+        d = ledger.merge_entry(d, 50, "2026-06-15", emitted_grams=20)
+        assert d["totals"]["co2_emitted_grams"] == 50
+        assert d["history"][0]["emitted_g"] == 30
+
+    def test_month_to_date_emitted(self):
+        d = ledger.empty_ledger()
+        d = ledger.merge_entry(d, 0, "2026-05-31", emitted_grams=100)  # prior month
+        d = ledger.merge_entry(d, 0, "2026-06-02", emitted_grams=40)
+        d = ledger.merge_entry(d, 0, "2026-06-14", emitted_grams=10)
+        assert ledger.month_to_date_emitted(d, "2026-06") == 50
+        assert ledger.month_to_date_emitted(d, "2026-05") == 100
 
     def test_history_capped(self):
         d = ledger.empty_ledger()
@@ -96,11 +117,12 @@ class TestFileBackend:
             path = f.name
         os.unlink(path)  # start with no file
         try:
-            s1 = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14")
+            s1 = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14", emitted_grams=25)
             assert s1["total_grams"] == 100
             assert s1["total_runs"] == 1
             assert s1["badge_url"] is None
             assert s1["message"] == "100 g over 1 builds"
+            assert s1["emitted_mtd"] == 25
 
             s2 = ledger.record_savings(f"file:{path}", "", 50, "2026-06-15")
             assert s2["total_grams"] == 150
