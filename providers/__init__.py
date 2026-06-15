@@ -419,7 +419,7 @@ def detect_provider(zone, entsoe_token=""):
     6. Eskom South Africa (no key)
     7. ENTSO-E (free token required)
     8. Open-Meteo (free, no key — if zone has known coordinates)
-    9. Electricity Maps (free token required — catch-all)
+    9. Electricity Maps (last resort; free tier is one registered zone only)
     """
     from providers.entsoe import ENTSOE_AREA_CODES
     from providers.open_meteo import ZONE_COORDINATES
@@ -445,5 +445,6 @@ def detect_provider(zone, entsoe_token=""):
     # Open-Meteo for zones with known coordinates (free, no key)
     if zone in ZONE_COORDINATES:
         return PROVIDER_OPEN_METEO
-    # Electricity Maps as final catch-all (requires token)
+    # Electricity Maps last resort (needs a token; free tier covers only the
+    # one zone registered to that token, so this is not a true global catch-all)
     return PROVIDER_ELECTRICITY_MAPS
