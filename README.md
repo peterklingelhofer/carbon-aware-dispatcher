@@ -350,6 +350,30 @@ Outputs: `budget_used_pct`, `budget_remaining_grams`, `budget_exceeded`, and
 `ledger` input — that is where month-to-date spend is tracked. See
 [`examples/carbon-budget.yml`](examples/carbon-budget.yml).
 
+## Weekly digest
+
+Run the action in `mode: digest` on a schedule to post (and keep updating) a
+single GitHub issue summarizing your CI's carbon impact — builds, CO2
+saved/emitted over the last 7 and 30 days, a daily-savings sparkline, lifetime
+total, and budget status. It reads the same ledger your build workflow writes.
+
+```yaml
+permissions:
+  issues: write
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        with:
+          mode: 'digest'
+          ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+          gist_token: ${{ secrets.GIST_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+See [`examples/weekly-digest.yml`](examples/weekly-digest.yml).
+
 ## Notifications
 
 Get pinged when something actionable happens — the grid goes clean, a build is
@@ -403,6 +427,10 @@ Ready-to-copy files in [`examples/`](examples/):
 | [`queue-strategy.yml`](examples/queue-strategy.yml) | Find optimal green window within a deadline |
 | [`escape-coal.yml`](examples/escape-coal.yml) | Escape dirty grids (India, China, Poland, SA) |
 | [`track-impact.yml`](examples/track-impact.yml) | All-in-one: lifetime ledger, live badge, and sticky PR comment |
+| [`adaptive-ci.yml`](examples/adaptive-ci.yml) | Scale the test matrix to the carbon tier (green/amber/red) |
+| [`carbon-budget.yml`](examples/carbon-budget.yml) | Cap monthly CO2 and pause non-essential builds over budget |
+| [`cost-aware-routing.yml`](examples/cost-aware-routing.yml) | Pick a zone that is both clean and cheap |
+| [`weekly-digest.yml`](examples/weekly-digest.yml) | Weekly impact issue from the ledger |
 
 ## Inputs
 

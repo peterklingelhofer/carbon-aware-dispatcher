@@ -121,6 +121,10 @@ inputs:
     description: 'Comma-separated events to notify on: green (grid clean/dispatched), dirty (deferred), exceeded (carbon budget blown), or always. Default: "green,exceeded".'
     required: false
     default: 'green,exceeded'
+  mode:
+    description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (schedule it weekly; needs ledger + github_token with issues:write).'
+    required: false
+    default: 'check'
 
 outputs:
   grid_clean:
@@ -251,3 +255,4 @@ runs:
         COST_WEIGHT: ${{ inputs.cost_weight }}
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
         NOTIFY_ON: ${{ inputs.notify_on }}
+        MODE: ${{ inputs.mode }}
