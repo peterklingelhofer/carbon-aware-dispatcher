@@ -72,6 +72,13 @@ class TestMergeEntry:
         assert ledger.month_to_date_emitted(d, "2026-01") == 30
         assert ledger.month_to_date_emitted(d, "2025-01") == 70
 
+    def test_status_badge_payload_colors(self):
+        assert ledger.status_badge_payload("GB", 90, "green")["color"] == "brightgreen"
+        assert ledger.status_badge_payload("GB", 250, "amber")["color"] == "yellow"
+        assert ledger.status_badge_payload("PL", 600, "red")["color"] == "red"
+        p = ledger.status_badge_payload("GB", 90, "green")
+        assert "GB" in p["message"] and "90" in p["message"]
+
     def test_history_capped(self):
         d = ledger.empty_ledger()
         for i in range(ledger.HISTORY_CAP + 20):
@@ -196,6 +203,25 @@ class TestGistBackend:
     def test_write_failure_returns_none(self, mock_request):
         mock_request.side_effect = [{"owner": {"login": "x"}, "files": {}}, None]
         assert ledger.record_savings("gist:abc", "tok", 100, "2026-06-14") is None
+
+    @mock.patch("ledger.base.request")
+    def test_write_status_badge_url(self, mock_request):
+        mock_request.return_value = {"owner": {"login": "octocat"}}
+        url = ledger.write_status_badge("abc", "tok", "GB", 90, "green")
+        assert url == (
+            "https://img.shields.io/endpoint?url="
+            "https://gist.githubusercontent.com/octocat/abc/raw/carbon-now.json"
+        )
+        body = mock_request.call_args.kwargs["json_body"]
+        assert ledger.STATUS_BADGE_FILENAME in body["files"]
+
+    def test_write_status_badge_no_token(self):
+        assert ledger.write_status_badge("abc", "", "GB", 90, "green") is None
+
+    @mock.patch("ledger.base.request")
+    def test_write_status_badge_failure(self, mock_request):
+        mock_request.return_value = None
+        assert ledger.write_status_badge("abc", "tok", "GB", 90, "green") is None
 
     @mock.patch("ledger.base.request")
     def test_empty_gist_starts_fresh(self, mock_request):
