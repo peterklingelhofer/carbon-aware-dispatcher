@@ -1,0 +1,50 @@
+# Self CO2 Tracking (dogfooding)
+#
+# Runs this repo's own action on itself: it records cumulative savings to a gist,
+# keeps the live README badge fresh, and doubles as a real-world integration
+# smoke test of the local action on every PR and hourly.
+#
+# One-time setup (no file edits needed; configure in repo Settings):
+#   - Create a public gist (any placeholder content) and copy its id from the URL.
+#   - Settings > Secrets and variables > Actions > Variables: add a repository
+#     variable CARBON_LEDGER_GIST with the gist id.
+#   - Same screen > Secrets: add a repository secret GIST_TOKEN holding a personal
+#     access token with the "gist" scope (the built-in GITHUB_TOKEN cannot write
+#     gists).
+#
+# When CARBON_LEDGER_GIST is unset the ledger step is a harmless no-op, so this
+# workflow is safe to merge before the gist exists.
+
+name: Self CO2 Tracking
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # hourly, offset to avoid the top-of-hour rush
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write     # for the sticky PR comment on internal PRs
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5   # needed to run the local action via "./"
+
+      - name: Carbon-aware self-check
+        id: carbon
+        uses: ./
+        with:
+          grid_zones: 'auto:green'
+          max_carbon_intensity: '200'
+          ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+          gist_token: ${{ secrets.GIST_TOKEN }}
+          pr_comment: 'true'
+
+      - name: Show impact
+        run: |
+          echo "Zone: ${{ steps.carbon.outputs.grid_zone }} (${{ steps.carbon.outputs.carbon_intensity }} gCO2eq/kWh)"
+          echo "Saved this run: ${{ steps.carbon.outputs.co2_saved_grams }} g (${{ steps.carbon.outputs.co2_saved_equivalent }})"
+          echo "Lifetime saved: ${{ steps.carbon.outputs.co2_saved_total_grams }} g"
