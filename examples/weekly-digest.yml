@@ -1,0 +1,35 @@
+# Weekly Carbon Digest
+#
+# Posts (and updates in place) a single GitHub issue summarizing your CI's carbon
+# impact: builds run, CO2 saved/emitted over the last 7 and 30 days, a sparkline
+# of daily savings, lifetime total, and budget status. Reads the same ledger your
+# build workflow writes to.
+#
+# Setup (see examples/track-impact.yml for the gist + GIST_TOKEN steps):
+#   - ledger + gist_token wired up (the digest reads the ledger)
+#   - issues: write permission so the action can open/update the digest issue
+#
+# Copy to .github/workflows/weekly-digest.yml
+
+name: Weekly Carbon Digest
+
+on:
+  schedule:
+    - cron: '0 13 * * 1'   # Mondays 13:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        with:
+          mode: 'digest'
+          ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+          gist_token: ${{ secrets.GIST_TOKEN }}
+          monthly_budget_grams: '2000'   # optional, shows budget status in the digest
+          github_token: ${{ secrets.GITHUB_TOKEN }}
