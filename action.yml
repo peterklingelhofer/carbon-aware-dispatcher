@@ -127,6 +127,9 @@ outputs:
   carbon_badge_url:
     description: 'Shields.io badge URL showing estimated CO2 saved. Embed in README: ![carbon](url)'
     value: ${{ steps.grid-check.outputs.carbon_badge_url }}
+  co2_saved_equivalent:
+    description: 'Human-relatable phrase for the CO2 saved this run (e.g. "~1.8 km not driven" or "~14 phone charges").'
+    value: ${{ steps.grid-check.outputs.co2_saved_equivalent }}
   optimal_dispatch_at:
     description: 'ISO 8601 timestamp of the optimal green window (strategy=queue). "now" if already green, "none_in_deadline" if no window found.'
     value: ${{ steps.grid-check.outputs.optimal_dispatch_at }}
