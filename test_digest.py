@@ -82,6 +82,36 @@ class TestBudgetStatus:
         assert st["remaining"] == 100
 
 
+class TestRunEndToEnd:
+    @mock.patch("digest.base.request")
+    def test_run_with_file_ledger_posts_issue(self, mock_request, tmp_path):
+        import json
+
+        ledger_file = tmp_path / "ledger.json"
+        data = ledger.empty_ledger()
+        data["totals"] = {"co2_saved_grams": 1500, "runs": 12}
+        data["history"] = [{"date": "2026-06-15", "saved_g": 1500, "emitted_g": 300, "runs": 12}]
+        ledger_file.write_text(json.dumps(data))
+
+        # list issues (none) -> create issue
+        mock_request.side_effect = [[], {"number": 1}]
+        env = {
+            "LEDGER": f"file:{ledger_file}",
+            "TARGET_REPO": "o/r",
+            "GITHUB_TOKEN": "tok",
+            "MONTHLY_BUDGET_GRAMS": "2000",
+        }
+        assert digest.run(env) is True
+        # the created issue body carries the digest marker and lifetime line
+        create_call = mock_request.call_args_list[1]
+        body = create_call.kwargs["json_body"]["body"]
+        assert digest.MARKER in body
+        assert "Lifetime" in body
+
+    def test_run_without_ledger_returns_false(self):
+        assert digest.run({"TARGET_REPO": "o/r", "GITHUB_TOKEN": "t"}) is False
+
+
 class TestPostIssue:
     def test_no_token(self):
         assert digest.post_issue("o/r", "", "t", "b") is False

@@ -2469,7 +2469,68 @@ class TestCostCarbonRanking:
         assert check_grid.rank_by_cost_carbon([], 0.5) is None
 
 
+class TestEmitRunSignalsIntegration:
+    """End-to-end coverage of the composed signal-emission path."""
+
+    def _reset(self):
+        check_grid._ledger_recorded = False
+        check_grid._budget_summary = None
+        check_grid._lifetime_summary = None
+        check_grid._marginal_done = False
+        check_grid._marginal_summary = None
+        check_grid._status_badge_done = False
+        check_grid._pr_comment_done = False
+        check_grid._notify_done = False
+
+    def test_file_ledger_budget_and_tier(self):
+        self._reset()
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        os.unlink(ledger_path)
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        try:
+            os.environ["GITHUB_OUTPUT"] = out.name
+            os.environ["LEDGER"] = f"file:{ledger_path}"
+            os.environ["MONTHLY_BUDGET_GRAMS"] = "2000"
+            os.environ["TIER_THRESHOLDS"] = "150,300"
+            tier, _ = check_grid.emit_run_signals("GB", 192, True, 250)
+            assert tier == "amber"
+            content = open(out.name).read()
+            assert "carbon_tier=amber" in content
+            assert "budget_state=ok" in content
+            assert "budget_exceeded=false" in content
+            assert os.path.exists(ledger_path)  # ledger actually written
+        finally:
+            for p in (out.name, ledger_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS", "TIER_THRESHOLDS"):
+                os.environ.pop(k, None)
+            self._reset()
+
+
 class TestDoctor:
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.detect_provider")
+    def test_run_doctor_end_to_end(self, detect, check):
+        detect.return_value = "uk_carbon_intensity"
+        check.return_value = (True, 120)
+        sumf = tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False)
+        sumf.close()
+        try:
+            os.environ["GITHUB_STEP_SUMMARY"] = sumf.name
+            os.environ["GRID_ZONES"] = "GB"
+            check_grid.run_doctor()
+            written = open(sumf.name).read()
+            assert "Zone connectivity" in written
+            assert "`GB`" in written
+            assert "OK" in written
+        finally:
+            os.unlink(sumf.name)
+            for k in ("GITHUB_STEP_SUMMARY", "GRID_ZONES"):
+                os.environ.pop(k, None)
+
     def test_render_report_contains_sections(self):
         results = [
             {"zone": "GB", "provider": "uk", "token": "n/a", "status": "OK", "detail": "120"},
