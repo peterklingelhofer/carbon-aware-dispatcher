@@ -299,3 +299,8 @@ def iso_now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def github_headers(token: str) -> dict:
+    """Standard bearer auth + accept headers for the GitHub REST API."""
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}

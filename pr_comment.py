@@ -10,6 +10,7 @@ silently skips when not on a PR, when disabled, or when the token lacks
 
 import json
 
+import ledger
 from providers import base
 
 MARKER = "<!-- carbon-aware-dispatcher -->"
@@ -18,11 +19,7 @@ PROJECT_URL = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
 
 
 def _headers(token):
-    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-
-
-def _format_grams(grams):
-    return f"{grams / 1000:.1f} kg" if grams > 1000 else f"{grams:.0f} g"
+    return base.github_headers(token)
 
 
 def build_comment(
@@ -62,7 +59,7 @@ def build_comment(
     lines.append(f"| Threshold | {max_carbon} gCO2eq/kWh |")
     if co2_saved and co2_saved > 0:
         extra = f" ({equivalent})" if equivalent else ""
-        lines.append(f"| CO2 saved this run | {_format_grams(co2_saved)}{extra} |")
+        lines.append(f"| CO2 saved this run | {ledger.format_total(co2_saved)}{extra} |")
     if lifetime:
         lines.append(f"| Lifetime CO2 saved | {lifetime} |")
     if budget:
