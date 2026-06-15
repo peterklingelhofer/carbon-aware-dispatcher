@@ -1,0 +1,59 @@
+# Carbon-Aware Build with Full Impact Tracking
+#
+# Wires together every observability feature so you can watch your impact grow:
+#   - human-relatable equivalents (km not driven, phone charges) in the summary
+#   - a cumulative lifetime ledger persisted to a gist
+#   - a live, self-updating shields.io badge for your README
+#   - a sticky pull-request comment with the carbon verdict
+#   - data that feeds the GitHub Pages dashboard (dashboard/index.html)
+#
+# One-time setup:
+#   1. Create a public gist (any placeholder content); copy its id from the URL.
+#   2. Create a personal access token with the "gist" scope and save it as a
+#      repository secret named GIST_TOKEN. (The built-in GITHUB_TOKEN cannot
+#      write gists.)
+#   3. Replace YOUR_GIST_ID below with your gist id.
+#
+# Then embed the live lifetime badge in your README:
+#   ![CO2 saved](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/YOUR_USER/YOUR_GIST_ID/raw/carbon-badge.json)
+#
+# Copy this file to .github/workflows/carbon-aware-build.yml
+
+name: Carbon-Aware Build (tracked)
+
+on:
+  pull_request:           # so the sticky PR comment posts on PRs
+  schedule:
+    - cron: '0 * * * *'   # check hourly
+  workflow_dispatch:
+
+# Required for the sticky PR comment to post/update on the pull request
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          grid_zones: 'auto:green'
+          max_carbon_intensity: '200'
+          # Persist cumulative savings + publish the live badge:
+          ledger: 'gist:YOUR_GIST_ID'
+          gist_token: ${{ secrets.GIST_TOKEN }}
+          # Post a sticky verdict comment on pull requests:
+          pr_comment: 'true'
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        uses: actions/checkout@v5
+
+      - if: steps.carbon.outputs.grid_clean == 'true'
+        run: |
+          echo "Running on clean energy in ${{ steps.carbon.outputs.grid_zone }}!"
+          echo "Intensity: ${{ steps.carbon.outputs.carbon_intensity }} gCO2eq/kWh"
+          echo "Saved this run: ${{ steps.carbon.outputs.co2_saved_grams }} g (${{ steps.carbon.outputs.co2_saved_equivalent }})"
+          echo "Lifetime saved: ${{ steps.carbon.outputs.co2_saved_total_grams }} g"
+          # Add your build/test/deploy commands here
