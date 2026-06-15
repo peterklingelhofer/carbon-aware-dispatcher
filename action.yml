@@ -89,6 +89,14 @@ inputs:
     description: 'Use consumption-based (flow-traced) carbon intensity for EU zones instead of production-based, accounting for imports/exports between grids. Requires entsoe_token. Single-zone mode only; EU zones in the traced network. Falls back to production intensity for other zones. Costs extra ENTSO-E calls.'
     required: false
     default: 'false'
+  ledger:
+    description: 'Persist cumulative CO2 savings so the lifetime total grows across runs. Format: "gist:<gist_id>" (publishes a live badge + feeds the dashboard; needs gist_token) or "file:<path>" (writes a local JSON file). Empty disables it.'
+    required: false
+    default: ''
+  gist_token:
+    description: 'A GitHub token with the "gist" scope, used only when ledger is "gist:<id>". Store it as a secret. The default GITHUB_TOKEN cannot write gists, so a small personal access token is required.'
+    required: false
+    default: ''
 
 outputs:
   grid_clean:
@@ -130,6 +138,15 @@ outputs:
   co2_saved_equivalent:
     description: 'Human-relatable phrase for the CO2 saved this run (e.g. "~1.8 km not driven" or "~14 phone charges").'
     value: ${{ steps.grid-check.outputs.co2_saved_equivalent }}
+  co2_saved_total_grams:
+    description: 'Cumulative grams of CO2 saved across all runs (requires the ledger input).'
+    value: ${{ steps.grid-check.outputs.co2_saved_total_grams }}
+  co2_saved_total_equivalent:
+    description: 'Human-relatable phrase for the lifetime CO2 saved (requires the ledger input).'
+    value: ${{ steps.grid-check.outputs.co2_saved_total_equivalent }}
+  lifetime_badge_url:
+    description: 'Shields.io endpoint-badge URL showing lifetime CO2 saved, backed by the ledger gist. Embed in README: ![carbon](url)'
+    value: ${{ steps.grid-check.outputs.lifetime_badge_url }}
   optimal_dispatch_at:
     description: 'ISO 8601 timestamp of the optimal green window (strategy=queue). "now" if already green, "none_in_deadline" if no window found.'
     value: ${{ steps.grid-check.outputs.optimal_dispatch_at }}
@@ -181,3 +198,5 @@ runs:
         CARBON_POLICY_PATH: ${{ inputs.carbon_policy_path }}
         DRY_RUN: ${{ inputs.dry_run }}
         CONSUMPTION_BASED: ${{ inputs.consumption_based }}
+        LEDGER: ${{ inputs.ledger }}
+        GIST_TOKEN: ${{ inputs.gist_token }}
