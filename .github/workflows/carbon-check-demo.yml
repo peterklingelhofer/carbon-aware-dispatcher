@@ -5,8 +5,8 @@ name: Carbon-Aware Check (Demo)
 # so it works with zero secrets configured.
 #
 # Two ways to choose zones in the run window:
-#   - preset: pick auto:cleanest (all free zones, lowest wins), auto:green (small
-#     curated list), or the GB,AU-NSW example.
+#   - preset: pick auto:cleanest (all free zones, lowest wins) or auto:green
+#     (small curated list).
 #   - custom_zones: type any comma-separated zones (e.g. CISO,GB,FR); when set it
 #     overrides the preset. This is how you check arbitrary combinations.
 
@@ -14,14 +14,13 @@ on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "Preset (ignored if 'custom zones' is filled). auto:cleanest = check every free-provider zone worldwide, pick the single lowest (most thorough, most API calls). auto:green = small curated list of usually-clean zones (fewer calls). GB,AU-NSW = fixed keyless example."
+        description: "Preset (ignored if 'custom zones' is filled). auto:cleanest = check every free-provider zone worldwide, pick the single lowest (most thorough, most API calls). auto:green = small curated list of usually-clean zones (fewer calls)."
         required: false
         type: choice
         default: "auto:cleanest"
         options:
           - "auto:cleanest"
           - "auto:green"
-          - "GB,AU-NSW"
       custom_zones:
         description: "Custom zones, comma-separated (e.g. CISO,GB,FR,BR-NE). Overrides the preset when set. See the README for zone codes. EU/global zones may need a token secret."
         required: false
