@@ -2469,6 +2469,57 @@ class TestCostCarbonRanking:
         assert check_grid.rank_by_cost_carbon([], 0.5) is None
 
 
+class TestDoctor:
+    def test_render_report_contains_sections(self):
+        results = [
+            {"zone": "GB", "provider": "uk", "token": "n/a", "status": "OK", "detail": "120"},
+            {
+                "zone": "FR",
+                "provider": "entsoe",
+                "token": "MISSING",
+                "status": "FAIL",
+                "detail": "no token",
+            },
+        ]
+        features = [("Ledger", "on"), ("Carbon budget", "off")]
+        report = "\n".join(check_grid.render_doctor_report(results, features))
+        assert "Zone connectivity" in report
+        assert "Optional features" in report
+        assert "`GB`" in report
+        assert "MISSING" in report
+        assert "Ledger" in report
+
+    def test_enabled_features_reflects_env(self):
+        env = {"LEDGER": "gist:x", "COST_WEIGHT": "0.5", "NOTIFY_WEBHOOK": ""}
+        feats = dict(check_grid._enabled_features(env))
+        assert feats["Ledger"] == "on"
+        assert feats["Cost+carbon"] == "on"
+        assert feats["Notifications"] == "off"
+
+    def test_enabled_features_bad_cost_weight(self):
+        feats = dict(check_grid._enabled_features({"COST_WEIGHT": "abc"}))
+        assert feats["Cost+carbon"] == "off"
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.detect_provider")
+    def test_probe_zone_ok(self, detect, check):
+        detect.return_value = "uk_carbon_intensity"
+        check.return_value = (True, 90)
+        r = check_grid.probe_zone("GB", 250, "", "", "")
+        assert r["status"] == "OK"
+        assert "90" in r["detail"]
+        assert r["token"] == "n/a"
+
+    @mock.patch("check_grid.check_carbon_intensity")
+    @mock.patch("check_grid.detect_provider")
+    def test_probe_zone_missing_token(self, detect, check):
+        detect.return_value = check_grid.PROVIDER_ENTSOE
+        check.return_value = (None, None)
+        r = check_grid.probe_zone("FR", 250, "", "", "")
+        assert r["status"] == "FAIL"
+        assert r["token"] == "MISSING"
+
+
 class TestMarginalOutputs:
     def _reset(self):
         check_grid._marginal_done = False
