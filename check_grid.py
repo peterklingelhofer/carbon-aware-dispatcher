@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import requests
 
 import ledger
+import notify
 import pr_comment
 from providers import (
     AUTO_CLEANEST_ZONES,
@@ -858,6 +859,31 @@ def post_pr_comment_once(
     )
 
 
+# Fire the outbound notification at most once per process.
+_notify_done = False
+
+
+def notify_once(zone, intensity, is_green, tier, dry_run=False):
+    """Send a webhook notification for the verdict (at most once/process).
+
+    No-op unless NOTIFY_WEBHOOK is set and the run matches NOTIFY_ON. Degrades to
+    a warning on failure so notifications never break CI.
+    """
+    global _notify_done
+    if _notify_done:
+        return
+    url = os.environ.get("NOTIFY_WEBHOOK", "")
+    if not url:
+        return
+    _notify_done = True
+
+    events = notify.parse_events(os.environ.get("NOTIFY_ON", ""))
+    budget_exceeded = bool(_budget_summary and _budget_summary.get("exceeded"))
+    if not notify.should_notify(events, is_green, budget_exceeded):
+        return
+    notify.send(url, zone, intensity, is_green, tier, _budget_summary, dry_run)
+
+
 def set_savings_outputs(co2_saved, badge_url, intensity=None):
     """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
     if co2_saved and co2_saved > 0:
@@ -1185,6 +1211,9 @@ def write_job_summary(
     # Fire the sticky PR comment first so it posts even when there is no job
     # summary file (e.g. local runs); it is a no-op unless opted in and on a PR
     post_pr_comment_once(zone, intensity, is_green, max_carbon, co2_saved, dry_run, tier)
+
+    # Outbound webhook notification (no-op unless NOTIFY_WEBHOOK is set)
+    notify_once(zone, intensity, is_green, tier, dry_run)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
