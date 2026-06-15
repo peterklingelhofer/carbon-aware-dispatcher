@@ -2412,6 +2412,52 @@ class TestCarbonTier:
                 os.environ.pop(k, None)
 
 
+class TestCostCarbonRanking:
+    def test_cost_weight_default_zero(self):
+        os.environ.pop("COST_WEIGHT", None)
+        assert check_grid._cost_weight() == 0.0
+
+    def test_cost_weight_clamped(self):
+        try:
+            os.environ["COST_WEIGHT"] = "1.7"
+            assert check_grid._cost_weight() == 1.0
+            os.environ["COST_WEIGHT"] = "-3"
+            assert check_grid._cost_weight() == 0.0
+        finally:
+            os.environ.pop("COST_WEIGHT", None)
+
+    def test_cost_weight_garbage(self):
+        try:
+            os.environ["COST_WEIGHT"] = "abc"
+            assert check_grid._cost_weight() == 0.0
+        finally:
+            os.environ.pop("COST_WEIGHT", None)
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_pure_cost_picks_cheapest(self, price):
+        # CISO cleaner (50) but pricier (0.10); FR dirtier (100) but cheaper (0.05)
+        candidates = [("CISO", 50, "l1"), ("FR", 100, "l2")]
+        price.side_effect = [0.10, 0.05]
+        zone, intensity, label = check_grid.rank_by_cost_carbon(candidates, 1.0)
+        assert zone == "FR"
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_pure_carbon_picks_cleanest(self, price):
+        candidates = [("CISO", 50, "l1"), ("FR", 100, "l2")]
+        price.side_effect = [0.10, 0.05]
+        zone, _, _ = check_grid.rank_by_cost_carbon(candidates, 0.0)
+        assert zone == "CISO"
+
+    @mock.patch("check_grid.azure_pricing.get_region_price")
+    def test_missing_price_falls_back(self, price):
+        candidates = [("CISO", 50, "l1"), ("FR", 100, "l2")]
+        price.side_effect = [0.10, None]
+        assert check_grid.rank_by_cost_carbon(candidates, 0.5) is None
+
+    def test_empty_candidates(self):
+        assert check_grid.rank_by_cost_carbon([], 0.5) is None
+
+
 class TestEstimateEmissions:
     def test_none_intensity_zero(self):
         assert check_grid.estimate_emissions(None) == 0.0

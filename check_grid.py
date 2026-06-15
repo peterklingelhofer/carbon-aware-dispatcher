@@ -29,6 +29,7 @@ from providers import (
     PROVIDER_TAIWAN,
     PROVIDER_UK,
     aemo,
+    azure_pricing,
     canada,
     detect_provider,
     eia,
@@ -302,6 +303,63 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
         )
 
 
+def _cost_weight():
+    """Read COST_WEIGHT (0..1) from the environment, clamped. 0 = carbon only."""
+    raw = os.environ.get("COST_WEIGHT", "")
+    if not raw:
+        return 0.0
+    try:
+        w = float(raw)
+    except ValueError:
+        print(f"::warning::Invalid COST_WEIGHT '{raw}'; ignoring cost weighting")
+        return 0.0
+    return max(0.0, min(1.0, w))
+
+
+def rank_by_cost_carbon(candidates, cost_weight):
+    """Pick the best (zone, intensity, label) by a cost+carbon blend.
+
+    candidates: list of (zone, intensity, label). Fetches a representative
+    regional VM price per zone, min-max normalizes price and carbon across the
+    candidates, and minimizes cost_weight*price + (1 - cost_weight)*carbon.
+    Returns None to fall back to carbon-only ranking when any price is missing.
+    """
+    if not candidates:
+        return None
+    prices = []
+    for zone, _, _ in candidates:
+        price = azure_pricing.get_region_price(get_azure_region(zone))
+        if price is None:
+            print(f"::warning::No price for zone '{zone}'; using carbon-only ranking")
+            return None
+        prices.append(price)
+
+    intensities = [c[1] for c in candidates]
+
+    def _norm(vals):
+        lo, hi = min(vals), max(vals)
+        span = hi - lo
+        return [0.0 if span == 0 else (v - lo) / span for v in vals]
+
+    norm_price = _norm(prices)
+    norm_carbon = _norm(intensities)
+
+    best_i = 0
+    best_score = None
+    for i in range(len(candidates)):
+        score = cost_weight * norm_price[i] + (1 - cost_weight) * norm_carbon[i]
+        if best_score is None or score < best_score:
+            best_score, best_i = score, i
+
+    zone, intensity, label = candidates[best_i]
+    set_output("selected_cost_usd_hr", str(prices[best_i]))
+    print(
+        f"  Cost+carbon pick: {zone} (intensity {intensity}, "
+        f"${prices[best_i]:.4f}/hr, cost_weight {cost_weight})"
+    )
+    return zone, intensity, label
+
+
 def check_multiple_zones(
     zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token="", collect=None
 ):
@@ -321,6 +379,7 @@ def check_multiple_zones(
     best_intensity = None
     best_label = None
     skipped = []
+    green_candidates = []
 
     # Sort: free providers first, then token-requiring ones.
     # This avoids exhausting Electricity Maps rate limits (50 req/hr)
@@ -372,10 +431,19 @@ def check_multiple_zones(
             # Record every measured zone (green or not) for the comparison panel
             if collect is not None:
                 collect.append((zone, intensity))
-            if is_green and (best_intensity is None or intensity < best_intensity):
-                best_zone = zone
-                best_intensity = intensity
-                best_label = label
+            if is_green:
+                green_candidates.append((zone, intensity, label))
+                if best_intensity is None or intensity < best_intensity:
+                    best_zone = zone
+                    best_intensity = intensity
+                    best_label = label
+
+    # When cost weighting is on, re-rank the green zones by a cost+carbon blend
+    cost_weight = _cost_weight()
+    if cost_weight > 0 and green_candidates:
+        ranked = rank_by_cost_carbon(green_candidates, cost_weight)
+        if ranked:
+            best_zone, best_intensity, best_label = ranked
 
     return best_zone, best_intensity, best_label, skipped
 

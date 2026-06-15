@@ -234,6 +234,26 @@ the deploy-region pattern above.
 
 The `runner_label` output will be a RunsOn-compatible label like `runs-on=12345/runner=2cpu-linux-x64/region=us-west-1`.
 
+### Cost + carbon routing
+
+Among multiple candidate zones, pick one that's both clean *and* cheap. Set
+`cost_weight` (0–1) to blend each zone's carbon intensity with a representative
+cloud price from the public Azure Retail Prices API (no key, keyed off each
+zone's nearest Azure region):
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    grid_zones: 'CISO,GB,FR,AU-NSW'
+    cost_weight: '0.5'   # 0 = cleanest only, 1 = cheapest only, 0.5 = balance
+```
+
+The chosen zone minimizes `cost_weight x price + (1 - cost_weight) x carbon`
+(both min-max normalized across the candidates). `selected_cost_usd_hr` reports
+the winner's price. If pricing is unavailable it falls back to carbon-only. No
+effect in single-zone mode. See [`examples/cost-aware-routing.yml`](examples/cost-aware-routing.yml).
+
 ## Escape coal-heavy grids
 
 Route jobs from a coal-dependent region to the nearest clean alternative:
@@ -396,6 +416,9 @@ Ready-to-copy files in [`examples/`](examples/):
 | `ledger` | none | Persist cumulative savings: `gist:<id>` (live badge + dashboard, needs `gist_token`) or `file:<path>`. See [Watch your impact](#watch-your-impact). |
 | `gist_token` | none | Token with `gist` scope for the `gist:` ledger backend. Store as a secret. |
 | `pr_comment` | `false` | Post a sticky carbon-verdict comment on pull requests. Needs `pull-requests: write`. |
+| `tier_thresholds` | `150,300` | Two gCO2eq/kWh boundaries `green,amber` for the `carbon_tier` dial. See [Carbon-adaptive CI](#carbon-adaptive-ci-the-dial). |
+| `monthly_budget_grams` | none | Monthly carbon cap in gCO2eq. Needs `ledger`. See [Carbon budgets](#carbon-budgets-as-code). |
+| `cost_weight` | `0` | Blend cloud cost with carbon when choosing among zones (0 = clean only, 1 = cheap only). See [Cost + carbon routing](#cost--carbon-routing). |
 
 ## Outputs
 
@@ -403,6 +426,9 @@ Ready-to-copy files in [`examples/`](examples/):
 |--------|-------------|
 | `grid_clean` | `true` if a zone was clean enough, `false` otherwise. |
 | `carbon_intensity` | Intensity in gCO2eq/kWh, or `unknown` on error. |
+| `carbon_tier` | Adaptive-CI dial: `green` / `amber` / `red` (plus `carbon_tier_reason`). |
+| `budget_used_pct` / `budget_remaining_grams` / `budget_exceeded` / `budget_state` | Monthly carbon budget status (needs `monthly_budget_grams` + `ledger`). |
+| `selected_cost_usd_hr` | Representative price of the selected zone when `cost_weight` > 0. |
 | `grid_zone` | Selected zone. |
 | `runner_label` | Runner label for the selected zone. |
 | `cloud_region` / `gcp_region` / `azure_region` | Nearest region for each cloud provider. Always set. |
