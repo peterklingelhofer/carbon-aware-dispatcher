@@ -228,6 +228,31 @@ class TestSuggestRegion:
         assert rc == cli.EXIT_NODATA
 
 
+class TestPlan:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "CISO"}, {"zone": "PJM"}])
+    def test_picks_best_zone_and_hour(self, bp, capsys):
+        profiles = {
+            "CISO": {h: 300.0 for h in range(24)} | {3: 80.0},
+            "PJM": {h: 400.0 for h in range(24)} | {5: 350.0},
+        }
+        bp.side_effect = lambda z: profiles.get(z)
+        rc = cli.main(["plan", "--zones", "CISO,PJM", "--energy-kwh", "10", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["zone"] == "CISO" and out["hour"] == 3
+        assert out["savings_g_per_run"] > 0
+
+    @mock.patch("cli.cmd_suggest_region")
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "FR"}])
+    def test_falls_back_to_region(self, _bp, fallback, capsys):
+        fallback.return_value = cli.EXIT_GREEN
+        rc = cli.main(["plan", "--zones", "FR"])
+        assert rc == cli.EXIT_GREEN
+        fallback.assert_called_once()
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
