@@ -94,9 +94,20 @@ class TestBestWindow:
 
 
 class TestSuggestCron:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_history_derived(self, _bp, capsys):
+        _bp.return_value = {11: 85.0, 12: 82.0, 19: 145.0}
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cron"] == "0 12 * * *"
+        assert out["source"] == "history"
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.queue_find_optimal_window")
-    def test_forecast_derived(self, qf, capsys):
+    def test_forecast_derived(self, qf, _bp, capsys):
         qf.return_value = ("GB", "2026-06-17T23:00:00Z", 158)
         rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_GREEN
@@ -104,10 +115,11 @@ class TestSuggestCron:
         assert out["cron"] == "0 23 * * *"
         assert out["source"] == "forecast"
 
+    @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.suggest_green_cron")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.queue_find_optimal_window")
-    def test_heuristic_fallback(self, qf, sgc, capsys):
+    def test_heuristic_fallback(self, qf, sgc, _bp, capsys):
         qf.return_value = (None, None, None)
         sgc.return_value = ("0 2 * * *", "daily at 2am (wind)")
         rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
@@ -116,13 +128,32 @@ class TestSuggestCron:
         assert out["cron"] == "0 2 * * *"
         assert out["source"] == "heuristic"
 
+    @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.suggest_green_cron")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.queue_find_optimal_window")
-    def test_no_suggestion(self, qf, sgc, capsys):
+    def test_no_suggestion(self, qf, sgc, _bp, capsys):
         qf.return_value = (None, None, None)
         sgc.return_value = (None, None)
         rc = cli.main(["suggest-cron", "--zones", "GB"])
+        assert rc == cli.EXIT_NODATA
+
+
+class TestCurve:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_curve_json(self, bp, capsys):
+        bp.return_value = {12: 82.0, 19: 145.0}
+        rc = cli.main(["curve", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cleanest_hour"] == 12
+        assert out["spread_pct"] > 0
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_curve_unavailable(self, _bp, capsys):
+        rc = cli.main(["curve", "--zones", "FR"])
         assert rc == cli.EXIT_NODATA
 
 
