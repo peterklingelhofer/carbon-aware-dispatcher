@@ -76,6 +76,32 @@ class TestSavings:
         assert carbon_curve.best_case_savings_grams({12: 80, 19: 200}, 5) == 600.0
 
 
+class TestCleanestWindow:
+    def test_picks_lowest_block(self):
+        profile = {h: 100 for h in range(24)}
+        profile.update({11: 50, 12: 40, 13: 45})  # cleanest block around noon
+        start, avg = carbon_curve.cleanest_window(profile, 3)
+        assert start == 11 and avg < 50
+
+    def test_wraps_midnight(self):
+        profile = {h: 100 for h in range(24)}
+        profile.update({23: 10, 0: 10, 1: 10})  # cleanest block spans midnight
+        start, _ = carbon_curve.cleanest_window(profile, 3)
+        assert start == 23
+
+    def test_skips_incomplete_windows(self):
+        # only 4 hours known; a 3h window only fits fully starting at 10 or 11
+        profile = {10: 50, 11: 40, 12: 45, 13: 60}
+        start, _ = carbon_curve.cleanest_window(profile, 3)
+        assert start in (10, 11)
+
+    def test_none_when_no_full_window(self):
+        assert carbon_curve.cleanest_window({1: 50, 5: 40}, 3) == (None, None)
+
+    def test_invalid_hours(self):
+        assert carbon_curve.cleanest_window({1: 50}, 0) == (None, None)
+
+
 class TestIsWorthShifting:
     def test_high_spread_worth(self):
         assert carbon_curve.is_worth_shifting({0: 50, 1: 150}) is True
