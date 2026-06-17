@@ -76,5 +76,30 @@ class TestBuildProfile:
         req.return_value = {"data": [{"from": "2026-06-10T12:00Z", "intensity": {"actual": 82}}]}
         assert carbon_curve.build_profile("GB") == {12: 82.0}
 
-    def test_non_gb_returns_none(self):
+    def test_non_gb_uses_ledger_when_available(self, monkeypatch):
+        monkeypatch.setattr(carbon_curve, "ledger_profile", lambda z: {h: 100.0 for h in range(8)})
+        assert carbon_curve.build_profile("FR") == {h: 100.0 for h in range(8)}
+
+    def test_non_gb_none_without_ledger(self, monkeypatch):
+        monkeypatch.setattr(carbon_curve, "ledger_profile", lambda z: {})
         assert carbon_curve.build_profile("FR") is None
+
+
+class TestLedgerProfile:
+    def test_no_ledger_config(self, monkeypatch):
+        monkeypatch.delenv("LEDGER", raising=False)
+        assert carbon_curve.ledger_profile("FR") == {}
+
+    def test_reads_file_ledger(self, monkeypatch, tmp_path):
+        import json
+
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        path = tmp_path / "ledger.json"
+        path.write_text(json.dumps(data))
+        monkeypatch.setenv("LEDGER", f"file:{path}")
+        prof = carbon_curve.ledger_profile("FR")
+        assert len(prof) == 6 and prof[3] == 103.0
