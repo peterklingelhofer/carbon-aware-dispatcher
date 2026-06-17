@@ -661,11 +661,16 @@ def set_output(name, value):
 
 
 def estimate_carbon_savings(intensity, job_minutes=None):
-    """Estimate CO2 saved by running on a clean grid vs. the global average.
+    """Estimate CO2 saved vs the global-average grid (a location-based benchmark).
+
+    This is a *comparison* against a fixed global-average baseline
+    (GLOBAL_AVG_INTENSITY), not marginal or additional avoided emissions; it
+    answers "how much cleaner than a world-average grid is this run", which
+    overstates real-world avoided emissions on grids where shifted load just
+    rides baseload. For the honest figure of what the run actually produced, use
+    estimate_emissions (exposed as the co2_emitted_grams output).
 
     Returns (co2_saved_grams, badge_url) or (0, badge_url) if no savings.
-    co2_saved_grams: estimated grams of CO2 avoided.
-    badge_url: shields.io badge URL for embedding in READMEs.
     """
     if intensity is None:
         return 0, None
@@ -983,8 +988,25 @@ def notify_once(zone, intensity, is_green, tier, dry_run=False):
     notify.send(url, zone, intensity, is_green, tier, _budget_summary, dry_run)
 
 
+# How the co2_saved figure is derived: stated in an output so the basis travels
+# with the number. It is a location-based benchmark that excludes marginal/additional
+# avoided emissions (which would need marginal data we only have free for one US
+# region). The honest, trustworthy number is co2_emitted_grams below.
+SAVINGS_BASIS = (
+    f"location-based: vs {GLOBAL_AVG_INTENSITY} gCO2eq/kWh global average; "
+    "benchmark, with marginal/additional as a separate figure"
+)
+
+
 def set_savings_outputs(co2_saved, badge_url, intensity=None):
-    """Emit the CO2 savings, shields badge, and human-equivalent outputs."""
+    """Emit savings, the honest per-run emissions, badge, and equivalents."""
+    emitted = estimate_emissions(intensity)
+    if intensity is not None:
+        # Operational emissions actually produced this run (Green Software
+        # Foundation SCI, operational term; embodied excluded). This is the
+        # trustworthy figure; co2_saved is a benchmark comparison.
+        set_output("co2_emitted_grams", str(emitted))
+        set_output("co2_saved_basis", SAVINGS_BASIS)
     if co2_saved and co2_saved > 0:
         set_output("co2_saved_grams", str(co2_saved))
         equiv = carbon_equivalents(co2_saved)
@@ -992,7 +1014,7 @@ def set_savings_outputs(co2_saved, badge_url, intensity=None):
             set_output("co2_saved_equivalent", equiv["phrase"])
     if badge_url:
         set_output("carbon_badge_url", badge_url)
-    record_lifetime_savings(co2_saved or 0, estimate_emissions(intensity))
+    record_lifetime_savings(co2_saved or 0, emitted)
 
 
 def run_dry_run(
@@ -1368,11 +1390,15 @@ def write_job_summary(
     if waited_minutes > 0:
         lines.append(f"| **Waited** | {waited_minutes:.0f} minutes |")
 
+    if intensity is not None:
+        # The honest, measured figure: what this run actually emitted
+        lines.append(f"| **Emitted (this run)** | {estimate_emissions(intensity):.0f} g CO2 |")
+
     if co2_saved and co2_saved > 0:
         if co2_saved > 1000:
-            lines.append(f"| **Est. CO2 Saved** | {co2_saved / 1000:.1f} kg vs global avg |")
+            lines.append(f"| **Saved vs global avg** | {co2_saved / 1000:.1f} kg (benchmark) |")
         else:
-            lines.append(f"| **Est. CO2 Saved** | {co2_saved:.0f} g vs global avg |")
+            lines.append(f"| **Saved vs global avg** | {co2_saved:.0f} g (benchmark) |")
         equiv = carbon_equivalents(co2_saved)
         if equiv["phrase"]:
             lines.append(f"| **That's like** | {equiv['phrase']} |")
