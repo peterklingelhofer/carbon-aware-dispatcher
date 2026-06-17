@@ -660,6 +660,27 @@ def set_output(name, value):
     print(f"  Output {name}={value}")
 
 
+def resolve_energy_kwh(job_minutes=None):
+    """Resolve the run's energy use (kWh) from config, most-specific first.
+
+    Precedence: JOB_ENERGY_KWH (measured, best) > JOB_POWER_WATTS x duration >
+    the CI default (50 W x 15 min). Duration comes from job_minutes, else
+    JOB_DURATION_MINUTES, else the default. This is what makes co2_emitted_grams
+    real for actual workloads (an 8-hour GPU run is not a 50 W CI job).
+    """
+    explicit = _soft_float("JOB_ENERGY_KWH")
+    if explicit and explicit > 0:
+        return explicit
+    watts = _soft_float("JOB_POWER_WATTS")
+    power_kw = (watts / 1000.0) if (watts and watts > 0) else CI_JOB_POWER_KW
+    if job_minutes is not None:
+        duration_hours = job_minutes / 60.0
+    else:
+        mins = _soft_float("JOB_DURATION_MINUTES")
+        duration_hours = (mins / 60.0) if (mins and mins > 0) else DEFAULT_JOB_DURATION_HOURS
+    return power_kw * max(0.0, duration_hours)
+
+
 def estimate_carbon_savings(intensity, job_minutes=None):
     """Estimate CO2 saved vs the global-average grid (a location-based benchmark).
 
@@ -675,8 +696,7 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     if intensity is None:
         return 0, None
 
-    duration_hours = (job_minutes / 60) if job_minutes else DEFAULT_JOB_DURATION_HOURS
-    energy_kwh = CI_JOB_POWER_KW * duration_hours
+    energy_kwh = resolve_energy_kwh(job_minutes)
 
     actual_co2 = intensity * energy_kwh  # gCO2 from clean grid
     baseline_co2 = GLOBAL_AVG_INTENSITY * energy_kwh  # gCO2 from average grid
@@ -699,16 +719,16 @@ def estimate_carbon_savings(intensity, job_minutes=None):
 
 
 def estimate_emissions(intensity, job_minutes=None):
-    """Estimate gCO2 emitted by this CI run on a grid of the given intensity.
+    """Estimate gCO2 emitted by this run on a grid of the given intensity.
 
     The counterpart to estimate_carbon_savings: what the run actually produced,
-    used for carbon budgeting. Returns grams, or 0 when intensity is unknown.
+    used for carbon budgeting and the co2_emitted_grams output. Energy comes from
+    resolve_energy_kwh (measured value or power x duration). Returns grams, or 0
+    when intensity is unknown.
     """
     if intensity is None:
         return 0.0
-    duration_hours = (job_minutes / 60) if job_minutes else DEFAULT_JOB_DURATION_HOURS
-    duration_hours = max(0.0, duration_hours)
-    return round(max(0.0, intensity) * CI_JOB_POWER_KW * duration_hours, 1)
+    return round(max(0.0, intensity) * resolve_energy_kwh(job_minutes), 1)
 
 
 def carbon_equivalents(grams):
