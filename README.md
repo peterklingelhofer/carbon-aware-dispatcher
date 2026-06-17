@@ -501,6 +501,9 @@ carbon-aware suggest-cron --zones GB
 
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
+
+# Gut-check whether scheduling is even worth it here (flat grids: no)
+carbon-aware worth-it --zones GB    # exit 0 worth it, 1 not, 2 can't assess
 ```
 
 `report` writes a machine-readable [SCI](https://sci.greensoftware.foundation/)
@@ -517,6 +520,11 @@ best signal available: a multi-day **historical hour-of-day curve** where free
 history exists (GB today), else the live forecast, else a per-zone heuristic.
 Inspect the curve directly with `carbon-aware curve`. Reserve `wait-for-green`
 for one-off, deadline-bound work.
+
+And before adding any of this, ask `carbon-aware worth-it`: on a flat,
+baseload-dominated grid the intensity barely moves across the day, so shifting
+saves little; the tool will say so plainly rather than have you add complexity
+for nothing.
 
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
 stderr; stdout carries only the result (add `--json` for machine output).

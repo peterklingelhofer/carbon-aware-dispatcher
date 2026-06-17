@@ -58,6 +58,18 @@ class TestUkHistory:
         assert carbon_curve.uk_history_samples() == []
 
 
+class TestIsWorthShifting:
+    def test_high_spread_worth(self):
+        assert carbon_curve.is_worth_shifting({0: 50, 1: 150}) is True
+
+    def test_flat_not_worth(self):
+        assert carbon_curve.is_worth_shifting({0: 100, 1: 102, 2: 99}) is False
+
+    def test_custom_threshold(self):
+        # ~2% spread; worth only if threshold drops below it
+        assert carbon_curve.is_worth_shifting({0: 100, 1: 102}, min_spread_pct=1.0) is True
+
+
 class TestBuildProfile:
     @mock.patch("carbon_curve.base.request")
     def test_gb_builds_profile(self, req):
