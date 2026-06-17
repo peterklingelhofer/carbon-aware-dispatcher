@@ -883,6 +883,8 @@ def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=N
 
     token = os.environ.get("GIST_TOKEN", "")
     now = datetime.now(timezone.utc)
+    # Operational energy (kWh x PUE) for the counterfactual avoided-emissions math
+    operational_energy = resolve_energy_kwh() * _pue()
     summary = ledger.record_savings(
         config,
         token,
@@ -892,6 +894,7 @@ def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=N
         zone=zone,
         intensity=intensity,
         hour=now.hour,
+        energy_kwh=operational_energy,
     )
     if not summary:
         return
@@ -903,6 +906,9 @@ def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=N
         set_output("co2_saved_total_equivalent", equiv["phrase"])
     if summary.get("badge_url"):
         set_output("lifetime_badge_url", summary["badge_url"])
+    if summary.get("avoided_total"):
+        # Verifiable avoided emissions: cleaner than this zone's own typical hour
+        set_output("co2_avoided_total_grams", str(round(summary["avoided_total"], 1)))
 
     _emit_budget_outputs(summary)
 

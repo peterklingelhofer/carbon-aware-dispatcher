@@ -689,6 +689,13 @@ Carbon claims are easy to inflate, so here is exactly what the numbers mean:
 Use `co2_emitted_grams` for reporting and `co2_saved_grams` as a
 directional benchmark that makes no offset claim.
 
+**`co2_avoided_total_grams`: verifiable avoided emissions.** With a ledger,
+each run is compared against *this zone's own typical hour* (from the
+accumulated curve), and the difference accrues into a lifetime total. Unlike the
+global-average benchmark, this is a real, self-referential measure of how much
+cleaner you ran by scheduling well; it starts accruing once the curve has
+enough hours.
+
 **Make the energy figure real.** By default emitted assumes a typical CI job
 (50 W for 15 min). For actual workloads, a GPU training run or an ETL batch, set
 your real energy so the number means something:

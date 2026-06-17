@@ -229,6 +229,9 @@ outputs:
   co2_saved_total_grams:
     description: 'Cumulative grams of CO2 saved across all runs (requires the ledger input).'
     value: ${{ steps.grid-check.outputs.co2_saved_total_grams }}
+  co2_avoided_total_grams:
+    description: 'Cumulative verifiable avoided emissions: how much cleaner runs were than this zone''s own typical hour, summed over time (requires the ledger; accrues once a curve builds up).'
+    value: ${{ steps.grid-check.outputs.co2_avoided_total_grams }}
   co2_saved_total_equivalent:
     description: 'Human-relatable phrase for the lifetime CO2 saved (requires the ledger input).'
     value: ${{ steps.grid-check.outputs.co2_saved_total_equivalent }}
