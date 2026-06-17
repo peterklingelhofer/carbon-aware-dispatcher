@@ -491,7 +491,14 @@ carbon-aware wait-for-green --zones GB,CISO --max-carbon 200 --max-wait 6h && ./
 
 # Plan ahead: print the cleanest upcoming window from forecasts
 carbon-aware best-window --zones GB --hours 24 --json
+
+# Emit an SCI carbon report for sustainability reporting (energy/PUE/embodied)
+carbon-aware report --zones GB --energy-kwh 12 --pue 1.12 --embodied-grams 40 > sci.json
 ```
+
+`report` writes a machine-readable [SCI](https://sci.greensoftware.foundation/)
+record per run — energy, intensity, PUE, embodied, and total emitted — that
+aggregates for CSRD / GHG-Protocol reporting.
 
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
 stderr; stdout carries only the result (add `--json` for machine output).
