@@ -106,6 +106,18 @@ class TestSuggestCron:
         # savings = (mean - cleanest) * energy; mean ~104, cleanest 82 -> ~220 g
         assert out["savings_g_per_run"] > 0
 
+    @mock.patch("carbon_curve.build_weekday_profile")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_weekly_picks_day(self, bp, wbp, capsys):
+        bp.return_value = {h: 100.0 for h in range(24)} | {12: 60.0}  # cleanest hour 12
+        wbp.return_value = {0: 200.0, 5: 80.0, 6: 90.0}  # cleanest day Sat (py 5)
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--weekly", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cron"] == "0 12 * * 6"  # Sat=cron dow 6, hour 12
+        assert "weekly on Sat" in out["description"]
+
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_duration_window(self, bp, capsys):

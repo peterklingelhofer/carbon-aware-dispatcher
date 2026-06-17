@@ -110,8 +110,8 @@ def best_case_savings_grams(profile, energy_kwh):
     return round((max(profile.values()) - min(profile.values())) * energy_kwh, 1)
 
 
-def uk_history_samples(days=7):
-    """Fetch GB national half-hourly history; return [(hour, intensity)] in UTC."""
+def _uk_history_periods(days=7):
+    """Fetch GB national half-hourly history; return [(datetime, intensity)] in UTC."""
     days = max(1, min(days, MAX_HISTORY_DAYS))
     to = datetime.now(timezone.utc)
     frm = to - timedelta(days=days)
@@ -120,7 +120,7 @@ def uk_history_samples(days=7):
     data = base.request(url, parse="json")
     if not data:
         return []
-    samples = []
+    periods = []
     for period in data.get("data", []):
         actual = (period.get("intensity") or {}).get("actual")
         if actual is None:
@@ -129,8 +129,48 @@ def uk_history_samples(days=7):
             dt = datetime.fromisoformat(str(period.get("from", "")).replace("Z", "+00:00"))
         except (ValueError, TypeError):
             continue
-        samples.append((dt.hour, actual))
-    return samples
+        periods.append((dt, actual))
+    return periods
+
+
+def uk_history_samples(days=7):
+    """GB half-hourly history as [(hour, intensity)] in UTC."""
+    return [(dt.hour, val) for dt, val in _uk_history_periods(days)]
+
+
+def uk_weekday_samples(days=14):
+    """GB half-hourly history as [(weekday, intensity)] (Mon=0..Sun=6, UTC)."""
+    return [(dt.weekday(), val) for dt, val in _uk_history_periods(days)]
+
+
+def weekday_profile_from_samples(samples, min_days=3):
+    """Average intensity by weekday (Mon=0..Sun=6). {} until min_days seen."""
+    buckets = {}
+    for weekday, intensity in samples:
+        if intensity is None:
+            continue
+        buckets.setdefault(weekday, []).append(float(intensity))
+    profile = {d: round(sum(v) / len(v), 1) for d, v in buckets.items()}
+    return profile if len(profile) >= min_days else {}
+
+
+def cleanest_weekday(profile):
+    """Return (weekday, intensity) of the lowest-intensity day, or (None, None)."""
+    if not profile:
+        return None, None
+    day = min(profile, key=lambda d: profile[d])
+    return day, profile[day]
+
+
+def build_weekday_profile(zone):
+    """Day-of-week profile for a zone, or {} when no free history exists.
+
+    GB has a free historical feed; other zones return {} for now (the hour-of-day
+    curve already accumulates per zone; weekday accumulation can follow).
+    """
+    if zone in ("GB", "GB-national"):
+        return weekday_profile_from_samples(uk_weekday_samples())
+    return {}
 
 
 def ledger_profile(zone):

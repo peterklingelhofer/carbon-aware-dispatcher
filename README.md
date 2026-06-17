@@ -503,6 +503,10 @@ carbon-aware suggest-cron --zones GB --energy-kwh 12
 carbon-aware suggest-cron --zones GB --duration-hours 4 --energy-kwh 20
 #  -> start a 4h job at 11:00 UTC (cleanest 4h window)
 
+# For a weekly job, also pick the cleanest day of week (weekends often cleaner)
+carbon-aware suggest-cron --zones GB --weekly
+#  -> 0 12 * * 6   (weekly on Sat at 12:00 UTC)
+
 # WHERE often beats WHEN: move a flexible workload to the cleanest region
 carbon-aware suggest-region --zones CISO,PJM,GB,FR --current PJM --energy-kwh 12
 #  -> Run in CISO instead of PJM: ~N kg CO2/yr saved (mind latency/egress)
