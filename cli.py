@@ -259,7 +259,18 @@ def cmd_suggest_region(args):
     return EXIT_GREEN if not already else EXIT_DIRTY
 
 
-def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None, window_hours=None):
+def _emit_cron(
+    args,
+    zone,
+    hour,
+    intensity,
+    source,
+    note=None,
+    savings_g=None,
+    window_hours=None,
+    dow=None,
+    day_name=None,
+):
     """Print a cron recommendation for the cleanest hour. Returns exit code."""
     if hour is None:
         if args.json:
@@ -267,8 +278,10 @@ def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None, w
         else:
             print(f"No schedule suggestion available for {zone}")
         return EXIT_NODATA
-    cron = f"0 {hour} * * *"
-    if window_hours and window_hours > 1:
+    cron = f"0 {hour} * * {dow if dow is not None else '*'}"
+    if dow is not None:
+        desc = f"weekly on {day_name} at {hour:02d}:00 UTC (cleanest day+hour for {zone}, {source})"
+    elif window_hours and window_hours > 1:
         desc = (
             f"start a {window_hours}h job at {hour:02d}:00 UTC "
             f"(cleanest {window_hours}h window for {zone}, {source})"
@@ -352,7 +365,24 @@ def cmd_suggest_cron(args):
                 )
         hour, intensity = carbon_curve.cleanest_hour(profile)
         savings = round(max(0.0, (mean - intensity) * energy), 1)
-        return _emit_cron(args, first, hour, intensity, "history", note=note, savings_g=savings)
+        dow = day_name = None
+        if getattr(args, "weekly", False):
+            wprofile = carbon_curve.build_weekday_profile(first)
+            py_day, _ = carbon_curve.cleanest_weekday(wprofile)
+            if py_day is not None:
+                dow = (py_day + 1) % 7  # python Mon=0..Sun=6 -> cron Sun=0..Sat=6
+                day_name = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][py_day]
+        return _emit_cron(
+            args,
+            first,
+            hour,
+            intensity,
+            "history",
+            note=note,
+            savings_g=savings,
+            dow=dow,
+            day_name=day_name,
+        )
 
     with contextlib.redirect_stdout(sys.stderr):
         zone, when, intensity = check_grid.queue_find_optimal_window(
@@ -781,6 +811,9 @@ def build_parser():
         type=int,
         default=1,
         help="Job length in hours; >1 targets the cleanest contiguous window",
+    )
+    s.add_argument(
+        "--weekly", action="store_true", help="For weekly jobs: also pick the cleanest day of week"
     )
     s.set_defaults(func=cmd_suggest_cron)
 
