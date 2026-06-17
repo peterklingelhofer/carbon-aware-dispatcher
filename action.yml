@@ -126,9 +126,17 @@ inputs:
     required: false
     default: 'green,exceeded'
   mode:
-    description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (needs ledger + github_token with issues:write). "doctor" probes your configured zones and prints a diagnostic table of which work, which need a token, and whether live data flows.'
+    description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (needs ledger + github_token with issues:write). "doctor" probes your configured zones and prints a diagnostic table. "suggest" opens a PR shifting suggest_target''s cron to the grid''s cleanest hour (needs github_token with contents+pull-requests:write).'
     required: false
     default: 'check'
+  suggest_target:
+    description: 'For mode "suggest": path to the workflow file whose daily cron hour should be shifted to the cleanest hour, e.g. .github/workflows/nightly.yml.'
+    required: false
+    default: ''
+  suggest_base:
+    description: 'Base branch for the suggest-mode PR. Default: main.'
+    required: false
+    default: 'main'
   job_energy_kwh:
     description: 'Measured energy this run consumes, in kWh. The most accurate input to co2_emitted_grams; it overrides power/duration. Use it for real workloads (e.g. a GPU training run). Empty uses the power/duration estimate.'
     required: false
@@ -312,6 +320,8 @@ runs:
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
         NOTIFY_ON: ${{ inputs.notify_on }}
         MODE: ${{ inputs.mode }}
+        SUGGEST_TARGET: ${{ inputs.suggest_target }}
+        SUGGEST_BASE: ${{ inputs.suggest_base }}
         JOB_ENERGY_KWH: ${{ inputs.job_energy_kwh }}
         JOB_POWER_WATTS: ${{ inputs.job_power_watts }}
         JOB_DURATION_MINUTES: ${{ inputs.job_duration_minutes }}

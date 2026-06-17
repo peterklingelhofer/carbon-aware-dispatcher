@@ -63,6 +63,7 @@ only-include = [
     "digest.py",
     "pr_comment.py",
     "carbon_curve.py",
+    "suggest_pr.py",
     "providers",
 ]
 
@@ -75,6 +76,7 @@ only-include = [
 "digest.py" = "digest.py"
 "pr_comment.py" = "pr_comment.py"
 "carbon_curve.py" = "carbon_curve.py"
+"suggest_pr.py" = "suggest_pr.py"
 "providers" = "providers"
 
 [tool.pytest.ini_options]
