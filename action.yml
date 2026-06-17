@@ -129,6 +129,18 @@ inputs:
     description: 'Action mode. "check" (default) runs the normal grid check/dispatch. "digest" reads the ledger and posts/updates a weekly impact issue (needs ledger + github_token with issues:write). "doctor" probes your configured zones and prints a diagnostic table of which work, which need a token, and whether live data flows.'
     required: false
     default: 'check'
+  job_energy_kwh:
+    description: 'Measured energy this run consumes, in kWh. The most accurate input to co2_emitted_grams; it overrides power/duration. Use it for real workloads (e.g. a GPU training run). Empty uses the power/duration estimate.'
+    required: false
+    default: ''
+  job_power_watts:
+    description: 'Average power draw of the job in watts, used with duration when job_energy_kwh is unset. Default: 50 (a typical CI job).'
+    required: false
+    default: ''
+  job_duration_minutes:
+    description: 'Job duration in minutes, used with power when job_energy_kwh is unset. Default: 15.'
+    required: false
+    default: ''
   watttime_username:
     description: 'WattTime username for the optional marginal-emissions signal (free for CAISO_NORTH). Put it in a secret.'
     required: false
@@ -292,6 +304,9 @@ runs:
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}
         NOTIFY_ON: ${{ inputs.notify_on }}
         MODE: ${{ inputs.mode }}
+        JOB_ENERGY_KWH: ${{ inputs.job_energy_kwh }}
+        JOB_POWER_WATTS: ${{ inputs.job_power_watts }}
+        JOB_DURATION_MINUTES: ${{ inputs.job_duration_minutes }}
         WATTTIME_USERNAME: ${{ inputs.watttime_username }}
         WATTTIME_PASSWORD: ${{ inputs.watttime_password }}
         MARGINAL_REGION: ${{ inputs.marginal_region }}
