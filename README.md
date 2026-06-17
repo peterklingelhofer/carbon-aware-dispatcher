@@ -496,11 +496,14 @@ carbon-aware best-window --zones GB --hours 24 --json
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
 stderr; stdout carries only the result (add `--json` for machine output).
 
-Container (no Python needed):
+For a container (no Python needed), pull the published image or build locally:
 
 ```bash
-docker build -t carbon-aware .
-docker run --rm carbon-aware check --zones GB,CISO --max-carbon 200
+docker run --rm ghcr.io/peterklingelhofer/carbon-aware-dispatcher:latest \
+  check --zones GB,CISO --max-carbon 200
+
+# or build it yourself
+docker build -t carbon-aware . && docker run --rm carbon-aware check --zones GB
 ```
 
 Ready-to-copy schedulers: a [Kubernetes CronJob](examples/standalone/k8s-cronjob.yaml)
