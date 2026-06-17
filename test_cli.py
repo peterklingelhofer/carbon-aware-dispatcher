@@ -93,6 +93,57 @@ class TestBestWindow:
         assert rc == cli.EXIT_DIRTY
 
 
+class TestReport:
+    def _clear(self):
+        import os
+
+        for k in (
+            "JOB_ENERGY_KWH",
+            "JOB_POWER_WATTS",
+            "JOB_DURATION_MINUTES",
+            "PUE",
+            "EMBODIED_GRAMS",
+        ):
+            os.environ.pop(k, None)
+
+    @mock.patch("cli.evaluate")
+    def test_report_json(self, ev, capsys):
+        ev.return_value = {"status": "green", "zone": "GB", "intensity": 100}
+        try:
+            rc = cli.main(
+                [
+                    "report",
+                    "--zones",
+                    "GB",
+                    "--energy-kwh",
+                    "10",
+                    "--pue",
+                    "1.0",
+                    "--embodied-grams",
+                    "0",
+                    "--json",
+                ]
+            )
+            assert rc == cli.EXIT_GREEN
+            out = json.loads(capsys.readouterr().out)
+            assert out["zone"] == "GB"
+            assert out["energy_kwh"] == 10.0
+            assert out["emitted_grams"] == 1000.0  # 100 g/kWh x 10 kWh x 1.0
+            assert out["functional_unit"] == "run"
+            assert out["schema"] == "sci-report/1"
+        finally:
+            self._clear()
+
+    @mock.patch("cli.evaluate")
+    def test_report_no_data(self, ev, capsys):
+        ev.return_value = {"status": "error", "skipped": 1}
+        try:
+            rc = cli.main(["report", "--zones", "GB"])
+            assert rc == cli.EXIT_NODATA
+        finally:
+            self._clear()
+
+
 class TestUsage:
     def test_bad_duration_returns_usage(self, capsys):
         rc = cli.main(["wait-for-green", "--max-wait", "notaduration"])
