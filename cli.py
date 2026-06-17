@@ -12,6 +12,7 @@ Commands:
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
   plan            combined when+where: the cleanest (region, hour) across zones
+  audit           scan a repo's workflows and rank schedules worth shifting
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -390,6 +391,85 @@ def cmd_suggest_cron(args):
     return EXIT_GREEN
 
 
+def cmd_audit(args):
+    """Scan a repo's workflow files and report every schedule worth shifting.
+
+    One prioritized list across the whole repo, instead of running suggest-cron
+    per workflow: for each simple daily cron, the cleanest hour and the estimated
+    saving, sorted by impact, with a repo-wide annual total. Exit 0 if anything is
+    actionable, 1 if all schedules are already optimal, 2 if no curve is available.
+    """
+    import glob
+
+    import carbon_curve
+    import suggest_pr
+
+    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(zone)
+    if not profile:
+        if args.json:
+            print(json.dumps({"status": "no_curve", "zone": zone}))
+        else:
+            print(f"Can't audit {zone}: no hour-of-day curve available")
+        return EXIT_NODATA
+
+    clean_hour, _ = carbon_curve.cleanest_hour(profile)
+    energy = _energy_kwh(args)
+    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
+    findings = []
+    for path in files:
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in suggest_pr.CRON_RE.finditer(text):
+            cron = match.group(1)
+            fields = cron.split()
+            if len(fields) != 5 or not fields[1].isdigit():
+                continue  # only simple daily crons can be safely shifted
+            cur_hour = int(fields[1])
+            if cur_hour == clean_hour:
+                continue  # already optimal
+            sav = carbon_curve.shift_savings_grams(profile, cur_hour, clean_hour, energy)
+            findings.append(
+                {
+                    "file": path,
+                    "current_cron": cron,
+                    "suggested_cron": suggest_pr.swap_cron_hour(cron, clean_hour),
+                    "savings_g_per_run": sav,
+                    "savings_kg_per_year": round(sav * 365 / 1000, 1),
+                }
+            )
+
+    findings.sort(key=lambda f: f["savings_g_per_run"], reverse=True)
+    total_annual = round(sum(f["savings_kg_per_year"] for f in findings), 1)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok" if findings else "all_optimal",
+                    "zone": zone,
+                    "cleanest_hour": clean_hour,
+                    "total_savings_kg_per_year": total_annual,
+                    "findings": findings,
+                }
+            )
+        )
+    elif not findings:
+        print(f"All scheduled workflows in {args.dir} already run near the cleanest hour.")
+    else:
+        print(f"Carbon audit of {args.dir} (cleanest hour {clean_hour:02d}:00 UTC for {zone}):")
+        for f in findings:
+            print(
+                f"  {f['file']}: `{f['current_cron']}` -> `{f['suggested_cron']}`  "
+                f"(~{f['savings_kg_per_year']:.1f} kg/yr)"
+            )
+        print(f"Total potential: ~{total_annual:.1f} kg CO2/yr. Apply with `mode: suggest`.")
+    return EXIT_GREEN if findings else EXIT_DIRTY
+
+
 def cmd_plan(args):
     """Combined when+where: the cleanest (region, hour) across candidate zones.
 
@@ -639,6 +719,12 @@ def build_parser():
     pl.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     pl.add_argument("--duration-hours", type=int, default=1, help="Job length in hours")
     pl.set_defaults(func=cmd_plan)
+
+    au = sub.add_parser("audit", help="Scan a repo's workflows for schedules worth shifting")
+    add_common(au)
+    au.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
+    au.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
+    au.set_defaults(func=cmd_audit)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)

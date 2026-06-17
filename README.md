@@ -511,6 +511,10 @@ carbon-aware suggest-region --zones CISO,PJM,GB,FR --current PJM --energy-kwh 12
 carbon-aware plan --zones CISO,GB,FR --current PJM --energy-kwh 12
 #  -> Run your job in CISO at 03:00 UTC (cron: 0 3 * * *)
 
+# Audit a whole repo: rank every shiftable schedule by savings
+carbon-aware audit --zones GB --dir .github/workflows --energy-kwh 5
+#  -> ranked list of crons to shift + total potential kg CO2/yr
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
