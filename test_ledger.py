@@ -91,6 +91,35 @@ class TestMergeEntry:
         d = ledger.merge_entry(d, 100, "2026-06-17", emitted_grams=10)
         assert d["curve"]["FR"]["12"]["n"] == 1  # survived the run merge
 
+    def test_curve_mean(self):
+        d = ledger.empty_ledger()
+        for hour in range(6):
+            d = ledger.merge_curve_sample(d, "FR", hour, 100 + hour * 10)  # 100..150, mean 125
+        assert ledger.curve_mean(d, "FR") == 125.0
+        assert ledger.curve_mean(ledger.empty_ledger(), "FR") == 0.0
+
+    def test_avoided_emissions_accrue(self, tmp_path):
+        path = str(tmp_path / "led.json")
+        # Seed a 6-hour curve for FR (mean 125) via direct samples + a save
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour * 10)
+        import json
+
+        (tmp_path / "led.json").write_text(json.dumps(data))
+        # A run at intensity 25 (vs mean 125) with 10 kWh -> avoided (125-25)*10 = 1000
+        summary = ledger.record_savings(
+            f"file:{path}", "", 0, "2026-06-17", 0, zone="FR", intensity=25, hour=3, energy_kwh=10
+        )
+        assert summary["avoided_total"] == 1000.0
+
+    def test_no_avoided_without_curve(self, tmp_path):
+        path = str(tmp_path / "led.json")
+        summary = ledger.record_savings(
+            f"file:{path}", "", 0, "2026-06-17", 0, zone="FR", intensity=25, hour=3, energy_kwh=10
+        )
+        assert summary["avoided_total"] == 0.0  # no curve history yet
+
     def test_curve_profile_needs_min_hours(self):
         d = ledger.empty_ledger()
         for hour in range(5):  # only 5 distinct hours < min 6
