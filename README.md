@@ -515,6 +515,10 @@ carbon-aware plan --zones CISO,GB,FR --current PJM --energy-kwh 12
 carbon-aware audit --zones GB --dir .github/workflows --energy-kwh 5
 #  -> ranked list of crons to shift + total potential kg CO2/yr
 
+# Use less: rank scheduled jobs by annual emissions (frequency x per-run)
+carbon-aware schedule-cost --zones GB --dir .github/workflows --energy-kwh 5
+#  -> hourly job: 24x/day ~5 t/yr; throttle the heaviest
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
