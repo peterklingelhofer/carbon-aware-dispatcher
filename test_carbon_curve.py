@@ -114,6 +114,35 @@ class TestIsWorthShifting:
         assert carbon_curve.is_worth_shifting({0: 100, 1: 102}, min_spread_pct=1.0) is True
 
 
+class TestWeekday:
+    def test_profile_needs_min_days(self):
+        samples = [(0, 100), (0, 120), (1, 90)]  # only 2 distinct days
+        assert carbon_curve.weekday_profile_from_samples(samples) == {}
+        samples += [(2, 80), (3, 110)]  # now 4 days
+        prof = carbon_curve.weekday_profile_from_samples(samples)
+        assert prof[0] == 110.0 and len(prof) == 4
+
+    def test_cleanest_weekday(self):
+        assert carbon_curve.cleanest_weekday({0: 200, 5: 80, 6: 90}) == (5, 80)
+        assert carbon_curve.cleanest_weekday({}) == (None, None)
+
+    def test_build_weekday_non_gb_empty(self):
+        assert carbon_curve.build_weekday_profile("FR") == {}
+
+    @mock.patch("carbon_curve.base.request")
+    def test_build_weekday_gb(self, req):
+        # two periods on Mon (weekday 0), enough distinct days won't be met -> {} unless 3+
+        req.return_value = {
+            "data": [
+                {"from": "2026-06-15T00:00Z", "intensity": {"actual": 100}},  # Mon
+                {"from": "2026-06-16T00:00Z", "intensity": {"actual": 120}},  # Tue
+                {"from": "2026-06-17T00:00Z", "intensity": {"actual": 90}},  # Wed
+            ]
+        }
+        prof = carbon_curve.build_weekday_profile("GB")
+        assert len(prof) == 3
+
+
 class TestBuildProfile:
     @mock.patch("carbon_curve.base.request")
     def test_gb_builds_profile(self, req):
