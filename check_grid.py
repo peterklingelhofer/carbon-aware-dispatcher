@@ -660,6 +660,26 @@ def set_output(name, value):
     print(f"  Output {name}={value}")
 
 
+def _pue():
+    """Datacenter Power Usage Effectiveness multiplier (>= 1). Default 1.0.
+
+    Real cloud datacenters run ~1.1-1.2; defaulting to 1.0 keeps the estimate
+    conservative and opt-in. Scales facility energy above the IT load.
+    """
+    p = _soft_float("PUE")
+    return p if (p and p > 0) else 1.0
+
+
+def _embodied_grams():
+    """Amortized embodied (manufacturing) gCO2 for this run. Default 0.
+
+    Embodied carbon is hard to attribute, so it is opt-in: supply your own
+    amortized figure to approximate total SCI rather than operational-only.
+    """
+    e = _soft_float("EMBODIED_GRAMS")
+    return e if (e and e > 0) else 0.0
+
+
 def resolve_energy_kwh(job_minutes=None):
     """Resolve the run's energy use (kWh) from config, most-specific first.
 
@@ -696,7 +716,7 @@ def estimate_carbon_savings(intensity, job_minutes=None):
     if intensity is None:
         return 0, None
 
-    energy_kwh = resolve_energy_kwh(job_minutes)
+    energy_kwh = resolve_energy_kwh(job_minutes) * _pue()
 
     actual_co2 = intensity * energy_kwh  # gCO2 from clean grid
     baseline_co2 = GLOBAL_AVG_INTENSITY * energy_kwh  # gCO2 from average grid
@@ -728,7 +748,8 @@ def estimate_emissions(intensity, job_minutes=None):
     """
     if intensity is None:
         return 0.0
-    return round(max(0.0, intensity) * resolve_energy_kwh(job_minutes), 1)
+    operational = max(0.0, intensity) * resolve_energy_kwh(job_minutes) * _pue()
+    return round(operational + _embodied_grams(), 1)
 
 
 def carbon_equivalents(grams):

@@ -2770,6 +2770,45 @@ class TestResolveEnergy:
             self._clear()
 
 
+class TestPueAndEmbodied:
+    def _clear(self):
+        for k in ("JOB_ENERGY_KWH", "PUE", "EMBODIED_GRAMS"):
+            os.environ.pop(k, None)
+
+    def test_defaults_pue_1_embodied_0(self):
+        self._clear()
+        assert check_grid._pue() == 1.0
+        assert check_grid._embodied_grams() == 0.0
+
+    def test_pue_scales_emissions(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "10"
+            os.environ["PUE"] = "1.2"
+            # 400 x 10 x 1.2 = 4800
+            assert check_grid.estimate_emissions(400) == 4800.0
+        finally:
+            self._clear()
+
+    def test_embodied_added(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "10"
+            os.environ["EMBODIED_GRAMS"] = "500"
+            # 400 x 10 x 1.0 + 500 = 4500
+            assert check_grid.estimate_emissions(400) == 4500.0
+        finally:
+            self._clear()
+
+    def test_pue_scales_savings_benchmark(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "10"
+            os.environ["PUE"] = "2.0"
+            # saved = (450 - 50) x 10 x 2.0 = 8000
+            saved, _ = check_grid.estimate_carbon_savings(50)
+            assert saved == 8000.0
+        finally:
+            self._clear()
+
+
 class TestCarbonBudget:
     def _reset(self):
         check_grid._ledger_recorded = False

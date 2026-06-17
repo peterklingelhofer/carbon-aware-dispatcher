@@ -623,6 +623,17 @@ with:
   # job_duration_minutes: '120'
 ```
 
+For a fuller [SCI](https://sci.greensoftware.foundation/) total, add datacenter
+overhead and embodied hardware carbon (both opt-in, default off):
+
+```yaml
+with:
+  pue: '1.12'             # facility energy / IT energy (cloud DCs run ~1.1-1.2)
+  embodied_grams: '40'    # amortized manufacturing CO2 for this run
+```
+
+`co2_emitted_grams` then equals `energy x intensity x PUE + embodied`.
+
 ## Watch your impact
 
 Every run estimates the CO2 it saved, but a number that vanishes after one build

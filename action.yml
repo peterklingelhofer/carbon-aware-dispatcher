@@ -141,6 +141,14 @@ inputs:
     description: 'Job duration in minutes, used with power when job_energy_kwh is unset. Default: 15.'
     required: false
     default: ''
+  pue:
+    description: 'Datacenter Power Usage Effectiveness multiplier for co2_emitted_grams (facility energy / IT energy). Real cloud DCs run ~1.1-1.2. Default 1.0 (IT load only).'
+    required: false
+    default: ''
+  embodied_grams:
+    description: 'Amortized embodied (hardware manufacturing) gCO2 to add to co2_emitted_grams for a fuller SCI total. Opt-in; default 0 (operational only).'
+    required: false
+    default: ''
   watttime_username:
     description: 'WattTime username for the optional marginal-emissions signal (free for CAISO_NORTH). Put it in a secret.'
     required: false
@@ -307,6 +315,8 @@ runs:
         JOB_ENERGY_KWH: ${{ inputs.job_energy_kwh }}
         JOB_POWER_WATTS: ${{ inputs.job_power_watts }}
         JOB_DURATION_MINUTES: ${{ inputs.job_duration_minutes }}
+        PUE: ${{ inputs.pue }}
+        EMBODIED_GRAMS: ${{ inputs.embodied_grams }}
         WATTTIME_USERNAME: ${{ inputs.watttime_username }}
         WATTTIME_PASSWORD: ${{ inputs.watttime_password }}
         MARGINAL_REGION: ${{ inputs.marginal_region }}
