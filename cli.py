@@ -1,0 +1,197 @@
+"""Standalone carbon-aware CLI.
+
+Run the same grid engine outside GitHub Actions — from cron, Kubernetes
+CronJobs, Airflow, systemd timers, or any shell — to gate or schedule
+deferrable work (batch jobs, ML training, ETL) on grid carbon intensity. This is
+where the real energy lives: a nightly training run or data pipeline dwarfs CI.
+
+Commands:
+  check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
+  wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
+  best-window     print the cleanest upcoming window from forecasts (for schedulers)
+
+Exit codes: 0 = green/clean, 1 = dirty or timed out, 2 = no data/error, 3 = usage.
+Info logs go to stderr; stdout carries only the result (or JSON with --json), so
+the tool composes cleanly in pipes and scripts.
+"""
+
+import argparse
+import contextlib
+import json
+import sys
+import time
+
+import check_grid
+
+EXIT_GREEN = 0
+EXIT_DIRTY = 1
+EXIT_NODATA = 2
+EXIT_USAGE = 3
+
+_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_duration(text):
+    """Parse a duration like '6h', '15m', '30s', '2d', or bare seconds. Seconds (int)."""
+    s = (text or "").strip().lower()
+    if not s:
+        raise ValueError("empty duration")
+    if s[-1] in _UNITS:
+        return int(float(s[:-1]) * _UNITS[s[-1]])
+    return int(float(s))
+
+
+def _tokens(args):
+    import os
+
+    return {
+        "eia": args.eia_key or os.environ.get("EIA_API_KEY", ""),
+        "emaps": args.electricity_maps_token or os.environ.get("ELECTRICITY_MAPS_TOKEN", ""),
+        "entsoe": args.entsoe_token or os.environ.get("ENTSOE_TOKEN", ""),
+        "gridstatus": args.gridstatus_key or os.environ.get("GRID_STATUS_API_KEY", ""),
+    }
+
+
+def evaluate(args):
+    """Check the zones once and return a result dict. Engine logs go to stderr."""
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    measured = []
+    # Send the engine's progress prints to stderr so stdout stays machine-clean
+    with contextlib.redirect_stdout(sys.stderr):
+        best_zone, best_intensity, _, skipped = check_grid.check_multiple_zones(
+            zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
+        )
+    if best_zone is not None:
+        return {"status": "green", "zone": best_zone, "intensity": best_intensity}
+    if measured:
+        cleanest = min(measured, key=lambda m: m[1])
+        return {"status": "dirty", "zone": cleanest[0], "intensity": cleanest[1]}
+    return {"status": "error", "skipped": len(skipped)}
+
+
+def _report(args, result, prefix=""):
+    """Print a result to stdout (JSON or human) and return its exit code."""
+    status = result["status"]
+    if args.json:
+        print(json.dumps({**result, "max_carbon": args.max_carbon}))
+    elif status == "green":
+        print(
+            f"{prefix}GREEN: {result['zone']} at {result['intensity']} gCO2eq/kWh "
+            f"(<= {args.max_carbon})"
+        )
+    elif status == "dirty":
+        print(
+            f"{prefix}DIRTY: cleanest {result['zone']} at {result['intensity']} gCO2eq/kWh "
+            f"(> {args.max_carbon})"
+        )
+    else:
+        print(f"{prefix}NO DATA: could not read any zone")
+    return {"green": EXIT_GREEN, "dirty": EXIT_DIRTY}.get(status, EXIT_NODATA)
+
+
+def cmd_check(args):
+    return _report(args, evaluate(args))
+
+
+def cmd_wait(args):
+    deadline = parse_duration(args.max_wait)
+    poll = parse_duration(args.poll)
+    waited = 0
+    while True:
+        result = evaluate(args)
+        if result["status"] == "green":
+            return _report(args, result)
+        if waited >= deadline:
+            if not args.json:
+                print(f"TIMEOUT: no green window within {args.max_wait}")
+            else:
+                print(json.dumps({"status": "timeout", "max_carbon": args.max_carbon}))
+            return EXIT_DIRTY
+        sleep_for = min(poll, deadline - waited) or poll
+        print(
+            f"  not green ({result.get('intensity', '?')} gCO2eq/kWh); "
+            f"sleeping {sleep_for}s ({waited}/{deadline}s elapsed)",
+            file=sys.stderr,
+        )
+        time.sleep(sleep_for)
+        waited += sleep_for
+
+
+def cmd_best_window(args):
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        zone, when, intensity = check_grid.queue_find_optimal_window(
+            zones,
+            args.max_carbon,
+            args.hours,
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
+    if zone is None:
+        if args.json:
+            print(json.dumps({"status": "none", "hours": args.hours}))
+        else:
+            print(f"No green window forecast within {args.hours}h")
+        return EXIT_DIRTY
+    if args.json:
+        print(json.dumps({"status": "window", "zone": zone, "at": when, "intensity": intensity}))
+    else:
+        print(f"Cleanest window: {zone} at {when} ({intensity} gCO2eq/kWh)")
+    return EXIT_GREEN
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="carbon-aware", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="command", required=True)
+
+    def add_common(sp):
+        sp.add_argument(
+            "--zones",
+            default="auto:green",
+            help="Zones or preset (e.g. 'GB,CISO' or 'auto:green'). Default: auto:green",
+        )
+        sp.add_argument(
+            "--max-carbon",
+            type=float,
+            default=200.0,
+            help="Max gCO2eq/kWh to count as green. Default: 200",
+        )
+        sp.add_argument("--json", action="store_true", help="Emit a JSON result on stdout")
+        sp.add_argument("--eia-key", default="")
+        sp.add_argument("--electricity-maps-token", default="")
+        sp.add_argument("--entsoe-token", default="")
+        sp.add_argument("--gridstatus-key", default="")
+
+    c = sub.add_parser("check", help="Exit 0 if the grid is green now")
+    add_common(c)
+    c.set_defaults(func=cmd_check)
+
+    w = sub.add_parser("wait-for-green", help="Block until green or a deadline")
+    add_common(w)
+    w.add_argument("--max-wait", default="6h", help="Give up after this long. Default: 6h")
+    w.add_argument("--poll", default="15m", help="How often to recheck. Default: 15m")
+    w.set_defaults(func=cmd_wait)
+
+    b = sub.add_parser("best-window", help="Print the cleanest upcoming forecast window")
+    add_common(b)
+    b.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
+    b.set_defaults(func=cmd_best_window)
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

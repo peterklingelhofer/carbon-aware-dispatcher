@@ -472,6 +472,40 @@ The core Python script runs on any CI platform. Templates in [`ci-templates/`](c
 
 Set `GRID_ZONE`, `MAX_CARBON`, and optional API tokens as environment variables.
 
+## Use outside GitHub Actions (CLI & container)
+
+CI is a small load. The real carbon wins are large, deferrable workloads —
+nightly ML training, ETL, batch inference. The same engine ships as a standalone
+`carbon-aware` CLI so any scheduler (cron, systemd timers, Kubernetes CronJobs,
+Airflow, Nomad) can gate or time that work. It composes through exit codes, so no
+glue code is needed:
+
+```bash
+pipx install carbon-aware-dispatcher        # or use the container (below)
+
+# Run a batch job only if the grid is clean right now
+carbon-aware check --zones auto:green --max-carbon 200 && ./train.sh
+
+# Or block until a green window opens (up to 6h), then run
+carbon-aware wait-for-green --zones GB,CISO --max-carbon 200 --max-wait 6h && ./train.sh
+
+# Plan ahead: print the cleanest upcoming window from forecasts
+carbon-aware best-window --zones GB --hours 24 --json
+```
+
+Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
+stderr; stdout carries only the result (add `--json` for machine output).
+
+Container (no Python needed):
+
+```bash
+docker build -t carbon-aware .
+docker run --rm carbon-aware check --zones GB,CISO --max-carbon 200
+```
+
+Ready-to-copy schedulers: a [Kubernetes CronJob](examples/standalone/k8s-cronjob.yaml)
+(carbon-gated via an initContainer) and a [cron/systemd wrapper](examples/standalone/cron-wrapper.sh).
+
 ## Example workflows
 
 Ready-to-copy files in [`examples/`](examples/):
