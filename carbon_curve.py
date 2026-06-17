@@ -87,12 +87,36 @@ def uk_history_samples(days=7):
     return samples
 
 
-def build_profile(zone, days=7):
-    """Build an hour-of-day profile for a zone, or None when no free history.
+def ledger_profile(zone):
+    """Build a profile from the curve accumulated in the configured ledger.
 
-    Only GB has a free historical feed today; other zones return None so callers
-    fall back to the forecast rather than pretend to have a curve.
+    Works for ANY zone once enough hours have been sampled across runs: the way
+    coverage extends beyond GB without paid history. Returns {} when no ledger is
+    configured or too few hours are recorded yet.
+    """
+    import os
+
+    import ledger
+
+    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
+    if not backend or not location:
+        return {}
+    if backend == "file":
+        data = ledger._load_file(location)
+    else:
+        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
+    return ledger.curve_profile(data, zone)
+
+
+def build_profile(zone, days=7):
+    """Build an hour-of-day profile for a zone, or None when none is available.
+
+    Prefers a free historical API (GB today), then the curve accumulated in the
+    ledger over past runs (any zone). Returns None so callers fall back to the
+    forecast rather than pretend to have a curve.
     """
     if zone in ("GB", "GB-national"):
-        return profile_from_samples(uk_history_samples(days)) or None
-    return None
+        profile = profile_from_samples(uk_history_samples(days))
+        if profile:
+            return profile
+    return ledger_profile(zone) or None
