@@ -41,6 +41,26 @@ class TestRewriteCrons:
         assert suggest_pr.rewrite_crons(text, 3) == (text, [])
 
 
+class TestRunsPerDay:
+    def test_hourly(self):
+        assert suggest_pr.runs_per_day("17 * * * *") == 24
+
+    def test_every_15_min(self):
+        assert suggest_pr.runs_per_day("*/15 * * * *") == 96  # 4/hr x 24
+
+    def test_daily(self):
+        assert suggest_pr.runs_per_day("0 3 * * *") == 1
+
+    def test_weekly_scaled(self):
+        assert suggest_pr.runs_per_day("0 13 * * 1") == round(1 / 7, 2)
+
+    def test_monthly_scaled(self):
+        assert suggest_pr.runs_per_day("0 0 1 * *") == round(1 / 30, 2)
+
+    def test_malformed(self):
+        assert suggest_pr.runs_per_day("not a cron") == 0.0
+
+
 class TestSavingsLine:
     def test_computes_from_old_to_new_hour(self):
         line = suggest_pr._savings_line({14: 200.0, 3: 80.0}, 10, [("0 14 * * *", "0 3 * * *")], 3)
