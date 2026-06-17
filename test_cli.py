@@ -173,6 +173,61 @@ class TestSuggestCron:
         assert rc == cli.EXIT_NODATA
 
 
+class TestSuggestRegion:
+    def _measure(self, pairs):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.extend(pairs)
+            return (None, None, None, [])
+
+        return fake
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_recommends_cleanest(self, cmz, capsys):
+        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380)])
+        rc = cli.main(["suggest-region", "--zones", "CISO,PJM", "--energy-kwh", "10", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cleanest_zone"] == "CISO"
+        assert out["baseline_zone"] == "PJM"
+        assert out["savings_g_per_run"] == 2900.0  # (380-90)*10
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_current_baseline(self, cmz, capsys):
+        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380), ("GB", 200)])
+        rc = cli.main(
+            [
+                "suggest-region",
+                "--zones",
+                "CISO,PJM,GB",
+                "--current",
+                "GB",
+                "--energy-kwh",
+                "10",
+                "--json",
+            ]
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["baseline_zone"] == "GB"
+        assert out["savings_g_per_run"] == 1100.0  # (200-90)*10
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_already_cleanest(self, cmz, capsys):
+        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380)])
+        rc = cli.main(["suggest-region", "--zones", "CISO,PJM", "--current", "CISO"])
+        assert rc == cli.EXIT_DIRTY
+        assert "Already" in capsys.readouterr().out
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_data(self, cmz, capsys):
+        cmz.return_value = (None, None, None, [])
+        rc = cli.main(["suggest-region", "--zones", "CISO"])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
