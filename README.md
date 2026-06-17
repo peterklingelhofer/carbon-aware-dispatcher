@@ -588,6 +588,29 @@ Ready-to-copy files in [`examples/`](examples/):
 | `dry_run` | `true` when the action ran in report-only mode. |
 | `would_defer` | In `dry_run` mode, `true` if the grid was dirty and the build would have been deferred under enforcement. |
 
+## Methodology & honest accounting
+
+Carbon claims are easy to inflate, so here is exactly what the numbers mean:
+
+- **`co2_emitted_grams` (trust this one).** What the run actually produced:
+  carbon intensity × estimated energy. This is the Green Software Foundation
+  [SCI](https://sci.greensoftware.foundation/) operational term (embodied
+  hardware excluded) and maps to GHG Protocol Scope 2 (location-based). It is
+  the figure to report.
+- **`co2_saved_grams` (a benchmark, not a reduction).** A comparison against a
+  fixed global-average grid (450 gCO2eq/kWh) — "how much cleaner than a
+  world-average grid was this run". It is **not** marginal or *additional*
+  avoided emissions: on a grid where shifted load just rides baseload, the real
+  avoided emissions can be far lower. The basis is stated in the
+  `co2_saved_basis` output so it travels with the number.
+- **Why not marginal everywhere?** The metric that reflects true avoided
+  emissions from shifting load is *marginal* intensity, which is free only for
+  `CAISO_NORTH` (via WattTime — see [Marginal emissions](#marginal-emissions-watttime)).
+  We don't fake it for other regions.
+
+Bottom line: use `co2_emitted_grams` for reporting and `co2_saved_grams` as a
+directional benchmark, not an offset claim.
+
 ## Watch your impact
 
 Every run estimates the CO2 it saved, but a number that vanishes after one build

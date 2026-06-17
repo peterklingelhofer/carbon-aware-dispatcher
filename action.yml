@@ -183,9 +183,15 @@ outputs:
   forecast_intensity:
     description: 'Predicted carbon intensity at the next green window in gCO2eq/kWh.'
     value: ${{ steps.grid-check.outputs.forecast_intensity }}
+  co2_emitted_grams:
+    description: 'Honest, measured figure: grams of CO2 this run actually produced (carbon intensity x estimated energy). Green Software Foundation SCI operational term (embodied excluded). Prefer this over co2_saved_grams for reporting.'
+    value: ${{ steps.grid-check.outputs.co2_emitted_grams }}
   co2_saved_grams:
-    description: 'Estimated grams of CO2 saved by running on a clean grid vs. the global average (450 gCO2eq/kWh).'
+    description: 'Grams of CO2 saved vs the global-average grid (450 gCO2eq/kWh). A location-based BENCHMARK, not marginal/additional avoided emissions — see co2_saved_basis.'
     value: ${{ steps.grid-check.outputs.co2_saved_grams }}
+  co2_saved_basis:
+    description: 'States how co2_saved_grams is derived, so the methodology travels with the number.'
+    value: ${{ steps.grid-check.outputs.co2_saved_basis }}
   carbon_badge_url:
     description: 'Shields.io badge URL showing estimated CO2 saved. Embed in README: ![carbon](url)'
     value: ${{ steps.grid-check.outputs.carbon_badge_url }}
