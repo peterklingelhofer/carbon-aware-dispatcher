@@ -2350,6 +2350,33 @@ class TestSetSavingsOutputs:
             os.unlink(path)
             os.environ.pop("GITHUB_OUTPUT", None)
 
+    def test_emits_honest_emitted_and_basis(self):
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = path
+            # measured intensity -> the honest per-run emissions + basis are set
+            check_grid.set_savings_outputs(500, None, intensity=120)
+            content = open(path).read()
+            assert "co2_emitted_grams=" in content
+            assert "co2_saved_basis=" in content
+            assert "benchmark" in content  # the basis is stated in the output
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_OUTPUT", None)
+
+    def test_no_emitted_output_when_intensity_unknown(self):
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+            path = f.name
+        try:
+            os.environ["GITHUB_OUTPUT"] = path
+            check_grid.set_savings_outputs(0, None, intensity=None)
+            content = open(path).read()
+            assert "co2_emitted_grams" not in content
+        finally:
+            os.unlink(path)
+            os.environ.pop("GITHUB_OUTPUT", None)
+
 
 class TestCarbonTier:
     def test_parse_defaults_on_empty(self):
