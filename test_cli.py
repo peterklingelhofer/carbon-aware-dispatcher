@@ -336,6 +336,47 @@ class TestScheduleCost:
         assert rc == cli.EXIT_NODATA
 
 
+class TestScore:
+    def test_grade_thresholds(self):
+        assert cli._grade(1.0)[0] == "A"
+        assert cli._grade(0.85)[0] == "B"
+        assert cli._grade(0.7)[0] == "C"
+        assert cli._grade(0.5)[0] == "D"
+        assert cli._grade(0.1)[0] == "F"
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_low_grade_when_savings_unclaimed(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}  # cleanest hour 3, very clean
+        (tmp_path / "a.yml").write_text("    - cron: '0 20 * * *'\n")  # daily at dirty hour
+        rc = cli.main(
+            ["score", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["avoidable_kg_per_year"] > 0
+        assert out["grade"] in ("D", "F")  # lots left on the table
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_writes_badge_file(self, bp, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}
+        (tmp_path / "a.yml").write_text("    - cron: '0 3 * * *'\n")  # already optimal
+        badge = tmp_path / "badge.json"
+        rc = cli.main(
+            ["score", "--zones", "GB", "--dir", str(tmp_path), "--badge-file", str(badge)]
+        )
+        assert rc == cli.EXIT_GREEN
+        data = json.loads(badge.read_text())
+        assert data["label"] == "carbon posture" and "A" in data["message"]
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "FR"}])
+    def test_no_curve(self, _bp, capsys, tmp_path):
+        rc = cli.main(["score", "--zones", "FR", "--dir", str(tmp_path)])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

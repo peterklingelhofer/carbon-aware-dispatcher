@@ -523,6 +523,10 @@ carbon-aware audit --zones GB --dir .github/workflows --energy-kwh 5
 carbon-aware schedule-cost --zones GB --dir .github/workflows --energy-kwh 5
 #  -> hourly job: 24x/day ~5 t/yr; throttle the heaviest
 
+# Grade your repo's carbon posture (A-F) and write a README badge
+carbon-aware score --zones GB --badge-file carbon-posture.json
+#  -> Carbon posture: B (84% of schedulable savings captured)
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
