@@ -11,6 +11,7 @@ Commands:
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
   suggest-cron    recommend a daily cron at the cleanest hour (history > forecast > heuristic)
   curve           print the hour-of-day carbon curve from historical data
+  worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
 
 Exit codes: 0 = green/clean, 1 = dirty or timed out, 2 = no data/error, 3 = usage.
@@ -177,7 +178,7 @@ def cmd_report(args):
     return EXIT_GREEN
 
 
-def _emit_cron(args, zone, hour, intensity, source):
+def _emit_cron(args, zone, hour, intensity, source, note=None):
     """Print a cron recommendation for the cleanest hour. Returns exit code."""
     if hour is None:
         if args.json:
@@ -188,21 +189,22 @@ def _emit_cron(args, zone, hour, intensity, source):
     cron = f"0 {hour} * * *"
     desc = f"daily at {hour:02d}:00 UTC (cleanest hour for {zone}, {source})"
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "zone": zone,
-                    "cron": cron,
-                    "source": source,
-                    "intensity": intensity,
-                    "description": desc,
-                }
-            )
-        )
+        payload = {
+            "status": "ok",
+            "zone": zone,
+            "cron": cron,
+            "source": source,
+            "intensity": intensity,
+            "description": desc,
+        }
+        if note:
+            payload["note"] = note
+        print(json.dumps(payload))
     else:
         print(f"Suggested schedule: {cron}")
         print(f"  {desc}")
+        if note:
+            print(f"  note: {note}")
         print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
     return EXIT_GREEN
 
@@ -227,7 +229,13 @@ def cmd_suggest_cron(args):
         profile = carbon_curve.build_profile(first)
     if profile:
         hour, intensity = carbon_curve.cleanest_hour(profile)
-        return _emit_cron(args, first, hour, intensity, "history")
+        note = None
+        if not carbon_curve.is_worth_shifting(profile):
+            note = (
+                f"grid is fairly flat ({carbon_curve.spread_pct(profile):.0f}% spread); "
+                "shifting saves little"
+            )
+        return _emit_cron(args, first, hour, intensity, "history", note=note)
 
     with contextlib.redirect_stdout(sys.stderr):
         zone, when, intensity = check_grid.queue_find_optimal_window(
@@ -306,6 +314,54 @@ def cmd_curve(args):
     return EXIT_GREEN
 
 
+def cmd_worth_it(args):
+    """Say honestly whether carbon-aware scheduling is worth it for this zone.
+
+    A flat, baseload-dominated grid barely varies by hour, so shifting saves
+    little — better to skip the complexity. Exit 0 = worth it, 1 = not worth it,
+    2 = can't assess (no free historical curve).
+    """
+    import carbon_curve
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(first)
+    if not profile:
+        if args.json:
+            print(json.dumps({"status": "unknown", "zone": first}))
+        else:
+            print(f"Can't assess {first}: no free historical curve (GB has the richest history)")
+        return EXIT_NODATA
+
+    spread = carbon_curve.spread_pct(profile)
+    hour, intensity = carbon_curve.cleanest_hour(profile)
+    worth = spread >= args.min_spread
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "worth" if worth else "not_worth",
+                    "zone": first,
+                    "spread_pct": spread,
+                    "min_spread": args.min_spread,
+                    "cleanest_hour": hour,
+                }
+            )
+        )
+    elif worth:
+        print(
+            f"Worth shifting: {first} varies {spread:.0f}% across the day "
+            f"(cleanest {hour:02d}:00 UTC). Use `suggest-cron`."
+        )
+    else:
+        print(
+            f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread). "
+            "Scheduling saves little here — skip the complexity."
+        )
+    return EXIT_GREEN if worth else EXIT_DIRTY
+
+
 def cmd_best_window(args):
     zones = check_grid.parse_zones_input(args.zones)
     tok = _tokens(args)
@@ -376,6 +432,16 @@ def build_parser():
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)
     cv.set_defaults(func=cmd_curve)
+
+    wi = sub.add_parser("worth-it", help="Is carbon-aware scheduling worth it for this zone?")
+    add_common(wi)
+    wi.add_argument(
+        "--min-spread",
+        type=float,
+        default=15.0,
+        help="Min hour-of-day spread %% to call shifting worthwhile. Default: 15",
+    )
+    wi.set_defaults(func=cmd_worth_it)
 
     r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")
     add_common(r)

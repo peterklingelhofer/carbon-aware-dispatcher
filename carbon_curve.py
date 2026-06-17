@@ -54,6 +54,16 @@ def spread_pct(profile):
     return round((max(values) - min(values)) / mean * 100, 1)
 
 
+# Below this relative spread, the grid is flat enough that shifting the schedule
+# saves little — be honest and say so rather than add complexity for ~nothing.
+DEFAULT_MIN_SPREAD_PCT = 15.0
+
+
+def is_worth_shifting(profile, min_spread_pct=DEFAULT_MIN_SPREAD_PCT):
+    """Whether time-shifting meaningfully helps, given the curve's spread."""
+    return spread_pct(profile) >= min_spread_pct
+
+
 def uk_history_samples(days=7):
     """Fetch GB national half-hourly history; return [(hour, intensity)] in UTC."""
     days = max(1, min(days, MAX_HISTORY_DAYS))
