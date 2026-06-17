@@ -14,6 +14,7 @@ Commands:
   plan            combined when+where: the cleanest (region, hour) across zones
   audit           scan a repo's workflows and rank schedules worth shifting
   schedule-cost   rank scheduled workflows by annual emissions (run less often)
+  score           grade the repo's scheduling carbon posture (A-F) + badge
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -577,6 +578,116 @@ def cmd_schedule_cost(args):
     return EXIT_GREEN
 
 
+def _grade(captured):
+    """Letter grade + shields color from the captured-savings fraction."""
+    for threshold, grade, color in (
+        (0.95, "A", "brightgreen"),
+        (0.80, "B", "green"),
+        (0.60, "C", "yellow"),
+        (0.40, "D", "orange"),
+    ):
+        if captured >= threshold:
+            return grade, color
+    return "F", "red"
+
+
+def cmd_score(args):
+    """Grade a repo's scheduling carbon posture (A-F) and emit a shareable badge.
+
+    The grade is the share of schedulable emissions already captured
+    (1 - avoidable/current), so it rewards shifting jobs to clean hours and stays
+    honest: an all-flat-or-optimal repo scores A, one leaving big savings unclaimed
+    scores low. Writes a shields.io badge JSON with --badge-file.
+    """
+    import glob
+
+    import carbon_curve
+    import suggest_pr
+
+    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(zone)
+    if not profile:
+        print(
+            json.dumps({"status": "no_curve", "zone": zone})
+            if args.json
+            else f"Can't score {zone}: no hour-of-day curve available"
+        )
+        return EXIT_NODATA
+
+    clean_hour, clean_int = carbon_curve.cleanest_hour(profile)
+    mean = carbon_curve.mean_intensity(profile)
+    _energy_kwh(args)
+    per_run_clean = check_grid.estimate_emissions(clean_int)
+    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
+    current_kg = avoidable_kg = 0.0
+    schedules = 0
+    for path in files:
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in suggest_pr.CRON_RE.finditer(text):
+            cron = match.group(1)
+            rpd = suggest_pr.runs_per_day(cron)
+            if rpd <= 0:
+                continue
+            schedules += 1
+            fields = cron.split()
+            cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
+            cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
+            runs_year = rpd * 365
+            per_run_cur = check_grid.estimate_emissions(cur_int)
+            current_kg += per_run_cur * runs_year / 1000
+            if cur_hour is not None:
+                avoidable_kg += max(0.0, per_run_cur - per_run_clean) * runs_year / 1000
+
+    captured = 1.0 if current_kg <= 0 else max(0.0, 1 - avoidable_kg / current_kg)
+    grade, color = _grade(captured)
+    pct = round(captured * 100, 1)
+    current_kg, avoidable_kg = round(current_kg, 1), round(avoidable_kg, 1)
+
+    if args.badge_file:
+        try:
+            with open(args.badge_file, "w") as fh:
+                json.dump(
+                    {
+                        "schemaVersion": 1,
+                        "label": "carbon posture",
+                        "message": f"{grade} ({pct:.0f}%)",
+                        "color": color,
+                    },
+                    fh,
+                )
+        except OSError as exc:
+            print(f"::warning::could not write badge file: {exc}", file=sys.stderr)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": zone,
+                    "grade": grade,
+                    "captured_pct": pct,
+                    "schedules": schedules,
+                    "current_kg_per_year": current_kg,
+                    "avoidable_kg_per_year": avoidable_kg,
+                }
+            )
+        )
+    elif schedules == 0:
+        print(f"Carbon posture: {grade} — no scheduled workflows to optimize in {args.dir}.")
+    else:
+        print(f"Carbon posture: {grade} ({pct:.0f}% of schedulable savings captured)")
+        print(
+            f"  {schedules} schedule(s), ~{current_kg:.1f} kg/yr; "
+            f"~{avoidable_kg:.1f} kg/yr still avoidable by shifting."
+        )
+    return EXIT_GREEN
+
+
 def cmd_plan(args):
     """Combined when+where: the cleanest (region, hour) across candidate zones.
 
@@ -841,6 +952,13 @@ def build_parser():
     scost.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
     scost.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
     scost.set_defaults(func=cmd_schedule_cost)
+
+    sc = sub.add_parser("score", help="Grade a repo's scheduling carbon posture (A-F) + badge")
+    add_common(sc)
+    sc.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
+    sc.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
+    sc.add_argument("--badge-file", default="", help="Write a shields.io badge JSON to this path")
+    sc.set_defaults(func=cmd_score)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)
