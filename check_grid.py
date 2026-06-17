@@ -863,13 +863,13 @@ def _emit_budget_outputs(summary):
         )
 
 
-def record_lifetime_savings(saved_grams, emitted_grams=0):
+def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=None):
     """Append this run to the cumulative ledger (at most once/process).
 
     Reads the LEDGER config and optional GIST_TOKEN from the environment, records
-    savings and emissions via the ledger module, then emits the lifetime and
-    carbon-budget outputs. No-op when no ledger is configured. Never raises:
-    bookkeeping must not break CI.
+    savings, emissions, and an hour-of-day curve sample (zone + intensity) via the
+    ledger module, then emits the lifetime and carbon-budget outputs. No-op when
+    no ledger is configured. Never raises: bookkeeping must not break CI.
     """
     global _lifetime_summary, _ledger_recorded
     if _ledger_recorded:
@@ -882,8 +882,17 @@ def record_lifetime_savings(saved_grams, emitted_grams=0):
     _ledger_recorded = True
 
     token = os.environ.get("GIST_TOKEN", "")
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    summary = ledger.record_savings(config, token, saved_grams, date_str, emitted_grams)
+    now = datetime.now(timezone.utc)
+    summary = ledger.record_savings(
+        config,
+        token,
+        saved_grams,
+        now.strftime("%Y-%m-%d"),
+        emitted_grams,
+        zone=zone,
+        intensity=intensity,
+        hour=now.hour,
+    )
     if not summary:
         return
 
@@ -1039,7 +1048,7 @@ SAVINGS_BASIS = (
 )
 
 
-def set_savings_outputs(co2_saved, badge_url, intensity=None):
+def set_savings_outputs(co2_saved, badge_url, intensity=None, zone=None):
     """Emit savings, the honest per-run emissions, badge, and equivalents."""
     emitted = estimate_emissions(intensity)
     if intensity is not None:
@@ -1055,7 +1064,7 @@ def set_savings_outputs(co2_saved, badge_url, intensity=None):
             set_output("co2_saved_equivalent", equiv["phrase"])
     if badge_url:
         set_output("carbon_badge_url", badge_url)
-    record_lifetime_savings(co2_saved or 0, emitted)
+    record_lifetime_savings(co2_saved or 0, emitted, zone=zone, intensity=intensity)
 
 
 def run_dry_run(
@@ -1105,7 +1114,7 @@ def run_dry_run(
     set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
 
     co2_saved, badge_url = estimate_carbon_savings(report_intensity)
-    set_savings_outputs(co2_saved, badge_url, report_intensity)
+    set_savings_outputs(co2_saved, badge_url, report_intensity, zone=report_zone)
 
     forecast_at = None
     forecast_intensity = None
@@ -1262,7 +1271,7 @@ def _emit_green_result(
     set_output("carbon_intensity", str(intensity))
     set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
     co2_saved, badge_url = estimate_carbon_savings(intensity)
-    set_savings_outputs(co2_saved, badge_url, intensity)
+    set_savings_outputs(co2_saved, badge_url, intensity, zone=zone)
     write_job_summary(
         zone,
         intensity,
@@ -1349,7 +1358,7 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
     # deferrals where no savings were recorded), so gating on budget_exceeded
     # works regardless of the dispatch decision. Idempotent.
     if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
-        record_lifetime_savings(0, 0)
+        record_lifetime_savings(0, 0, zone=zone, intensity=intensity)
 
     emit_marginal_outputs()
     emit_status_badge(zone, intensity, tier)
@@ -2039,7 +2048,7 @@ def main():
                             set_output("grid_clean", "true")
                             set_output("carbon_intensity", str(intensity))
                             co2_saved, badge_url = estimate_carbon_savings(intensity)
-                            set_savings_outputs(co2_saved, badge_url, intensity)
+                            set_savings_outputs(co2_saved, badge_url, intensity, zone=opt_zone)
                             if dispatch_mode:
                                 print("\nGrid is green after queue wait! Dispatching...")
                                 trigger_workflow(repo, workflow_id, token, ref)
