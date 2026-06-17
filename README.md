@@ -526,6 +526,29 @@ ever runs at one fixed hour won't fill the curve — the hourly self-check patte
 samples across the day.) Inspect it with `carbon-aware curve`. Reserve
 `wait-for-green` for one-off, deadline-bound work.
 
+**Or let it open the PR for you.** Run the action in `mode: suggest` (on a
+schedule) pointed at a workflow file, and it opens a pull request moving that
+workflow's daily cron to the cleanest hour — you just review and merge:
+
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  suggest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        with:
+          mode: 'suggest'
+          grid_zones: 'GB'
+          suggest_target: '.github/workflows/nightly-batch.yml'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Only simple daily crons are rewritten (cadence and minute preserved). See
+[`examples/suggest-cron-pr.yml`](examples/suggest-cron-pr.yml).
+
 And before adding any of this, ask `carbon-aware worth-it`: on a flat,
 baseload-dominated grid the intensity barely moves across the day, so shifting
 saves little — the tool will say so plainly rather than have you add complexity
@@ -564,6 +587,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | [`weekly-digest.yml`](examples/weekly-digest.yml) | Weekly impact issue from the ledger |
 | [`marginal-timing.yml`](examples/marginal-timing.yml) | Gate flexible compute on WattTime marginal emissions |
 | [`doctor.yml`](examples/doctor.yml) | One-click diagnostic of zones, tokens, and live data |
+| [`suggest-cron-pr.yml`](examples/suggest-cron-pr.yml) | Auto-open a PR shifting a workflow to the cleanest hour |
 
 ## Inputs
 

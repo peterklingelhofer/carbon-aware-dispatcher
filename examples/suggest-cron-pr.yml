@@ -1,0 +1,36 @@
+# Auto-PR: shift a workflow's schedule to the grid's cleanest hour
+#
+# Runs weekly, finds the cleanest hour for your zone (from accumulated history,
+# else forecast, else heuristic), and opens a PR moving the target workflow's
+# daily cron to that hour. You review and merge — the saving then applies to
+# every future run, with no idle waiting.
+#
+# Only simple daily crons are rewritten; cadence and minute are preserved.
+#
+# Copy to .github/workflows/carbon-suggest-cron.yml
+
+name: Carbon-Aware Schedule Suggestion
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Mondays 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  suggest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        with:
+          mode: "suggest"
+          grid_zones: "GB"
+          suggest_target: ".github/workflows/nightly-batch.yml"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: feed the accumulating curve from a ledger so non-GB zones
+          # build a profile over time.
+          # ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+          # gist_token: ${{ secrets.GIST_TOKEN }}

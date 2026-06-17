@@ -1833,6 +1833,64 @@ def render_doctor_report(results, features):
     return lines
 
 
+def resolve_cleanest_hour(zone, max_carbon, eia="", gridstatus="", emaps="", entsoe=""):
+    """Find the grid's cleanest UTC hour for a zone, best signal first.
+
+    Returns (hour, source) using the historical/accumulated curve, then the live
+    forecast, then the per-zone heuristic; (None, None) when nothing is available.
+    """
+    import carbon_curve
+
+    profile = carbon_curve.build_profile(zone)
+    if profile:
+        hour, _ = carbon_curve.cleanest_hour(profile)
+        return hour, "history"
+
+    _, when, _ = queue_find_optimal_window(
+        [{"zone": zone}], max_carbon, 24, eia, gridstatus, emaps, entsoe
+    )
+    if when:
+        try:
+            return datetime.fromisoformat(when.replace("Z", "+00:00")).hour, "forecast"
+        except (ValueError, TypeError):
+            pass
+
+    cron, _ = suggest_green_cron(zone)
+    if cron:
+        try:
+            return int(cron.split()[1]), "heuristic"
+        except (ValueError, IndexError):
+            pass
+    return None, None
+
+
+def run_suggest():
+    """Suggest mode: open a PR shifting a workflow's cron to the cleanest hour."""
+    import suggest_pr
+
+    zones_str = os.environ.get("GRID_ZONES", "") or os.environ.get("GRID_ZONE", "") or "auto:green"
+    zones = parse_zones_input(zones_str)
+    zone = zones[0]["zone"] if zones else "GB"
+    max_carbon = _env_float("MAX_CARBON", 250.0)
+    hour, source = resolve_cleanest_hour(
+        zone,
+        max_carbon,
+        os.environ.get("EIA_API_KEY", ""),
+        os.environ.get("GRID_STATUS_API_KEY", ""),
+        os.environ.get("ELECTRICITY_MAPS_TOKEN", ""),
+        os.environ.get("ENTSOE_TOKEN", ""),
+    )
+    suggest_pr.open_cron_pr(
+        os.environ.get("TARGET_REPO", ""),
+        os.environ.get("GITHUB_TOKEN", ""),
+        os.environ.get("SUGGEST_TARGET", ""),
+        hour,
+        os.environ.get("SUGGEST_BASE", "") or "main",
+        source or "unknown",
+        zone,
+    )
+
+
 def run_doctor():
     """Diagnostic mode: probe configured zones and report config health."""
     max_carbon = _env_float("MAX_CARBON", 250.0)
@@ -1874,6 +1932,10 @@ def main():
     # Doctor mode: probe configured zones and report config health, then exit
     if mode == "doctor":
         run_doctor()
+        return
+    # Suggest mode: open a PR shifting a workflow's cron to the cleanest hour
+    if mode == "suggest":
+        run_suggest()
         return
 
     # Determine mode: dispatch (workflow_id set) or inline (just set outputs)
