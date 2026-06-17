@@ -55,7 +55,36 @@ def _headers(token):
     return base.github_headers(token)
 
 
-def open_cron_pr(repo, token, path, new_hour, base_branch="main", source="history", zone=""):
+def _savings_line(profile, energy_kwh, changes, new_hour):
+    """A concrete savings sentence for the PR body, or '' when not computable."""
+    if not profile or not energy_kwh:
+        return ""
+    try:
+        old_hour = int(changes[0][0].split()[1])
+    except (ValueError, IndexError):
+        return ""
+    if old_hour not in profile or new_hour not in profile:
+        return ""
+    per_run = max(0.0, (profile[old_hour] - profile[new_hour]) * energy_kwh)
+    if per_run <= 0:
+        return ""
+    return (
+        f"\n\nEstimated saving: **~{per_run:.0f} g CO2/run** "
+        f"(~{per_run * 365 / 1000:.1f} kg/yr at daily cadence), from the historical curve."
+    )
+
+
+def open_cron_pr(
+    repo,
+    token,
+    path,
+    new_hour,
+    base_branch="main",
+    source="history",
+    zone="",
+    profile=None,
+    energy_kwh=None,
+):
     """Rewrite the target workflow's cron hour and open a PR. Returns True on success."""
     if new_hour is None:
         print("::warning::suggest mode: no cleanest-hour suggestion available; skipping")
@@ -126,7 +155,8 @@ def open_cron_pr(repo, token, path, new_hour, base_branch="main", source="histor
     body = (
         f"{MARKER}\n\n"
         f"Shift `{path}` to the grid's cleanest hour for **{zone or 'the configured zone'}** "
-        f"(via {source}).\n\n{summary}\n\n"
+        f"(via {source}).\n\n{summary}"
+        f"{_savings_line(profile, energy_kwh, changes, new_hour)}\n\n"
         "Cadence and minute are preserved; only the hour moves. "
         "Merging runs this job when the grid is typically cleanest.\n\n"
         "<sub>via carbon-aware-dispatcher</sub>"

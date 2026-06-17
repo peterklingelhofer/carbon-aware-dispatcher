@@ -98,11 +98,13 @@ class TestSuggestCron:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_history_derived(self, _bp, capsys):
         _bp.return_value = {11: 85.0, 12: 82.0, 19: 145.0}
-        rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--energy-kwh", "10", "--json"])
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
         assert out["cron"] == "0 12 * * *"
         assert out["source"] == "history"
+        # savings = (mean - cleanest) * energy; mean ~104, cleanest 82 -> ~220 g
+        assert out["savings_g_per_run"] > 0
 
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
@@ -171,9 +173,11 @@ class TestWorthIt:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_worth(self, bp, capsys):
         bp.return_value = {12: 80.0, 19: 160.0}  # big spread
-        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        rc = cli.main(["worth-it", "--zones", "GB", "--energy-kwh", "10", "--json"])
         assert rc == cli.EXIT_GREEN
-        assert json.loads(capsys.readouterr().out)["status"] == "worth"
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "worth"
+        assert out["best_case_savings_g_per_run"] == 800.0  # (160-80)*10
 
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
