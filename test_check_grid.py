@@ -2735,6 +2735,41 @@ class TestEstimateEmissions:
         assert check_grid.estimate_emissions(100, job_minutes=-5) == 0.0
 
 
+class TestResolveEnergy:
+    def _clear(self):
+        for k in ("JOB_ENERGY_KWH", "JOB_POWER_WATTS", "JOB_DURATION_MINUTES"):
+            os.environ.pop(k, None)
+
+    def test_default_ci_estimate(self):
+        self._clear()
+        # 50 W x 0.25 h = 0.0125 kWh
+        assert check_grid.resolve_energy_kwh() == pytest.approx(0.0125, rel=1e-6)
+
+    def test_explicit_energy_wins(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "12"
+            os.environ["JOB_POWER_WATTS"] = "999999"  # must be ignored
+            assert check_grid.resolve_energy_kwh() == 12.0
+        finally:
+            self._clear()
+
+    def test_power_and_duration(self):
+        try:
+            os.environ["JOB_POWER_WATTS"] = "300"  # 0.3 kW
+            os.environ["JOB_DURATION_MINUTES"] = "120"  # 2 h
+            assert check_grid.resolve_energy_kwh() == pytest.approx(0.6, rel=1e-6)
+        finally:
+            self._clear()
+
+    def test_emissions_use_resolved_energy(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "10"  # 10 kWh
+            # 400 gCO2/kWh x 10 kWh = 4000 g
+            assert check_grid.estimate_emissions(400) == 4000.0
+        finally:
+            self._clear()
+
+
 class TestCarbonBudget:
     def _reset(self):
         check_grid._ledger_recorded = False
