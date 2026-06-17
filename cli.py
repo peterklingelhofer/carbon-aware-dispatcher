@@ -10,6 +10,7 @@ Commands:
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
+  suggest-region  recommend the cleanest region among candidates, with savings
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -186,6 +187,73 @@ def cmd_report(args):
     }
     print(json.dumps(report, indent=None if args.json else 2))
     return EXIT_GREEN
+
+
+def _measure_all(args):
+    """Measure every candidate zone once; return [(zone, intensity)] (engine logs to stderr)."""
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    measured = []
+    with contextlib.redirect_stdout(sys.stderr):
+        check_grid.check_multiple_zones(
+            zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
+        )
+    return measured
+
+
+def cmd_suggest_region(args):
+    """Recommend the cleanest region among candidates, with quantified savings.
+
+    WHERE you run usually beats WHEN: moving a flexible workload to a clean grid
+    can cut emissions several-fold. Compares candidates' current intensity and
+    quantifies the saving vs the dirtiest (or a stated --current region). Region
+    moves carry latency/data-residency/egress costs, so the verdict says so.
+    """
+    measured = _measure_all(args)
+    if not measured:
+        if args.json:
+            print(json.dumps({"status": "error", "reason": "no data"}))
+        else:
+            print("NO DATA: could not read any candidate zone")
+        return EXIT_NODATA
+
+    cleanest = min(measured, key=lambda m: m[1])
+    current = [m for m in measured if m[0] == args.current] if args.current else []
+    baseline = current[0] if current else max(measured, key=lambda m: m[1])
+    baseline_label = baseline[0] if current else f"{baseline[0]} (dirtiest candidate)"
+
+    energy = _energy_kwh(args)
+    per_run = round(max(0.0, (baseline[1] - cleanest[1]) * energy), 1)
+    annual_kg = round(per_run * 365 / 1000, 1)
+    already = cleanest[0] == baseline[0] or per_run <= 0
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "already_cleanest" if already else "move",
+                    "cleanest_zone": cleanest[0],
+                    "cleanest_intensity": cleanest[1],
+                    "baseline_zone": baseline[0],
+                    "baseline_intensity": baseline[1],
+                    "savings_g_per_run": per_run,
+                    "savings_kg_per_year": annual_kg,
+                    "candidates": [
+                        {"zone": z, "intensity": i} for z, i in sorted(measured, key=lambda m: m[1])
+                    ],
+                }
+            )
+        )
+    elif already:
+        print(f"Already on the cleanest candidate: {cleanest[0]} ({cleanest[1]} gCO2eq/kWh).")
+    else:
+        print(
+            f"Run in {cleanest[0]} ({cleanest[1]} gCO2eq/kWh) instead of "
+            f"{baseline_label} ({baseline[1]} gCO2eq/kWh):"
+        )
+        print(f"  ~{per_run:.0f} g CO2/run saved (~{annual_kg:.1f} kg/yr at daily cadence).")
+        print("  Verify latency, data residency, and egress cost before migrating.")
+    return EXIT_GREEN if not already else EXIT_DIRTY
 
 
 def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None, window_hours=None):
@@ -485,6 +553,12 @@ def build_parser():
         help="Job length in hours; >1 targets the cleanest contiguous window",
     )
     s.set_defaults(func=cmd_suggest_cron)
+
+    sr = sub.add_parser("suggest-region", help="Recommend the cleanest region among candidates")
+    add_common(sr)
+    sr.add_argument("--current", default="", help="Your current zone, to quantify the saving vs it")
+    sr.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
+    sr.set_defaults(func=cmd_suggest_region)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)
