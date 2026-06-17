@@ -104,6 +104,15 @@ class TestSuggestCron:
         assert out["cron"] == "0 12 * * *"
         assert out["source"] == "history"
 
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_flat_grid_adds_note(self, _bp, capsys):
+        _bp.return_value = {0: 100.0, 1: 102.0, 2: 99.0}  # flat
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert "flat" in out.get("note", "")
+
     @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.queue_find_optimal_window")
@@ -154,6 +163,30 @@ class TestCurve:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_curve_unavailable(self, _bp, capsys):
         rc = cli.main(["curve", "--zones", "FR"])
+        assert rc == cli.EXIT_NODATA
+
+
+class TestWorthIt:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_worth(self, bp, capsys):
+        bp.return_value = {12: 80.0, 19: 160.0}  # big spread
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        assert json.loads(capsys.readouterr().out)["status"] == "worth"
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_not_worth(self, bp, capsys):
+        bp.return_value = {0: 100.0, 1: 101.0, 2: 99.0}  # flat
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_DIRTY
+        assert json.loads(capsys.readouterr().out)["status"] == "not_worth"
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_unknown(self, _bp, capsys):
+        rc = cli.main(["worth-it", "--zones", "FR"])
         assert rc == cli.EXIT_NODATA
 
 
