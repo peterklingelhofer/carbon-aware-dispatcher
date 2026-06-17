@@ -93,6 +93,39 @@ class TestBestWindow:
         assert rc == cli.EXIT_DIRTY
 
 
+class TestSuggestCron:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    def test_forecast_derived(self, qf, capsys):
+        qf.return_value = ("GB", "2026-06-17T23:00:00Z", 158)
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cron"] == "0 23 * * *"
+        assert out["source"] == "forecast"
+
+    @mock.patch("cli.check_grid.suggest_green_cron")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    def test_heuristic_fallback(self, qf, sgc, capsys):
+        qf.return_value = (None, None, None)
+        sgc.return_value = ("0 2 * * *", "daily at 2am (wind)")
+        rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cron"] == "0 2 * * *"
+        assert out["source"] == "heuristic"
+
+    @mock.patch("cli.check_grid.suggest_green_cron")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    def test_no_suggestion(self, qf, sgc, capsys):
+        qf.return_value = (None, None, None)
+        sgc.return_value = (None, None)
+        rc = cli.main(["suggest-cron", "--zones", "GB"])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestReport:
     def _clear(self):
         import os
