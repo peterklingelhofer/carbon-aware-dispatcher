@@ -58,6 +58,24 @@ class TestUkHistory:
         assert carbon_curve.uk_history_samples() == []
 
 
+class TestSavings:
+    def test_mean_intensity(self):
+        assert carbon_curve.mean_intensity({0: 100, 1: 200}) == 150.0
+        assert carbon_curve.mean_intensity({}) == 0.0
+
+    def test_shift_savings(self):
+        # (200 - 80) * 10 kWh = 1200 g
+        assert carbon_curve.shift_savings_grams({12: 80, 19: 200}, 19, 12, 10) == 1200.0
+
+    def test_shift_savings_clamped_and_missing(self):
+        assert carbon_curve.shift_savings_grams({12: 80, 19: 200}, 12, 19, 10) == 0.0  # uphill
+        assert carbon_curve.shift_savings_grams({12: 80}, 5, 12, 10) == 0.0  # missing hour
+
+    def test_best_case_savings(self):
+        # (200 - 80) * 5 kWh = 600 g
+        assert carbon_curve.best_case_savings_grams({12: 80, 19: 200}, 5) == 600.0
+
+
 class TestIsWorthShifting:
     def test_high_spread_worth(self):
         assert carbon_curve.is_worth_shifting({0: 50, 1: 150}) is True

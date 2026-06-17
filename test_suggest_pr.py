@@ -41,6 +41,22 @@ class TestRewriteCrons:
         assert suggest_pr.rewrite_crons(text, 3) == (text, [])
 
 
+class TestSavingsLine:
+    def test_computes_from_old_to_new_hour(self):
+        line = suggest_pr._savings_line({14: 200.0, 3: 80.0}, 10, [("0 14 * * *", "0 3 * * *")], 3)
+        assert "1200 g CO2/run" in line  # (200-80)*10
+
+    def test_empty_without_profile(self):
+        assert suggest_pr._savings_line(None, 10, [("0 14 * * *", "0 3 * * *")], 3) == ""
+
+    def test_empty_when_uphill(self):
+        # moving to a dirtier hour -> no positive savings -> no line
+        assert (
+            suggest_pr._savings_line({14: 80.0, 3: 200.0}, 10, [("0 14 * * *", "0 3 * * *")], 3)
+            == ""
+        )
+
+
 class TestOpenCronPr:
     def test_skips_without_hour(self, capsys):
         assert suggest_pr.open_cron_pr("o/r", "tok", "wf.yml", None) is False
