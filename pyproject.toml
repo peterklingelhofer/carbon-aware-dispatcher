@@ -47,17 +47,32 @@ dev = [
 [project.scripts]
 carbon-dispatch = "check_grid:main"
 carbon-dispatch-setup = "setup_wizard:main"
+carbon-aware = "cli:main"
 
 [project.urls]
 Homepage = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
 Repository = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["check_grid.py", "setup_wizard.py", "providers"]
+only-include = [
+    "check_grid.py",
+    "cli.py",
+    "setup_wizard.py",
+    "ledger.py",
+    "notify.py",
+    "digest.py",
+    "pr_comment.py",
+    "providers",
+]
 
 [tool.hatch.build.targets.wheel.sources]
 "check_grid.py" = "check_grid.py"
+"cli.py" = "cli.py"
 "setup_wizard.py" = "setup_wizard.py"
+"ledger.py" = "ledger.py"
+"notify.py" = "notify.py"
+"digest.py" = "digest.py"
+"pr_comment.py" = "pr_comment.py"
 "providers" = "providers"
 
 [tool.pytest.ini_options]

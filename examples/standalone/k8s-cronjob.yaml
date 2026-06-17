@@ -1,0 +1,44 @@
+# Carbon-aware Kubernetes CronJob
+#
+# Runs a deferrable batch job (here: a placeholder) only when the grid is clean.
+# An initContainer runs `carbon-aware wait-for-green`; if it exits non-zero
+# (no green window within the deadline) the Pod fails and the next schedule
+# tries again. This is where carbon-aware scheduling actually moves the needle:
+# large, deferrable batch/ML/ETL workloads, which dwarf a CI job.
+#
+# Build/push the image from the repo's Dockerfile first:
+#   docker build -t your-registry/carbon-aware:latest .
+#   docker push your-registry/carbon-aware:latest
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-batch-carbon-aware
+spec:
+  # Fire often; the gate decides whether work actually runs
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      # Give the job the whole window to find a green hour
+      activeDeadlineSeconds: 21600 # 6h
+      template:
+        spec:
+          restartPolicy: Never
+          initContainers:
+            - name: wait-for-green
+              image: your-registry/carbon-aware:latest
+              args:
+                - wait-for-green
+                - --zones=auto:green
+                - --max-carbon=200
+                - --max-wait=6h
+                - --poll=15m
+              # Optional provider tokens for broader coverage:
+              # env:
+              #   - name: ENTSOE_TOKEN
+              #     valueFrom: { secretKeyRef: { name: carbon, key: entsoe } }
+          containers:
+            - name: batch
+              image: busybox
+              command: ["sh", "-c", "echo 'Running batch work on clean energy'; sleep 5"]
