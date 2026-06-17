@@ -497,7 +497,10 @@ carbon-aware report --zones GB --energy-kwh 12 --pue 1.12 --embodied-grams 40 > 
 
 # Best of all: shift a recurring job to its cleanest hour, once
 carbon-aware suggest-cron --zones GB
-#  -> Suggested schedule: 0 23 * * *   (forecast cleanest hour for GB)
+#  -> Suggested schedule: 0 12 * * *   (cleanest hour for GB, history)
+
+# Inspect the hour-of-day curve the recommendation is based on
+carbon-aware curve --zones GB
 ```
 
 `report` writes a machine-readable [SCI](https://sci.greensoftware.foundation/)
@@ -509,8 +512,10 @@ aggregates for CSRD / GHG-Protocol reporting.
 For *recurring* jobs, blocking with `wait-for-green` keeps the machine powered on
 while it polls; that idle energy is itself carbon. The higher-impact move is to
 shift the schedule **once** to the grid's cleanest hour: it saves on every future
-run with zero idle waste. `suggest-cron` uses the live forecast (falling back to a
-per-zone heuristic) to recommend that cron expression. Reserve `wait-for-green`
+run with zero idle waste. `suggest-cron` recommends that cron expression from the
+best signal available: a multi-day **historical hour-of-day curve** where free
+history exists (GB today), else the live forecast, else a per-zone heuristic.
+Inspect the curve directly with `carbon-aware curve`. Reserve `wait-for-green`
 for one-off, deadline-bound work.
 
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
