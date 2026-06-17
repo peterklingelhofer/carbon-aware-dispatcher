@@ -526,6 +526,10 @@ carbon-aware schedule-cost --zones GB --dir .github/workflows --energy-kwh 5
 carbon-aware score --zones GB --badge-file carbon-posture.json
 #  -> Carbon posture: B (84% of schedulable savings captured)
 
+# Combine every recommendation into one ranked plan
+carbon-aware advise --zones GB --dir .github/workflows --energy-kwh 5
+#  -> 1. [shift] ...  2. [throttle] ...  with kg/yr each
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
