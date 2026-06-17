@@ -253,6 +253,41 @@ class TestPlan:
         fallback.assert_called_once()
 
 
+class TestAudit:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_ranks_shiftable_crons(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 50.0}  # cleanest hour 3
+        (tmp_path / "a.yml").write_text("on:\n  schedule:\n    - cron: '0 20 * * *'\n")
+        (tmp_path / "b.yml").write_text("    - cron: '*/15 * * * *'\n")  # complex, skipped
+        (tmp_path / "c.yml").write_text("    - cron: '0 3 * * *'\n")  # already optimal
+        rc = cli.main(
+            ["audit", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cleanest_hour"] == 3
+        assert len(out["findings"]) == 1  # only the 0 20 cron is shiftable
+        f = out["findings"][0]
+        assert f["suggested_cron"] == "0 3 * * *"
+        assert f["savings_g_per_run"] == 500.0  # (100-50)*10
+        assert out["total_savings_kg_per_year"] > 0
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_all_optimal(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 50.0}
+        (tmp_path / "a.yml").write_text("    - cron: '0 3 * * *'\n")
+        rc = cli.main(["audit", "--zones", "GB", "--dir", str(tmp_path)])
+        assert rc == cli.EXIT_DIRTY
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "FR"}])
+    def test_no_curve(self, _bp, capsys, tmp_path):
+        rc = cli.main(["audit", "--zones", "FR", "--dir", str(tmp_path)])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
