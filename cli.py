@@ -11,6 +11,7 @@ Commands:
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
+  plan            combined when+where: the cleanest (region, hour) across zones
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -335,7 +336,8 @@ def cmd_suggest_cron(args):
             # Batch jobs want the cleanest contiguous block, not a single hour
             start, wavg = carbon_curve.cleanest_window(profile, duration)
             if start is not None:
-                savings = round(max(0.0, (mean - wavg) * energy * duration), 1)
+                # energy is the whole job's energy, so no extra x duration here
+                savings = round(max(0.0, (mean - wavg) * energy), 1)
                 return _emit_cron(
                     args,
                     first,
@@ -385,6 +387,77 @@ def cmd_suggest_cron(args):
         print(f"Suggested schedule: {cron}")
         print(f"  {desc} [heuristic]")
         print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
+    return EXIT_GREEN
+
+
+def cmd_plan(args):
+    """Combined when+where: the cleanest (region, hour) across candidate zones.
+
+    Picks the single best action across both levers — which region and what hour
+    minimize intensity — using each zone's hour-of-day curve, and quantifies the
+    saving vs running in your current zone at a typical hour. Falls back to a
+    region-only recommendation when no curves are available.
+    """
+    import carbon_curve
+
+    zones = [z["zone"] for z in check_grid.parse_zones_input(args.zones)]
+    energy = _energy_kwh(args)
+    duration = int(getattr(args, "duration_hours", 1) or 1)
+    options = []  # (zone, hour, intensity, mean)
+    with contextlib.redirect_stdout(sys.stderr):
+        for z in zones:
+            profile = carbon_curve.build_profile(z)
+            if not profile:
+                continue
+            if duration > 1:
+                start, val = carbon_curve.cleanest_window(profile, duration)
+                hour, intensity = (
+                    (start, val) if start is not None else carbon_curve.cleanest_hour(profile)
+                )
+            else:
+                hour, intensity = carbon_curve.cleanest_hour(profile)
+            options.append((z, hour, intensity, carbon_curve.mean_intensity(profile)))
+
+    if not options:
+        if not args.json:
+            print("No hour-of-day curves available; falling back to region only:", file=sys.stderr)
+        return cmd_suggest_region(args)
+
+    best = min(options, key=lambda o: o[2])
+    current = [o for o in options if o[0] == args.current] if args.current else []
+    if current:
+        baseline_mean, baseline_label = current[0][3], args.current
+    else:
+        worst = max(options, key=lambda o: o[3])
+        baseline_mean, baseline_label = worst[3], f"{worst[0]} (typical)"
+    per_run = round(max(0.0, (baseline_mean - best[2]) * energy), 1)
+    annual_kg = round(per_run * 365 / 1000, 1)
+    cron = f"0 {best[1]} * * *"
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": best[0],
+                    "hour": best[1],
+                    "cron": cron,
+                    "intensity": best[2],
+                    "baseline": baseline_label,
+                    "savings_g_per_run": per_run,
+                    "savings_kg_per_year": annual_kg,
+                    "duration_hours": duration,
+                }
+            )
+        )
+    else:
+        what = f"a {duration}h job" if duration > 1 else "your job"
+        print(f"Run {what} in {best[0]} at {best[1]:02d}:00 UTC  (cron: {cron})")
+        print(
+            f"  {best[2]:.0f} gCO2eq/kWh vs {baseline_label} ~{baseline_mean:.0f}: "
+            f"~{per_run:.0f} g/run (~{annual_kg:.1f} kg/yr daily)."
+        )
+        print("  Combines a region move (mind latency/egress) and a schedule shift.")
     return EXIT_GREEN
 
 
@@ -559,6 +632,13 @@ def build_parser():
     sr.add_argument("--current", default="", help="Your current zone, to quantify the saving vs it")
     sr.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     sr.set_defaults(func=cmd_suggest_region)
+
+    pl = sub.add_parser("plan", help="Combined when+where: cleanest (region, hour) across zones")
+    add_common(pl)
+    pl.add_argument("--current", default="", help="Your current zone, to quantify the saving vs it")
+    pl.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
+    pl.add_argument("--duration-hours", type=int, default=1, help="Job length in hours")
+    pl.set_defaults(func=cmd_plan)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)

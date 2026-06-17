@@ -507,6 +507,10 @@ carbon-aware suggest-cron --zones GB --duration-hours 4 --energy-kwh 20
 carbon-aware suggest-region --zones CISO,PJM,GB,FR --current PJM --energy-kwh 12
 #  -> Run in CISO instead of PJM: ~N kg CO2/yr saved (mind latency/egress)
 
+# Both at once: the cleanest (region, hour) across candidates
+carbon-aware plan --zones CISO,GB,FR --current PJM --energy-kwh 12
+#  -> Run your job in CISO at 03:00 UTC (cron: 0 3 * * *)
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
