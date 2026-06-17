@@ -129,6 +129,16 @@ def cmd_wait(args):
         waited += sleep_for
 
 
+def _energy_kwh(args):
+    """Resolve the run's energy (kWh) for savings math, honoring --energy-kwh."""
+    import os
+
+    value = getattr(args, "energy_kwh", None)
+    if value is not None:
+        os.environ["JOB_ENERGY_KWH"] = str(value)
+    return check_grid.resolve_energy_kwh()
+
+
 def _apply_sci_env(args):
     """Push the report's energy/SCI knobs into the shared model via env."""
     import os
@@ -178,7 +188,7 @@ def cmd_report(args):
     return EXIT_GREEN
 
 
-def _emit_cron(args, zone, hour, intensity, source, note=None):
+def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None):
     """Print a cron recommendation for the cleanest hour. Returns exit code."""
     if hour is None:
         if args.json:
@@ -188,6 +198,12 @@ def _emit_cron(args, zone, hour, intensity, source, note=None):
         return EXIT_NODATA
     cron = f"0 {hour} * * *"
     desc = f"daily at {hour:02d}:00 UTC (cleanest hour for {zone}, {source})"
+    savings_line = None
+    if savings_g and savings_g > 0:
+        savings_line = (
+            f"~{savings_g:.0f} g CO2/run cleaner than your average run time "
+            f"(~{savings_g * 365 / 1000:.1f} kg/yr at daily cadence)"
+        )
     if args.json:
         payload = {
             "status": "ok",
@@ -199,10 +215,14 @@ def _emit_cron(args, zone, hour, intensity, source, note=None):
         }
         if note:
             payload["note"] = note
+        if savings_g and savings_g > 0:
+            payload["savings_g_per_run"] = savings_g
         print(json.dumps(payload))
     else:
         print(f"Suggested schedule: {cron}")
         print(f"  {desc}")
+        if savings_line:
+            print(f"  {savings_line}")
         if note:
             print(f"  note: {note}")
         print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
@@ -235,7 +255,11 @@ def cmd_suggest_cron(args):
                 f"grid is fairly flat ({carbon_curve.spread_pct(profile):.0f}% spread); "
                 "shifting saves little"
             )
-        return _emit_cron(args, first, hour, intensity, "history", note=note)
+        # Concrete, honest payoff: cleaner than running at the average hour
+        energy = _energy_kwh(args)
+        mean = carbon_curve.mean_intensity(profile)
+        savings = round(max(0.0, (mean - intensity) * energy), 1)
+        return _emit_cron(args, first, hour, intensity, "history", note=note, savings_g=savings)
 
     with contextlib.redirect_stdout(sys.stderr):
         zone, when, intensity = check_grid.queue_find_optimal_window(
@@ -337,6 +361,8 @@ def cmd_worth_it(args):
     spread = carbon_curve.spread_pct(profile)
     hour, intensity = carbon_curve.cleanest_hour(profile)
     worth = spread >= args.min_spread
+    best = carbon_curve.best_case_savings_grams(profile, _energy_kwh(args))
+    annual_kg = best * 365 / 1000
     if args.json:
         print(
             json.dumps(
@@ -346,18 +372,21 @@ def cmd_worth_it(args):
                     "spread_pct": spread,
                     "min_spread": args.min_spread,
                     "cleanest_hour": hour,
+                    "best_case_savings_g_per_run": best,
+                    "best_case_savings_kg_per_year": round(annual_kg, 2),
                 }
             )
         )
     elif worth:
         print(
             f"Worth shifting: {first} varies {spread:.0f}% across the day "
-            f"(cleanest {hour:02d}:00 UTC). Use `suggest-cron`."
+            f"(cleanest {hour:02d}:00 UTC). Up to ~{best:.0f} g/run "
+            f"(~{annual_kg:.1f} kg/yr daily). Use `suggest-cron`."
         )
     else:
         print(
-            f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread). "
-            "Scheduling saves little here — skip the complexity."
+            f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread, "
+            f"~{best:.0f} g/run best case). Scheduling saves little — skip the complexity."
         )
     return EXIT_GREEN if worth else EXIT_DIRTY
 
@@ -427,6 +456,7 @@ def build_parser():
 
     s = sub.add_parser("suggest-cron", help="Recommend a daily cron at the cleanest hour")
     add_common(s)
+    s.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     s.set_defaults(func=cmd_suggest_cron)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
@@ -441,6 +471,7 @@ def build_parser():
         default=15.0,
         help="Min hour-of-day spread %% to call shifting worthwhile. Default: 15",
     )
+    wi.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     wi.set_defaults(func=cmd_worth_it)
 
     r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")

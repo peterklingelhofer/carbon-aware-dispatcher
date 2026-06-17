@@ -1844,24 +1844,24 @@ def resolve_cleanest_hour(zone, max_carbon, eia="", gridstatus="", emaps="", ent
     profile = carbon_curve.build_profile(zone)
     if profile:
         hour, _ = carbon_curve.cleanest_hour(profile)
-        return hour, "history"
+        return hour, "history", profile
 
     _, when, _ = queue_find_optimal_window(
         [{"zone": zone}], max_carbon, 24, eia, gridstatus, emaps, entsoe
     )
     if when:
         try:
-            return datetime.fromisoformat(when.replace("Z", "+00:00")).hour, "forecast"
+            return datetime.fromisoformat(when.replace("Z", "+00:00")).hour, "forecast", {}
         except (ValueError, TypeError):
             pass
 
     cron, _ = suggest_green_cron(zone)
     if cron:
         try:
-            return int(cron.split()[1]), "heuristic"
+            return int(cron.split()[1]), "heuristic", {}
         except (ValueError, IndexError):
             pass
-    return None, None
+    return None, None, {}
 
 
 def run_suggest():
@@ -1872,7 +1872,7 @@ def run_suggest():
     zones = parse_zones_input(zones_str)
     zone = zones[0]["zone"] if zones else "GB"
     max_carbon = _env_float("MAX_CARBON", 250.0)
-    hour, source = resolve_cleanest_hour(
+    hour, source, profile = resolve_cleanest_hour(
         zone,
         max_carbon,
         os.environ.get("EIA_API_KEY", ""),
@@ -1888,6 +1888,8 @@ def run_suggest():
         os.environ.get("SUGGEST_BASE", "") or "main",
         source or "unknown",
         zone,
+        profile=profile,
+        energy_kwh=resolve_energy_kwh(),
     )
 
 

@@ -64,6 +64,29 @@ def is_worth_shifting(profile, min_spread_pct=DEFAULT_MIN_SPREAD_PCT):
     return spread_pct(profile) >= min_spread_pct
 
 
+def mean_intensity(profile):
+    """Mean intensity across the profiled hours, or 0 for an empty profile."""
+    return round(sum(profile.values()) / len(profile), 1) if profile else 0.0
+
+
+def shift_savings_grams(profile, from_hour, to_hour, energy_kwh):
+    """gCO2 saved per run by moving a job from from_hour to to_hour (>= 0).
+
+    Honest, curve-based: the actual intensity delta between the two hours times
+    the run's energy — not a comparison against a hypothetical average grid.
+    """
+    if not profile or from_hour not in profile or to_hour not in profile:
+        return 0.0
+    return round(max(0.0, (profile[from_hour] - profile[to_hour]) * energy_kwh), 1)
+
+
+def best_case_savings_grams(profile, energy_kwh):
+    """Max gCO2 saved per run: dirtiest hour minus cleanest, times energy."""
+    if not profile:
+        return 0.0
+    return round((max(profile.values()) - min(profile.values())) * energy_kwh, 1)
+
+
 def uk_history_samples(days=7):
     """Fetch GB national half-hourly history; return [(hour, intensity)] in UTC."""
     days = max(1, min(days, MAX_HISTORY_DAYS))
