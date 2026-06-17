@@ -97,6 +97,13 @@ def cmd_check(args):
 def cmd_wait(args):
     deadline = parse_duration(args.max_wait)
     poll = parse_duration(args.poll)
+    # Honesty: blocking holds the machine powered on. For recurring jobs, shifting
+    # the schedule (suggest-cron) saves more, with no idle-energy waste.
+    print(
+        "note: blocking keeps this machine running; for recurring jobs prefer "
+        "`carbon-aware suggest-cron` to shift the schedule instead.",
+        file=sys.stderr,
+    )
     waited = 0
     while True:
         result = evaluate(args)
@@ -167,6 +174,64 @@ def cmd_report(args):
     return EXIT_GREEN
 
 
+def cmd_suggest_cron(args):
+    """Recommend a daily cron at the grid's cleanest hour.
+
+    Shifting a recurring job to its cleanest hour saves on every future run with
+    zero idle waste — far better than blocking a runner. Uses the live forecast
+    to find the cleanest upcoming hour, falling back to a per-zone heuristic.
+    """
+    from datetime import datetime
+
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        zone, when, intensity = check_grid.queue_find_optimal_window(
+            zones, args.max_carbon, 24, tok["eia"], tok["gridstatus"], tok["emaps"], tok["entsoe"]
+        )
+
+    cron = desc = None
+    source = "forecast"
+    if zone and when:
+        try:
+            hour = datetime.fromisoformat(when.replace("Z", "+00:00")).hour
+            cron = f"0 {hour} * * *"
+            desc = f"daily at {hour:02d}:00 UTC (forecast cleanest hour for {zone})"
+        except (ValueError, TypeError):
+            cron = None
+    if not cron:  # no usable forecast — fall back to the per-zone heuristic
+        source = "heuristic"
+        first = zones[0]["zone"] if zones else args.zones
+        cron, desc = check_grid.suggest_green_cron(first)
+        zone = first
+
+    if not cron:
+        if args.json:
+            print(json.dumps({"status": "none", "zone": zone}))
+        else:
+            print(f"No schedule suggestion available for {zone}")
+        return EXIT_NODATA
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": zone,
+                    "cron": cron,
+                    "source": source,
+                    "intensity": intensity,
+                    "description": desc,
+                }
+            )
+        )
+    else:
+        print(f"Suggested schedule: {cron}")
+        print(f"  {desc} [{source}]")
+        print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
+    return EXIT_GREEN
+
+
 def cmd_best_window(args):
     zones = check_grid.parse_zones_input(args.zones)
     tok = _tokens(args)
@@ -229,6 +294,10 @@ def build_parser():
     add_common(b)
     b.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
     b.set_defaults(func=cmd_best_window)
+
+    s = sub.add_parser("suggest-cron", help="Recommend a daily cron at the cleanest hour")
+    add_common(s)
+    s.set_defaults(func=cmd_suggest_cron)
 
     r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")
     add_common(r)
