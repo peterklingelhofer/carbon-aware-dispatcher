@@ -118,6 +118,55 @@ def cmd_wait(args):
         waited += sleep_for
 
 
+def _apply_sci_env(args):
+    """Push the report's energy/SCI knobs into the shared model via env."""
+    import os
+
+    for flag, var in (
+        ("energy_kwh", "JOB_ENERGY_KWH"),
+        ("power_watts", "JOB_POWER_WATTS"),
+        ("duration_minutes", "JOB_DURATION_MINUTES"),
+        ("pue", "PUE"),
+        ("embodied_grams", "EMBODIED_GRAMS"),
+    ):
+        value = getattr(args, flag, None)
+        if value is not None:
+            os.environ[var] = str(value)
+
+
+def cmd_report(args):
+    """Emit a Software Carbon Intensity (SCI) report as JSON on stdout.
+
+    Aggregates cleanly for CSRD / GHG-Protocol sustainability reporting: one
+    object per run with energy, intensity, PUE, embodied, and total emitted.
+    """
+    from datetime import datetime, timezone
+
+    _apply_sci_env(args)
+    result = evaluate(args)
+    zone, intensity = result.get("zone"), result.get("intensity")
+    if intensity is None:
+        print(json.dumps({"status": "error", "reason": "no data"}))
+        return EXIT_NODATA
+
+    emitted = check_grid.estimate_emissions(intensity)
+    report = {
+        "schema": "sci-report/1",
+        "spec": "https://sci.greensoftware.foundation/",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "zone": zone,
+        "carbon_intensity_g_per_kwh": intensity,
+        "energy_kwh": round(check_grid.resolve_energy_kwh(), 6),
+        "pue": check_grid._pue(),
+        "embodied_grams": check_grid._embodied_grams(),
+        "emitted_grams": emitted,
+        "functional_unit": args.functional_unit,
+        "sci_grams_per_unit": emitted,
+    }
+    print(json.dumps(report, indent=None if args.json else 2))
+    return EXIT_GREEN
+
+
 def cmd_best_window(args):
     zones = check_grid.parse_zones_input(args.zones)
     tok = _tokens(args)
@@ -180,6 +229,16 @@ def build_parser():
     add_common(b)
     b.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
     b.set_defaults(func=cmd_best_window)
+
+    r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")
+    add_common(r)
+    r.add_argument("--energy-kwh", type=float, help="Measured energy this run uses (kWh)")
+    r.add_argument("--power-watts", type=float, help="Average power draw (W), used with duration")
+    r.add_argument("--duration-minutes", type=float, help="Job duration (minutes)")
+    r.add_argument("--pue", type=float, help="Datacenter PUE multiplier (e.g. 1.12)")
+    r.add_argument("--embodied-grams", type=float, help="Amortized embodied gCO2 for this run")
+    r.add_argument("--functional-unit", default="run", help="SCI functional unit label")
+    r.set_defaults(func=cmd_report)
     return p
 
 
