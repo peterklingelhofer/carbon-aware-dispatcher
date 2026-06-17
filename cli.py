@@ -15,6 +15,7 @@ Commands:
   audit           scan a repo's workflows and rank schedules worth shifting
   schedule-cost   rank scheduled workflows by annual emissions (run less often)
   score           grade the repo's scheduling carbon posture (A-F) + badge
+  advise          one prioritized carbon action plan across every lever
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -578,6 +579,121 @@ def cmd_schedule_cost(args):
     return EXIT_GREEN
 
 
+def cmd_advise(args):
+    """One prioritized carbon action plan for a repo, across every lever.
+
+    Combines worth-it, the schedule audit, frequency cost, and the posture grade
+    into a single ranked list of concrete actions with kg/yr each, so a user
+    runs one command and knows exactly what to do, instead of choosing among a
+    dozen. Exit 0 with actions, 1 if nothing worth doing, 2 if no curve.
+    """
+    import glob
+
+    import carbon_curve
+    import suggest_pr
+
+    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(zone)
+    if not profile:
+        print(
+            json.dumps({"status": "no_curve", "zone": zone})
+            if args.json
+            else f"Can't advise on {zone}: no hour-of-day curve available"
+        )
+        return EXIT_NODATA
+
+    worth = carbon_curve.is_worth_shifting(profile)
+    spread = carbon_curve.spread_pct(profile)
+    clean_hour, clean_int = carbon_curve.cleanest_hour(profile)
+    mean = carbon_curve.mean_intensity(profile)
+    _energy_kwh(args)
+    per_run_clean = check_grid.estimate_emissions(clean_int)
+
+    actions = []
+    heaviest = None
+    total_current = total_avoidable = 0.0
+    for path in sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml"))):
+        try:
+            text = open(path).read()
+        except OSError:
+            continue
+        for match in suggest_pr.CRON_RE.finditer(text):
+            cron = match.group(1)
+            rpd = suggest_pr.runs_per_day(cron)
+            if rpd <= 0:
+                continue
+            fields = cron.split()
+            cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
+            cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
+            runs_year = rpd * 365
+            cur_kg = round(check_grid.estimate_emissions(cur_int) * runs_year / 1000, 1)
+            total_current += cur_kg
+            if heaviest is None or cur_kg > heaviest["annual_kg"]:
+                heaviest = {"file": path, "cron": cron, "annual_kg": cur_kg, "runs_per_day": rpd}
+            if worth and cur_hour is not None:
+                save = round(
+                    max(0.0, (check_grid.estimate_emissions(cur_int) - per_run_clean))
+                    * runs_year
+                    / 1000,
+                    1,
+                )
+                if save > 0:
+                    actions.append(
+                        {
+                            "type": "shift",
+                            "file": path,
+                            "detail": f"`{cron}` -> `{suggest_pr.swap_cron_hour(cron, clean_hour)}`",
+                            "annual_kg": save,
+                        }
+                    )
+                    total_avoidable += save
+
+    # The heaviest job is a use-less candidate even when shifting won't help
+    if heaviest and heaviest["runs_per_day"] >= 12 and heaviest["annual_kg"] > 0:
+        actions.append(
+            {
+                "type": "throttle",
+                "file": heaviest["file"],
+                "detail": f"`{heaviest['cron']}` runs {heaviest['runs_per_day']:g}x/day "
+                ": run less often or add concurrency cancel-in-progress",
+                "annual_kg": heaviest["annual_kg"],
+            }
+        )
+    actions.sort(key=lambda a: a["annual_kg"], reverse=True)
+    captured = 1.0 if total_current <= 0 else max(0.0, 1 - total_avoidable / total_current)
+    grade = _grade(captured)[0]
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok" if actions else "nothing",
+                    "zone": zone,
+                    "grade": grade,
+                    "worth_shifting": worth,
+                    "spread_pct": spread,
+                    "total_avoidable_kg_per_year": round(total_avoidable, 1),
+                    "actions": actions,
+                }
+            )
+        )
+        return EXIT_GREEN if actions else EXIT_DIRTY
+    print(f"Carbon plan for {zone} (posture {grade}, grid spread {spread:.0f}%):")
+    if not worth:
+        print("  Grid is fairly flat here; time-shifting saves little. Focus on running less:")
+    if not actions:
+        print("  Nothing actionable: schedules already optimal or grid too flat.")
+        return EXIT_DIRTY
+    for i, a in enumerate(actions, 1):
+        print(f"  {i}. [{a['type']}] {a['file']}: {a['detail']}  (~{a['annual_kg']:.1f} kg/yr)")
+    print(
+        f"Total avoidable by shifting: ~{total_avoidable:.1f} kg CO2/yr. "
+        "Apply shifts with `mode: suggest`."
+    )
+    return EXIT_GREEN
+
+
 def _grade(captured):
     """Letter grade + shields color from the captured-savings fraction."""
     for threshold, grade, color in (
@@ -959,6 +1075,12 @@ def build_parser():
     sc.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
     sc.add_argument("--badge-file", default="", help="Write a shields.io badge JSON to this path")
     sc.set_defaults(func=cmd_score)
+
+    ad = sub.add_parser("advise", help="One prioritized carbon action plan for the repo")
+    add_common(ad)
+    ad.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
+    ad.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
+    ad.set_defaults(func=cmd_advise)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)
