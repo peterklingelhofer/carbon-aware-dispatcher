@@ -108,6 +108,29 @@ class TestSuggestCron:
 
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_duration_window(self, bp, capsys):
+        profile = {h: 100.0 for h in range(24)}
+        profile.update({11: 50.0, 12: 40.0, 13: 45.0})
+        bp.return_value = profile
+        rc = cli.main(
+            [
+                "suggest-cron",
+                "--zones",
+                "GB",
+                "--duration-hours",
+                "3",
+                "--energy-kwh",
+                "10",
+                "--json",
+            ]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["cron"] == "0 11 * * *"  # cleanest 3h block starts at 11
+        assert "3h window" in out["description"]
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_flat_grid_adds_note(self, _bp, capsys):
         _bp.return_value = {0: 100.0, 1: 102.0, 2: 99.0}  # flat
         rc = cli.main(["suggest-cron", "--zones", "GB", "--json"])

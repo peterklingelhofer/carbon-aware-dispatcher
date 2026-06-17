@@ -9,7 +9,7 @@ Commands:
   check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
-  suggest-cron    recommend a daily cron at the cleanest hour (history > forecast > heuristic)
+  suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -188,7 +188,7 @@ def cmd_report(args):
     return EXIT_GREEN
 
 
-def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None):
+def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None, window_hours=None):
     """Print a cron recommendation for the cleanest hour. Returns exit code."""
     if hour is None:
         if args.json:
@@ -197,7 +197,13 @@ def _emit_cron(args, zone, hour, intensity, source, note=None, savings_g=None):
             print(f"No schedule suggestion available for {zone}")
         return EXIT_NODATA
     cron = f"0 {hour} * * *"
-    desc = f"daily at {hour:02d}:00 UTC (cleanest hour for {zone}, {source})"
+    if window_hours and window_hours > 1:
+        desc = (
+            f"start a {window_hours}h job at {hour:02d}:00 UTC "
+            f"(cleanest {window_hours}h window for {zone}, {source})"
+        )
+    else:
+        desc = f"daily at {hour:02d}:00 UTC (cleanest hour for {zone}, {source})"
     savings_line = None
     if savings_g and savings_g > 0:
         savings_line = (
@@ -248,16 +254,31 @@ def cmd_suggest_cron(args):
     with contextlib.redirect_stdout(sys.stderr):
         profile = carbon_curve.build_profile(first)
     if profile:
-        hour, intensity = carbon_curve.cleanest_hour(profile)
         note = None
         if not carbon_curve.is_worth_shifting(profile):
             note = (
                 f"grid is fairly flat ({carbon_curve.spread_pct(profile):.0f}% spread); "
                 "shifting saves little"
             )
-        # Concrete, honest payoff: cleaner than running at the average hour
         energy = _energy_kwh(args)
         mean = carbon_curve.mean_intensity(profile)
+        duration = int(getattr(args, "duration_hours", 1) or 1)
+        if duration > 1:
+            # Batch jobs want the cleanest contiguous block of hours
+            start, wavg = carbon_curve.cleanest_window(profile, duration)
+            if start is not None:
+                savings = round(max(0.0, (mean - wavg) * energy * duration), 1)
+                return _emit_cron(
+                    args,
+                    first,
+                    start,
+                    wavg,
+                    "history",
+                    note=note,
+                    savings_g=savings,
+                    window_hours=duration,
+                )
+        hour, intensity = carbon_curve.cleanest_hour(profile)
         savings = round(max(0.0, (mean - intensity) * energy), 1)
         return _emit_cron(args, first, hour, intensity, "history", note=note, savings_g=savings)
 
@@ -457,6 +478,12 @@ def build_parser():
     s = sub.add_parser("suggest-cron", help="Recommend a daily cron at the cleanest hour")
     add_common(s)
     s.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
+    s.add_argument(
+        "--duration-hours",
+        type=int,
+        default=1,
+        help="Job length in hours; >1 targets the cleanest contiguous window",
+    )
     s.set_defaults(func=cmd_suggest_cron)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
