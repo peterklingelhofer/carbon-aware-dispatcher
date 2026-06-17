@@ -80,6 +80,29 @@ def shift_savings_grams(profile, from_hour, to_hour, energy_kwh):
     return round(max(0.0, (profile[from_hour] - profile[to_hour]) * energy_kwh), 1)
 
 
+def cleanest_window(profile, hours):
+    """Start hour of the cleanest contiguous `hours`-long window (wraps midnight).
+
+    For batch jobs that run for several hours, the right target is the cleanest
+    block spanning them. Returns (start_hour, avg_intensity) over windows
+    where every hour is present in the profile, or (None, None) if none qualify.
+    """
+    hours = int(hours)
+    if not profile or hours < 1 or hours > 24:
+        return None, None
+    best_start, best_avg = None, None
+    for start in range(24):
+        window = [(start + i) % 24 for i in range(hours)]
+        if not all(h in profile for h in window):
+            continue
+        avg = sum(profile[h] for h in window) / hours
+        if best_avg is None or avg < best_avg:
+            best_avg, best_start = avg, start
+    if best_start is None:
+        return None, None
+    return best_start, round(best_avg, 1)
+
+
 def best_case_savings_grams(profile, energy_kwh):
     """Max gCO2 saved per run: dirtiest hour minus cleanest, times energy."""
     if not profile:
