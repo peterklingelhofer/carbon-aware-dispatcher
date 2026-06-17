@@ -336,6 +336,38 @@ class TestScheduleCost:
         assert rc == cli.EXIT_NODATA
 
 
+class TestAdvise:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_shift_action(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}  # spread big, cleanest 3
+        (tmp_path / "a.yml").write_text("    - cron: '0 20 * * *'\n")
+        rc = cli.main(
+            ["advise", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["total_avoidable_kg_per_year"] > 0
+        assert any(a["type"] == "shift" for a in out["actions"])
+
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_throttle_action_for_hourly(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}
+        (tmp_path / "a.yml").write_text("    - cron: '0 * * * *'\n")  # hourly, unshiftable
+        rc = cli.main(
+            ["advise", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert any(a["type"] == "throttle" for a in out["actions"])
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "FR"}])
+    def test_no_curve(self, _bp, capsys, tmp_path):
+        rc = cli.main(["advise", "--zones", "FR", "--dir", str(tmp_path)])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestScore:
     def test_grade_thresholds(self):
         assert cli._grade(1.0)[0] == "A"
