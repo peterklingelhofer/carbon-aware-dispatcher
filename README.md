@@ -496,8 +496,12 @@ carbon-aware best-window --zones GB --hours 24 --json
 carbon-aware report --zones GB --energy-kwh 12 --pue 1.12 --embodied-grams 40 > sci.json
 
 # Best of all: shift a recurring job to its cleanest hour, once
-carbon-aware suggest-cron --zones GB
-#  -> Suggested schedule: 0 12 * * *   (cleanest hour for GB, history)
+carbon-aware suggest-cron --zones GB --energy-kwh 12
+#  -> Suggested schedule: 0 12 * * *   (~150 kg CO2/yr cleaner than your average run time)
+
+# For a multi-hour batch job, target the cleanest contiguous window
+carbon-aware suggest-cron --zones GB --duration-hours 4 --energy-kwh 20
+#  -> start a 4h job at 11:00 UTC (cleanest 4h window)
 
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
