@@ -516,10 +516,15 @@ For *recurring* jobs, blocking with `wait-for-green` keeps the machine powered o
 while it polls — that idle energy is itself carbon. The higher-impact move is to
 shift the schedule **once** to the grid's cleanest hour: it saves on every future
 run with zero idle waste. `suggest-cron` recommends that cron expression from the
-best signal available — a multi-day **historical hour-of-day curve** where free
-history exists (GB today), else the live forecast, else a per-zone heuristic.
-Inspect the curve directly with `carbon-aware curve`. Reserve `wait-for-green`
-for one-off, deadline-bound work.
+best signal available — a multi-day **historical hour-of-day curve**, else the
+live forecast, else a per-zone heuristic. The curve comes from a free historical
+API where one exists (GB today), and **otherwise builds itself**: with a
+[ledger](#watch-your-impact) configured, each run records its `(hour, intensity)`
+into a tiny per-zone aggregate, so `curve` / `worth-it` / `suggest-cron` start
+working for any zone once ~6 different hours have been sampled. (A job that only
+ever runs at one fixed hour won't fill the curve — the hourly self-check pattern
+samples across the day.) Inspect it with `carbon-aware curve`. Reserve
+`wait-for-green` for one-off, deadline-bound work.
 
 And before adding any of this, ask `carbon-aware worth-it`: on a flat,
 baseload-dominated grid the intensity barely moves across the day, so shifting

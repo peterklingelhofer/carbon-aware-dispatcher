@@ -67,11 +67,51 @@ def merge_entry(data, saved_grams, date_str, emitted_grams=0):
             }
         )
 
-    return {
+    result = {
         "schemaVersion": 1,
         "totals": totals,
         "history": history[-HISTORY_CAP:],
     }
+    if data.get("curve"):  # preserve the accumulated hour-of-day curve
+        result["curve"] = data["curve"]
+    return result
+
+
+def merge_curve_sample(data, zone, hour, intensity):
+    """Fold one (hour, intensity) reading into the per-zone hour-of-day curve.
+
+    Pure: returns a new dict. Stores a running sum/count per hour so the store
+    stays tiny (24 cells per zone) however many runs accumulate. Builds an
+    hour-of-day profile for any zone over time, not just those with free
+    historical APIs. No-op when zone/hour/intensity are missing.
+    """
+    if zone is None or hour is None or intensity is None:
+        return data
+    out = dict(data)
+    curve = {z: dict(cells) for z, cells in (data.get("curve") or {}).items()}
+    zone_curve = dict(curve.get(zone, {}))
+    cell = dict(zone_curve.get(str(hour), {"sum": 0.0, "n": 0}))
+    cell["sum"] = round(float(cell.get("sum", 0)) + float(intensity), 1)
+    cell["n"] = int(cell.get("n", 0)) + 1
+    zone_curve[str(hour)] = cell
+    curve[zone] = zone_curve
+    out["curve"] = curve
+    return out
+
+
+def curve_profile(data, zone, min_hours=6):
+    """Derive an hour-of-day {hour: mean_intensity} profile from the ledger curve.
+
+    Returns {} until at least min_hours distinct hours have been sampled, so a
+    repo that only ever runs at one time of day doesn't get a misleading curve.
+    """
+    zone_curve = (data.get("curve") or {}).get(zone) or {}
+    profile = {}
+    for key, cell in zone_curve.items():
+        n = int(cell.get("n", 0))
+        if n > 0:
+            profile[int(key)] = round(float(cell.get("sum", 0)) / n, 1)
+    return profile if len(profile) >= min_hours else {}
 
 
 def month_to_date_emitted(data, month_prefix):
@@ -222,13 +262,17 @@ def _summary(data, badge_url, month=None):
     }
 
 
-def record_savings(config, token, saved_grams, date_str, emitted_grams=0):
+def record_savings(
+    config, token, saved_grams, date_str, emitted_grams=0, zone=None, intensity=None, hour=None
+):
     """Append this run to the configured ledger and return a summary.
 
-    Returns a dict with total_grams, total_runs, message, badge_url (gist only),
-    emitted_total, and emitted_mtd (this month's emissions, for budgeting), or
-    None when the ledger is disabled or an IO/auth step fails. Never raises:
-    failures degrade to a warning so CI is never broken by bookkeeping.
+    Also folds (hour, intensity) into the per-zone hour-of-day curve when given,
+    so a diurnal profile accumulates for any zone over time. Returns a dict with
+    total_grams, total_runs, message, badge_url (gist only), emitted_total, and
+    emitted_mtd (this month's emissions, for budgeting), or None when the ledger
+    is disabled or an IO/auth step fails. Never raises: failures degrade to a
+    warning so CI is never broken by bookkeeping.
     """
     backend, location = parse_config(config)
     if not backend or not location:
@@ -237,6 +281,7 @@ def record_savings(config, token, saved_grams, date_str, emitted_grams=0):
 
     if backend == "file":
         data = merge_entry(_load_file(location), saved_grams, date_str, emitted_grams)
+        data = merge_curve_sample(data, zone, hour, intensity)
         try:
             _save_file(location, data)
         except OSError as exc:
@@ -253,6 +298,7 @@ def record_savings(config, token, saved_grams, date_str, emitted_grams=0):
         return None
     current, owner = _gist_read(location, token)
     data = merge_entry(current, saved_grams, date_str, emitted_grams)
+    data = merge_curve_sample(data, zone, hour, intensity)
     if _gist_write(location, token, data) is None:
         print("::warning::Could not update ledger gist; skipping ledger update")
         return None

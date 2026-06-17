@@ -72,6 +72,34 @@ class TestMergeEntry:
         assert ledger.month_to_date_emitted(d, "2026-01") == 30
         assert ledger.month_to_date_emitted(d, "2025-01") == 70
 
+    def test_curve_sample_accumulates(self):
+        d = ledger.empty_ledger()
+        d = ledger.merge_curve_sample(d, "FR", 12, 80)
+        d = ledger.merge_curve_sample(d, "FR", 12, 100)
+        d = ledger.merge_curve_sample(d, "FR", 3, 200)
+        assert d["curve"]["FR"]["12"] == {"sum": 180.0, "n": 2}
+        assert d["curve"]["FR"]["3"] == {"sum": 200.0, "n": 1}
+
+    def test_curve_sample_noop_on_missing(self):
+        d = ledger.empty_ledger()
+        assert ledger.merge_curve_sample(d, None, 12, 80) == d
+        assert ledger.merge_curve_sample(d, "FR", None, 80) == d
+        assert ledger.merge_curve_sample(d, "FR", 12, None) == d
+
+    def test_curve_preserved_across_merge_entry(self):
+        d = ledger.merge_curve_sample(ledger.empty_ledger(), "FR", 12, 80)
+        d = ledger.merge_entry(d, 100, "2026-06-17", emitted_grams=10)
+        assert d["curve"]["FR"]["12"]["n"] == 1  # survived the run merge
+
+    def test_curve_profile_needs_min_hours(self):
+        d = ledger.empty_ledger()
+        for hour in range(5):  # only 5 distinct hours < min 6
+            d = ledger.merge_curve_sample(d, "FR", hour, 100 + hour)
+        assert ledger.curve_profile(d, "FR") == {}
+        d = ledger.merge_curve_sample(d, "FR", 5, 105)
+        prof = ledger.curve_profile(d, "FR")
+        assert len(prof) == 6 and prof[0] == 100.0
+
     def test_status_badge_payload_colors(self):
         assert ledger.status_badge_payload("GB", 90, "green")["color"] == "brightgreen"
         assert ledger.status_badge_payload("GB", 250, "amber")["color"] == "yellow"
