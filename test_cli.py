@@ -288,6 +288,42 @@ class TestAudit:
         assert rc == cli.EXIT_NODATA
 
 
+class TestScheduleCost:
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_ranks_by_annual_emissions(self, bp, capsys, tmp_path):
+        bp.return_value = {h: 100.0 for h in range(24)}  # mean 100 gCO2/kWh
+        (tmp_path / "hourly.yml").write_text("    - cron: '0 * * * *'\n")  # 24x/day
+        (tmp_path / "daily.yml").write_text("    - cron: '0 3 * * *'\n")  # 1x/day
+        rc = cli.main(
+            [
+                "schedule-cost",
+                "--zones",
+                "GB",
+                "--dir",
+                str(tmp_path),
+                "--energy-kwh",
+                "10",
+                "--json",
+            ]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        # per run = 100 g/kWh x 10 kWh = 1000 g = 1 kg
+        assert out["per_run_grams"] == 1000.0
+        # hourly job ranked first, ~24*365 kg/yr
+        assert out["schedules"][0]["runs_per_day"] == 24
+        assert out["schedules"][0]["annual_kg"] > out["schedules"][1]["annual_kg"]
+
+    @mock.patch("carbon_curve.build_profile", return_value=None)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    def test_no_data(self, cmz, _bp, capsys, tmp_path):
+        cmz.return_value = (None, None, None, [])
+        rc = cli.main(["schedule-cost", "--zones", "GB", "--dir", str(tmp_path)])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

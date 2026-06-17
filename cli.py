@@ -13,6 +13,7 @@ Commands:
   suggest-region  recommend the cleanest region among candidates, with savings
   plan            combined when+where: the cleanest (region, hour) across zones
   audit           scan a repo's workflows and rank schedules worth shifting
+  schedule-cost   rank scheduled workflows by annual emissions (run less often)
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -470,6 +471,82 @@ def cmd_audit(args):
     return EXIT_GREEN if findings else EXIT_DIRTY
 
 
+def cmd_schedule_cost(args):
+    """Rank a repo's scheduled workflows by estimated annual emissions.
+
+    Using less compute beats shifting it. This estimates each schedule's CO2/yr
+    from how often it fires x per-run emissions, so the jobs worth running less
+    often (or adding concurrency cancellation to) stand out. Exit 0 always.
+    """
+    import glob
+
+    import carbon_curve
+    import suggest_pr
+
+    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(zone)
+    intensity = carbon_curve.mean_intensity(profile) if profile else None
+    if not intensity:
+        measured = _measure_all(args)
+        match = [m for m in measured if m[0] == zone] or measured
+        intensity = match[0][1] if match else None
+    if not intensity:
+        print(
+            json.dumps({"status": "error", "reason": "no data"})
+            if args.json
+            else "NO DATA: could not read the zone"
+        )
+        return EXIT_NODATA
+
+    _energy_kwh(args)  # sets JOB_ENERGY_KWH from --energy-kwh for estimate_emissions
+    per_run = check_grid.estimate_emissions(intensity)
+    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
+    items = []
+    for path in files:
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in suggest_pr.CRON_RE.finditer(text):
+            cron = match.group(1)
+            rpd = suggest_pr.runs_per_day(cron)
+            if rpd <= 0:
+                continue
+            annual_kg = round(rpd * 365 * per_run / 1000, 1)
+            items.append({"file": path, "cron": cron, "runs_per_day": rpd, "annual_kg": annual_kg})
+
+    items.sort(key=lambda i: i["annual_kg"], reverse=True)
+    total = round(sum(i["annual_kg"] for i in items), 1)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": zone,
+                    "per_run_grams": per_run,
+                    "total_annual_kg": total,
+                    "schedules": items,
+                }
+            )
+        )
+    elif not items:
+        print(f"No scheduled workflows found in {args.dir}.")
+    else:
+        print(f"Scheduled-workflow emissions for {args.dir} (~{per_run:.0f} g/run in {zone}):")
+        for i in items:
+            print(
+                f"  {i['file']}: `{i['cron']}`  {i['runs_per_day']:g}x/day  "
+                f"~{i['annual_kg']:.1f} kg/yr"
+            )
+        print(
+            f"Total: ~{total:.1f} kg CO2/yr. Throttle the heaviest or add "
+            "concurrency cancel-in-progress."
+        )
+    return EXIT_GREEN
+
+
 def cmd_plan(args):
     """Combined when+where: the cleanest (region, hour) across candidate zones.
 
@@ -725,6 +802,12 @@ def build_parser():
     au.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
     au.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     au.set_defaults(func=cmd_audit)
+
+    scost = sub.add_parser("schedule-cost", help="Rank scheduled workflows by annual emissions")
+    add_common(scost)
+    scost.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
+    scost.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
+    scost.set_defaults(func=cmd_schedule_cost)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)

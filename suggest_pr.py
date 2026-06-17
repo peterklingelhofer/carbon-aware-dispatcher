@@ -51,6 +51,47 @@ def rewrite_crons(text, new_hour):
     return "".join(out), changes
 
 
+def _expand_field(field, lo, hi):
+    """Count the distinct values a single cron field matches within [lo, hi]."""
+    matched = set()
+    for part in field.split(","):
+        rng, step = part, 1
+        if "/" in part:
+            rng, step_s = part.split("/", 1)
+            step = int(step_s) if step_s.isdigit() and int(step_s) > 0 else 1
+        if rng == "*":
+            start, end = lo, hi
+        elif "-" in rng:
+            a, b = rng.split("-", 1)
+            if not (a.isdigit() and b.isdigit()):
+                continue
+            start, end = int(a), int(b)
+        elif rng.isdigit():
+            start = end = int(rng)
+        else:
+            continue
+        matched.update(v for v in range(start, end + 1, step) if lo <= v <= hi)
+    return len(matched)
+
+
+def runs_per_day(cron_expr):
+    """Approximate how many times a cron fires per day (0 if unparseable).
+
+    Exact for minute/hour fields; day-of-week and day-of-month restrictions scale
+    the daily rate proportionally (a good-enough estimate for ranking emissions).
+    """
+    fields = cron_expr.split()
+    if len(fields) != 5:
+        return 0.0
+    minute, hour, dom, _month, dow = fields
+    per_day = _expand_field(minute, 0, 59) * _expand_field(hour, 0, 23)
+    if dow != "*":
+        per_day *= min(_expand_field(dow, 0, 7), 7) / 7  # 0 and 7 both Sunday
+    if dom != "*":
+        per_day *= min(_expand_field(dom, 1, 31), 30) / 30
+    return round(per_day, 2)
+
+
 def _headers(token):
     return base.github_headers(token)
 
