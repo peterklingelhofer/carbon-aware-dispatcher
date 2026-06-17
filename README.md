@@ -611,6 +611,18 @@ Carbon claims are easy to inflate, so here is exactly what the numbers mean:
 Bottom line: use `co2_emitted_grams` for reporting and `co2_saved_grams` as a
 directional benchmark, not an offset claim.
 
+**Make the energy figure real.** By default emitted assumes a typical CI job
+(50 W for 15 min). For actual workloads — a GPU training run, an ETL batch — set
+your real energy so the number means something:
+
+```yaml
+with:
+  job_energy_kwh: '12'        # measured kWh (best); overrides the estimate
+  # or describe it:
+  # job_power_watts: '300'
+  # job_duration_minutes: '120'
+```
+
 ## Watch your impact
 
 Every run estimates the CO2 it saved, but a number that vanishes after one build
