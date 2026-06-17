@@ -9,6 +9,9 @@ Commands:
   check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
+  suggest-cron    recommend a daily cron at the cleanest hour (history > forecast > heuristic)
+  curve           print the hour-of-day carbon curve from historical data
+  report          emit a Software Carbon Intensity (SCI) report as JSON
 
 Exit codes: 0 = green/clean, 1 = dirty or timed out, 2 = no data/error, 3 = usage.
 Info logs go to stderr; stdout carries only the result (or JSON with --json), so
@@ -174,44 +177,16 @@ def cmd_report(args):
     return EXIT_GREEN
 
 
-def cmd_suggest_cron(args):
-    """Recommend a daily cron at the grid's cleanest hour.
-
-    Shifting a recurring job to its cleanest hour saves on every future run with
-    zero idle waste — far better than blocking a runner. Uses the live forecast
-    to find the cleanest upcoming hour, falling back to a per-zone heuristic.
-    """
-    from datetime import datetime
-
-    zones = check_grid.parse_zones_input(args.zones)
-    tok = _tokens(args)
-    with contextlib.redirect_stdout(sys.stderr):
-        zone, when, intensity = check_grid.queue_find_optimal_window(
-            zones, args.max_carbon, 24, tok["eia"], tok["gridstatus"], tok["emaps"], tok["entsoe"]
-        )
-
-    cron = desc = None
-    source = "forecast"
-    if zone and when:
-        try:
-            hour = datetime.fromisoformat(when.replace("Z", "+00:00")).hour
-            cron = f"0 {hour} * * *"
-            desc = f"daily at {hour:02d}:00 UTC (forecast cleanest hour for {zone})"
-        except (ValueError, TypeError):
-            cron = None
-    if not cron:  # no usable forecast — fall back to the per-zone heuristic
-        source = "heuristic"
-        first = zones[0]["zone"] if zones else args.zones
-        cron, desc = check_grid.suggest_green_cron(first)
-        zone = first
-
-    if not cron:
+def _emit_cron(args, zone, hour, intensity, source):
+    """Print a cron recommendation for the cleanest hour. Returns exit code."""
+    if hour is None:
         if args.json:
             print(json.dumps({"status": "none", "zone": zone}))
         else:
             print(f"No schedule suggestion available for {zone}")
         return EXIT_NODATA
-
+    cron = f"0 {hour} * * *"
+    desc = f"daily at {hour:02d}:00 UTC (cleanest hour for {zone}, {source})"
     if args.json:
         print(
             json.dumps(
@@ -227,8 +202,107 @@ def cmd_suggest_cron(args):
         )
     else:
         print(f"Suggested schedule: {cron}")
-        print(f"  {desc} [{source}]")
+        print(f"  {desc}")
         print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
+    return EXIT_GREEN
+
+
+def cmd_suggest_cron(args):
+    """Recommend a daily cron at the grid's cleanest hour.
+
+    Shifting a recurring job to its cleanest hour saves on every future run with
+    zero idle waste — far better than blocking a runner. Prefers a historical
+    hour-of-day curve (stable, multi-day) where free history exists, then the
+    live forecast, then a per-zone heuristic.
+    """
+    from datetime import datetime
+
+    import carbon_curve
+
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    first = zones[0]["zone"] if zones else args.zones
+
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(first)
+    if profile:
+        hour, intensity = carbon_curve.cleanest_hour(profile)
+        return _emit_cron(args, first, hour, intensity, "history")
+
+    with contextlib.redirect_stdout(sys.stderr):
+        zone, when, intensity = check_grid.queue_find_optimal_window(
+            zones, args.max_carbon, 24, tok["eia"], tok["gridstatus"], tok["emaps"], tok["entsoe"]
+        )
+    if zone and when:
+        try:
+            hour = datetime.fromisoformat(when.replace("Z", "+00:00")).hour
+            return _emit_cron(args, zone, hour, intensity, "forecast")
+        except (ValueError, TypeError):
+            pass
+
+    # Last resort: the per-zone energy-type heuristic
+    cron, desc = check_grid.suggest_green_cron(first)
+    if not cron:
+        if args.json:
+            print(json.dumps({"status": "none", "zone": first}))
+        else:
+            print(f"No schedule suggestion available for {first}")
+        return EXIT_NODATA
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": first,
+                    "cron": cron,
+                    "source": "heuristic",
+                    "description": desc,
+                }
+            )
+        )
+    else:
+        print(f"Suggested schedule: {cron}")
+        print(f"  {desc} [heuristic]")
+        print("  Shift your recurring job to this time — it saves on every run, no idle wait.")
+    return EXIT_GREEN
+
+
+def cmd_curve(args):
+    """Print the hour-of-day carbon curve from historical data (where free)."""
+    import carbon_curve
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(first)
+    if not profile:
+        if args.json:
+            print(json.dumps({"status": "unavailable", "zone": first}))
+        else:
+            print(f"No free historical curve for {first} (GB has the richest free history)")
+        return EXIT_NODATA
+
+    hour, intensity = carbon_curve.cleanest_hour(profile)
+    spread = carbon_curve.spread_pct(profile)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": first,
+                    "cleanest_hour": hour,
+                    "cleanest_intensity": intensity,
+                    "spread_pct": spread,
+                    "profile": profile,
+                }
+            )
+        )
+    else:
+        print(f"Hour-of-day carbon curve for {first} (gCO2eq/kWh, UTC):")
+        for h in sorted(profile):
+            mark = "  <- cleanest" if h == hour else ""
+            print(f"  {h:02d}:00  {profile[h]:.0f}{mark}")
+        print(f"Cleanest hour: {hour:02d}:00 UTC ({intensity:.0f}); spread {spread:.0f}%")
     return EXIT_GREEN
 
 
@@ -298,6 +372,10 @@ def build_parser():
     s = sub.add_parser("suggest-cron", help="Recommend a daily cron at the cleanest hour")
     add_common(s)
     s.set_defaults(func=cmd_suggest_cron)
+
+    cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
+    add_common(cv)
+    cv.set_defaults(func=cmd_curve)
 
     r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")
     add_common(r)
