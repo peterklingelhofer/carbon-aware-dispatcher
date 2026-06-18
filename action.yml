@@ -109,6 +109,10 @@ inputs:
     description: 'Carbon budget for the current month in gCO2eq (e.g. "2000" for 2 kg). Requires the ledger input to track month-to-date emissions. Sets the budget_* outputs; gate your build with "if: steps.X.outputs.budget_exceeded != \"true\"". Empty disables budgeting.'
     required: false
     default: ''
+  green_sla_target:
+    description: 'Green SLA target: the percent of runs this month that must run on a clean grid (e.g. "95"). Requires the ledger input. Sets sla_status/sla_compliance_pct/sla_breached; gate releases with "if: steps.X.outputs.sla_breached != \"true\"". Empty disables the SLA.'
+    required: false
+    default: ''
   cost_weight:
     description: 'Blend cloud cost with carbon when picking among multiple zones. 0 (default) = pick the cleanest zone only; 1 = pick the cheapest only; 0.5 = balance both. Uses the public Azure Retail Prices API (no key) keyed off each zone''s nearest Azure region. No effect in single-zone mode.'
     required: false
@@ -253,6 +257,15 @@ outputs:
   budget_state:
     description: 'Carbon budget state: "ok", "warning" (>=80% used), or "exceeded".'
     value: ${{ steps.grid-check.outputs.budget_state }}
+  sla_status:
+    description: 'Green SLA status this month: "compliant", "warning", "breached", or "unknown" (needs green_sla_target + ledger).'
+    value: ${{ steps.grid-check.outputs.sla_status }}
+  sla_compliance_pct:
+    description: 'Percent of this month''s runs that ran on a clean grid.'
+    value: ${{ steps.grid-check.outputs.sla_compliance_pct }}
+  sla_breached:
+    description: '"true" when this month''s clean-run share is below green_sla_target. Gate releases with "if: ... != ''true''".'
+    value: ${{ steps.grid-check.outputs.sla_breached }}
   selected_cost_usd_hr:
     description: 'USD/hour price for the selected zone when cost_weight > 0 (from cost_price_map or live Azure pricing).'
     value: ${{ steps.grid-check.outputs.selected_cost_usd_hr }}
@@ -318,6 +331,7 @@ runs:
         PR_COMMENT: ${{ inputs.pr_comment }}
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
         MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}
+        GREEN_SLA_TARGET: ${{ inputs.green_sla_target }}
         COST_WEIGHT: ${{ inputs.cost_weight }}
         COST_PRICE_MAP: ${{ inputs.cost_price_map }}
         NOTIFY_WEBHOOK: ${{ inputs.notify_webhook }}

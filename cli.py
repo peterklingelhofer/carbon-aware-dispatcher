@@ -18,6 +18,7 @@ Commands:
   advise          one prioritized carbon action plan across every lever
   curve           print the hour-of-day carbon curve from historical data
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
+  sla             report Green SLA compliance (share of runs that ran clean)
   report          emit a Software Carbon Intensity (SCI) report as JSON
 
 Exit codes: 0 = green/clean, 1 = dirty or timed out, 2 = no data/error, 3 = usage.
@@ -876,6 +877,69 @@ def cmd_plan(args):
     return EXIT_GREEN
 
 
+def cmd_sla(args):
+    """Report Green SLA compliance from the ledger: the share of runs that ran clean.
+
+    Commit to a target (e.g. 95% of runs on a clean grid) and prove it over a
+    window, with an attestation. Exit 0 compliant/warning, 1 breached, 2 unknown.
+    """
+    import os
+
+    import ledger
+
+    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
+    if not backend or not location:
+        print("Green SLA needs the ledger (set LEDGER=gist:<id> or file:<path>)", file=sys.stderr)
+        return EXIT_NODATA
+    if backend == "file":
+        data = ledger._load_file(location)
+    else:
+        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
+
+    from datetime import datetime, timezone
+
+    if args.window == "month":
+        prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    else:
+        prefix = ""  # lifetime
+    green, total = ledger.sla_window(data, prefix)
+    if total < 5:
+        print(
+            json.dumps({"status": "unknown", "green": green, "total": total})
+            if args.json
+            else f"SLA: not enough data yet ({total} runs)"
+        )
+        return EXIT_NODATA
+
+    compliance = round(green / total * 100, 1)
+    target = args.target
+    if compliance < target:
+        status = "breached"
+    elif compliance < target + 5:
+        status = "warning"
+    else:
+        status = "compliant"
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": status,
+                    "compliance_pct": compliance,
+                    "target": target,
+                    "green_runs": green,
+                    "total_runs": total,
+                    "window": args.window,
+                }
+            )
+        )
+    else:
+        print(
+            f"Green SLA: {status} — {compliance:.0f}% of {total} runs clean this {args.window} "
+            f"(target {target:.0f}%, {green}/{total} green)"
+        )
+    return EXIT_GREEN if status != "breached" else EXIT_DIRTY
+
+
 def cmd_curve(args):
     """Print the hour-of-day carbon curve from historical data (where free)."""
     import carbon_curve
@@ -1082,6 +1146,22 @@ def build_parser():
     ad.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
     ad.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
     ad.set_defaults(func=cmd_advise)
+
+    sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
+    add_common(sla)
+    sla.add_argument(
+        "--target",
+        type=float,
+        default=95.0,
+        help="Percent of runs that must run clean. Default: 95",
+    )
+    sla.add_argument(
+        "--window",
+        choices=["month", "lifetime"],
+        default="month",
+        help="Compliance window. Default: month",
+    )
+    sla.set_defaults(func=cmd_sla)
 
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)

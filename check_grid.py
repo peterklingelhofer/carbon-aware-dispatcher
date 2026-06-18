@@ -883,13 +883,13 @@ def _emit_budget_outputs(summary):
         )
 
 
-def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=None):
+def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=None, is_green=None):
     """Append this run to the cumulative ledger (at most once/process).
 
     Reads the LEDGER config and optional GIST_TOKEN from the environment, records
-    savings, emissions, and an hour-of-day curve sample (zone + intensity) via the
-    ledger module, then emits the lifetime and carbon-budget outputs. No-op when
-    no ledger is configured. Never raises: bookkeeping must not break CI.
+    savings, emissions, an hour-of-day curve sample, and the green/total tally for
+    Green SLA compliance, then emits the lifetime, budget, and SLA outputs. No-op
+    when no ledger is configured. Never raises: bookkeeping must not break CI.
     """
     global _lifetime_summary, _ledger_recorded
     if _ledger_recorded:
@@ -915,6 +915,7 @@ def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=N
         intensity=intensity,
         hour=now.hour,
         energy_kwh=operational_energy,
+        is_green=is_green,
     )
     if not summary:
         return
@@ -931,6 +932,52 @@ def record_lifetime_savings(saved_grams, emitted_grams=0, zone=None, intensity=N
         set_output("co2_avoided_total_grams", str(round(summary["avoided_total"], 1)))
 
     _emit_budget_outputs(summary)
+    _emit_sla_outputs(summary)
+
+
+# Green SLA status for the current month, when a target is configured.
+_sla_summary = None
+
+
+def _emit_sla_outputs(summary):
+    """Compute and emit Green SLA outputs from this month's green-run share.
+
+    Reads GREEN_SLA_TARGET (percent of runs that must run on a clean grid);
+    no-op when unset. Sets sla_compliance_pct, sla_status (compliant/warning/
+    breached/unknown), and sla_breached. Gate releases on sla_breached.
+    """
+    global _sla_summary
+    target = _soft_float("GREEN_SLA_TARGET")
+    if not target or target <= 0:
+        return
+    green = int(summary.get("green_mtd", 0))
+    total = int(summary.get("runs_mtd", 0))
+    if total < 5:  # too little data this month to judge
+        status, compliance = "unknown", None
+    else:
+        compliance = round(green / total * 100, 1)
+        if compliance < target:
+            status = "breached"
+        elif compliance < target + 5:  # meeting it, but with little margin
+            status = "warning"
+        else:
+            status = "compliant"
+    set_output("sla_status", status)
+    set_output("sla_breached", "true" if status == "breached" else "false")
+    if compliance is not None:
+        set_output("sla_compliance_pct", str(compliance))
+    _sla_summary = {
+        "status": status,
+        "compliance": compliance,
+        "target": target,
+        "green": green,
+        "total": total,
+    }
+    if status == "breached":
+        print(
+            f"::warning::Green SLA breached: {compliance:.0f}% of runs clean this month "
+            f"(target {target:.0f}%). Gate releases on the sla_breached output."
+        )
 
 
 # Fire the sticky PR comment at most once per process.
@@ -1074,7 +1121,7 @@ SAVINGS_BASIS = (
 )
 
 
-def set_savings_outputs(co2_saved, badge_url, intensity=None, zone=None):
+def set_savings_outputs(co2_saved, badge_url, intensity=None, zone=None, is_green=None):
     """Emit savings, the honest per-run emissions, badge, and equivalents."""
     emitted = estimate_emissions(intensity)
     if intensity is not None:
@@ -1090,7 +1137,9 @@ def set_savings_outputs(co2_saved, badge_url, intensity=None, zone=None):
             set_output("co2_saved_equivalent", equiv["phrase"])
     if badge_url:
         set_output("carbon_badge_url", badge_url)
-    record_lifetime_savings(co2_saved or 0, emitted, zone=zone, intensity=intensity)
+    record_lifetime_savings(
+        co2_saved or 0, emitted, zone=zone, intensity=intensity, is_green=is_green
+    )
 
 
 def run_dry_run(
@@ -1140,7 +1189,9 @@ def run_dry_run(
     set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
 
     co2_saved, badge_url = estimate_carbon_savings(report_intensity)
-    set_savings_outputs(co2_saved, badge_url, report_intensity, zone=report_zone)
+    set_savings_outputs(
+        co2_saved, badge_url, report_intensity, zone=report_zone, is_green=not would_defer
+    )
 
     forecast_at = None
     forecast_intensity = None
@@ -1297,7 +1348,7 @@ def _emit_green_result(
     set_output("carbon_intensity", str(intensity))
     set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
     co2_saved, badge_url = estimate_carbon_savings(intensity)
-    set_savings_outputs(co2_saved, badge_url, intensity, zone=zone)
+    set_savings_outputs(co2_saved, badge_url, intensity, zone=zone, is_green=True)
     write_job_summary(
         zone,
         intensity,
@@ -1380,11 +1431,16 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
         set_output("carbon_tier", tier)
         set_output("carbon_tier_reason", tier_reason)
 
-    # Ensure budget outputs are emitted on every path (including dirty-grid
-    # deferrals where no savings were recorded), so gating on budget_exceeded
-    # works regardless of the dispatch decision. Idempotent.
-    if os.environ.get("MONTHLY_BUDGET_GRAMS", ""):
-        record_lifetime_savings(0, 0, zone=zone, intensity=intensity)
+    # Record the run on every path (including dirty-grid deferrals) so the ledger,
+    # budget, and Green SLA counts include all runs, not just green dispatches.
+    # Idempotent: a no-op once the green/report path has already recorded. A
+    # deferred dirty run emits nothing (build skipped), so emitted stays 0.
+    if (
+        os.environ.get("LEDGER", "")
+        or os.environ.get("MONTHLY_BUDGET_GRAMS", "")
+        or os.environ.get("GREEN_SLA_TARGET", "")
+    ):
+        record_lifetime_savings(0, 0, zone=zone, intensity=intensity, is_green=is_green)
 
     emit_marginal_outputs()
     emit_status_badge(zone, intensity, tier)
@@ -1494,6 +1550,13 @@ def write_job_summary(
         verdict = "clean" if m["clean"] else "dirty"
         lines.append(
             f"| **Marginal ({m['region']})** | {m['percentile']}th percentile MOER ({verdict}) |"
+        )
+
+    if _sla_summary and _sla_summary.get("compliance") is not None:
+        s = _sla_summary
+        lines.append(
+            f"| **Green SLA** | {s['compliance']:.0f}% clean this month "
+            f"(target {s['target']:.0f}%, {s['status']}) |"
         )
 
     if skipped:
@@ -1842,6 +1905,7 @@ def _enabled_features(env):
         ("Cost+carbon", cost),
         ("Marginal (WattTime)", on("WATTTIME_USERNAME")),
         ("Consumption-based", on("CONSUMPTION_BASED")),
+        ("Green SLA", on("GREEN_SLA_TARGET")),
     ]
 
 
@@ -2139,7 +2203,9 @@ def main():
                             set_output("grid_clean", "true")
                             set_output("carbon_intensity", str(intensity))
                             co2_saved, badge_url = estimate_carbon_savings(intensity)
-                            set_savings_outputs(co2_saved, badge_url, intensity, zone=opt_zone)
+                            set_savings_outputs(
+                                co2_saved, badge_url, intensity, zone=opt_zone, is_green=True
+                            )
                             if dispatch_mode:
                                 print("\nGrid is green after queue wait! Dispatching...")
                                 trigger_workflow(repo, workflow_id, token, ref)
