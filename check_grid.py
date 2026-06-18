@@ -185,6 +185,12 @@ def _get_extra_args(provider, api_keys):
     return resolver(api_keys) if resolver else []
 
 
+# The actual provider that produced each zone's reading (zone -> provider id),
+# recorded at read time so provenance is accurate even when a primary provider
+# failed and we fell back to an Open-Meteo estimate.
+_provider_used: dict[str, str] = {}
+
+
 def check_carbon_intensity(
     zone, max_carbon, provider, eia_api_key="", emaps_api_key="", entsoe_token=""
 ):
@@ -206,6 +212,7 @@ def check_carbon_intensity(
         },
     )
     result = module.check_carbon_intensity(zone, max_carbon, *extra)
+    actual_provider = provider
 
     # Fallback: if primary provider failed, try Open-Meteo estimation
     if result == (None, None) and provider != PROVIDER_OPEN_METEO:
@@ -214,8 +221,27 @@ def check_carbon_intensity(
         if zone in ZONE_COORDINATES:
             print(f"  Falling back to Open-Meteo estimate for zone {zone}...")
             result = open_meteo.check_carbon_intensity(zone, max_carbon)
+            actual_provider = PROVIDER_OPEN_METEO
 
+    if result != (None, None):
+        _provider_used[zone] = actual_provider
     return result
+
+
+# Providers whose readings are modeled estimates rather than grid measurements.
+_ESTIMATE_PROVIDERS = {PROVIDER_OPEN_METEO}
+
+
+def data_source_for(zone):
+    """Return (source, confidence) for a zone's reading.
+
+    source is the provider that actually produced it (honoring Open-Meteo
+    fallback); confidence is "estimated" for weather-modeled sources, else
+    "measured". Falls back to detect_provider when no read was recorded.
+    """
+    provider = _provider_used.get(zone) or detect_provider(zone, os.environ.get("ENTSOE_TOKEN", ""))
+    confidence = "estimated" if provider in _ESTIMATE_PROVIDERS else "measured"
+    return provider, confidence
 
 
 def _apply_consumption_intensity(zone, max_carbon, is_green, intensity, entsoe_token):
@@ -1431,6 +1457,13 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
         set_output("carbon_tier", tier)
         set_output("carbon_tier_reason", tier_reason)
 
+    # Provenance: which provider produced this reading, and whether it's a grid
+    # measurement or a modeled estimate, so the number's origin is never opaque.
+    if intensity is not None:
+        source, confidence = data_source_for(zone)
+        set_output("data_source", source)
+        set_output("data_confidence", confidence)
+
     # Record the run on every path (including dirty-grid deferrals) so the ledger,
     # budget, and Green SLA counts include all runs, not just green dispatches.
     # Idempotent: a no-op once the green/report path has already recorded. A
@@ -1498,7 +1531,9 @@ def write_job_summary(
     lines.append(f"| **Zone** | `{zone}` |")
 
     if intensity is not None:
-        lines.append(f"| **Carbon Intensity** | {intensity} gCO2eq/kWh |")
+        source, confidence = data_source_for(zone)
+        lines.append(f"| **Carbon Intensity** | {intensity} gCO2eq/kWh ({confidence}) |")
+        lines.append(f"| **Source** | {source} |")
     else:
         lines.append("| **Carbon Intensity** | unknown |")
 

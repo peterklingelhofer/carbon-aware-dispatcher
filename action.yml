@@ -185,6 +185,12 @@ outputs:
   carbon_intensity:
     description: 'The carbon intensity reading in gCO2eq/kWh, or "unknown" on API error.'
     value: ${{ steps.grid-check.outputs.carbon_intensity }}
+  data_source:
+    description: 'The provider that actually produced the reading (e.g. uk_carbon_intensity, energy_charts, open_meteo), honoring any Open-Meteo fallback.'
+    value: ${{ steps.grid-check.outputs.data_source }}
+  data_confidence:
+    description: '"measured" for grid-operator data, or "estimated" for weather-modeled (Open-Meteo) readings, so you can gate on provenance.'
+    value: ${{ steps.grid-check.outputs.data_confidence }}
   carbon_tier:
     description: 'Adaptive-CI dial for the selected zone: "green" (run full workloads), "amber" (trim non-critical work), or "red" (defer heavy work). Boundaries set by tier_thresholds.'
     value: ${{ steps.grid-check.outputs.carbon_tier }}
