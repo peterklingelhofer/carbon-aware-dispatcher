@@ -158,6 +158,42 @@ class TestBuildProfile:
         assert carbon_curve.build_profile("FR") is None
 
 
+class TestCommunityProfile:
+    def test_none_without_env(self, monkeypatch):
+        monkeypatch.delenv("COMMUNITY_CURVE", raising=False)
+        assert carbon_curve.community_profile("FR") == {}
+
+    def test_reads_pooled_file(self, monkeypatch, tmp_path):
+        import json
+
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        path = tmp_path / "community.json"
+        path.write_text(json.dumps({"curve": data["curve"]}))
+        monkeypatch.setenv("COMMUNITY_CURVE", str(path))
+        prof = carbon_curve.community_profile("FR")
+        assert len(prof) == 6 and prof[3] == 103.0
+
+    def test_build_profile_uses_community_fallback(self, monkeypatch, tmp_path):
+        import json
+
+        import ledger
+
+        monkeypatch.delenv("LEDGER", raising=False)  # no local ledger
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "JP", hour, 400 + hour)
+        path = tmp_path / "community.json"
+        path.write_text(json.dumps({"curve": data["curve"]}))
+        monkeypatch.setenv("COMMUNITY_CURVE", str(path))
+        # JP has no UK history and no local ledger -> community fallback
+        assert carbon_curve.build_profile("JP") == carbon_curve.community_profile("JP")
+        assert len(carbon_curve.build_profile("JP")) == 6
+
+
 class TestLedgerProfile:
     def test_no_ledger_config(self, monkeypatch):
         monkeypatch.delenv("LEDGER", raising=False)
