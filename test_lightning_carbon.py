@@ -6,18 +6,14 @@ from integrations import lightning_carbon as lc
 
 
 class TestGridIsClean:
-    @mock.patch(
-        "integrations.lightning_carbon.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}]
-    )
-    @mock.patch("integrations.lightning_carbon.check_grid.check_multiple_zones")
+    @mock.patch("integrations.gate.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    @mock.patch("integrations.gate.check_grid.check_multiple_zones")
     def test_clean(self, cmz):
         cmz.return_value = ("GB", 80, None, [])
         assert lc.grid_is_clean("GB", 200) is True
 
-    @mock.patch(
-        "integrations.lightning_carbon.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}]
-    )
-    @mock.patch("integrations.lightning_carbon.check_grid.check_multiple_zones")
+    @mock.patch("integrations.gate.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
+    @mock.patch("integrations.gate.check_grid.check_multiple_zones")
     def test_dirty(self, cmz):
         cmz.return_value = (None, None, None, [])
         assert lc.grid_is_clean("GB", 200) is False
