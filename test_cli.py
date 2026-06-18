@@ -208,7 +208,7 @@ class TestSuggestRegion:
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_current_baseline(self, cmz, capsys):
         cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380), ("GB", 200)])
-        rc = cli.main(
+        cli.main(
             [
                 "suggest-region",
                 "--zones",
@@ -355,7 +355,7 @@ class TestAdvise:
     def test_throttle_action_for_hourly(self, bp, capsys, tmp_path):
         bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}
         (tmp_path / "a.yml").write_text("    - cron: '0 * * * *'\n")  # hourly, unshiftable
-        rc = cli.main(
+        cli.main(
             ["advise", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
         )
         out = json.loads(capsys.readouterr().out)
