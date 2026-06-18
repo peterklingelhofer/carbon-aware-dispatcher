@@ -510,6 +510,22 @@ The core Python script runs on any CI platform. Templates in [`ci-templates/`](c
 
 Set `GRID_ZONE`, `MAX_CARBON`, and optional API tokens as environment variables.
 
+## Carbon-aware ML training (PyTorch Lightning)
+
+A training run lasts hours or days, so shifting it onto clean-grid windows saves
+far more real carbon than gating CI. Drop in the Lightning callback to pause at
+epoch boundaries while the grid is dirty:
+
+```python
+from integrations.lightning_carbon import CarbonAwareCallback
+
+trainer = Trainer(callbacks=[CarbonAwareCallback(zones="auto:green", max_carbon=200)])
+```
+
+Without Lightning, use the gate in any loop: `from integrations.lightning_carbon import
+wait_until_clean; wait_until_clean(zones="auto:green", max_carbon=200)`. See
+[`examples/standalone/lightning_carbon_training.py`](examples/standalone/lightning_carbon_training.py).
+
 ## Use outside GitHub Actions (CLI & container)
 
 CI is a small load. The real carbon wins are large, deferrable workloads:
