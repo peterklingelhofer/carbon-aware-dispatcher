@@ -66,6 +66,7 @@ only-include = [
     "carbon_curve.py",
     "suggest_pr.py",
     "providers",
+    "integrations",
 ]
 
 [tool.hatch.build.targets.wheel.sources]
@@ -79,6 +80,7 @@ only-include = [
 "carbon_curve.py" = "carbon_curve.py"
 "suggest_pr.py" = "suggest_pr.py"
 "providers" = "providers"
+"integrations" = "integrations"
 
 [tool.pytest.ini_options]
 testpaths = ["."]
