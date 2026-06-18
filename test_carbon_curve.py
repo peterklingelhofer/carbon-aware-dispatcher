@@ -177,6 +177,23 @@ class TestCommunityProfile:
         prof = carbon_curve.community_profile("FR")
         assert len(prof) == 6 and prof[3] == 103.0
 
+    def test_reads_pooled_url(self, monkeypatch):
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        monkeypatch.setenv("COMMUNITY_CURVE", "https://example.com/pool.json")
+        with mock.patch("carbon_curve.base.request", return_value={"curve": data["curve"]}) as req:
+            prof = carbon_curve.community_profile("FR")
+            assert req.call_args.args[0] == "https://example.com/pool.json"
+        assert len(prof) == 6 and prof[3] == 103.0
+
+    def test_url_unreachable_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("COMMUNITY_CURVE", "https://example.com/pool.json")
+        with mock.patch("carbon_curve.base.request", return_value=None):
+            assert carbon_curve.community_profile("FR") == {}
+
     def test_build_profile_uses_community_fallback(self, monkeypatch, tmp_path):
         import json
 
