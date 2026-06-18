@@ -735,6 +735,13 @@ Carbon claims are easy to inflate, so here is exactly what the numbers mean:
 Use `co2_emitted_grams` for reporting and `co2_saved_grams` as a
 directional benchmark that makes no offset claim.
 
+**Provenance on every reading.** The action emits `data_source` (the provider
+that actually produced the number, e.g. `uk_carbon_intensity`, `energy_charts`,
+`rte`) and `data_confidence` (`measured` for grid-operator data, `estimated` for
+weather-modeled Open-Meteo readings). It honors the Open-Meteo fallback, so a
+number is never labeled `measured` when it was really an estimate. Gate on it if
+you only trust measured data (`if: steps.X.outputs.data_confidence == 'measured'`).
+
 **`co2_avoided_total_grams`: verifiable avoided emissions.** With a ledger,
 each run is compared against *this zone's own typical hour* (from the
 accumulated curve), and the difference accrues into a lifetime total. Unlike the

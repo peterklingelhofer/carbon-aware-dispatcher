@@ -2811,6 +2811,27 @@ class TestPueAndEmbodied:
             self._clear()
 
 
+class TestDataSource:
+    def test_measured_provider(self):
+        check_grid._provider_used["GB"] = check_grid.PROVIDER_UK
+        assert check_grid.data_source_for("GB") == (check_grid.PROVIDER_UK, "measured")
+
+    def test_estimated_provider(self):
+        check_grid._provider_used["ZZ"] = PROVIDER_OPEN_METEO
+        assert check_grid.data_source_for("ZZ") == (PROVIDER_OPEN_METEO, "estimated")
+
+    def test_falls_back_to_detect_when_unrecorded(self):
+        check_grid._provider_used.pop("GB", None)
+        source, confidence = check_grid.data_source_for("GB")  # GB routes to UK
+        assert source == check_grid.PROVIDER_UK and confidence == "measured"
+
+    @mock.patch("check_grid.uk.check_carbon_intensity", return_value=(True, 100))
+    def test_check_records_actual_provider(self, _mock):
+        check_grid._provider_used.pop("GB", None)
+        check_grid.check_carbon_intensity("GB", 250, check_grid.PROVIDER_UK)
+        assert check_grid._provider_used["GB"] == check_grid.PROVIDER_UK
+
+
 class TestGreenSLA:
     def _reset(self):
         check_grid._ledger_recorded = False
