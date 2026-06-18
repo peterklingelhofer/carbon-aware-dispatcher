@@ -1,0 +1,49 @@
+# Carbon-aware KEDA ScaledJob
+#
+# KEDA scales jobs from a queue/event trigger; this adds a carbon gate so each
+# scaled job only proceeds when the grid is clean. The initContainer runs
+# `carbon-aware wait-for-green` and blocks the worker container until a green
+# window opens (or the deadline passes, failing the job so KEDA retries). This
+# pairs event-driven scaling with clean-energy timing for deferrable work.
+#
+# Build/push the image from the repo's Dockerfile first:
+#   docker build -t your-registry/carbon-aware:latest .
+#   docker push your-registry/carbon-aware:latest
+#
+# Requires KEDA installed in the cluster (https://keda.sh).
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: batch-carbon-aware
+spec:
+  # Trigger: scale up when work lands in a queue (swap for your source)
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: https://sqs.us-east-1.amazonaws.com/0000/jobs
+        queueLength: "1"
+        awsRegion: us-east-1
+  maxReplicaCount: 10
+  pollingInterval: 60
+  jobTargetRef:
+    activeDeadlineSeconds: 21600 # 6h to find a green hour
+    template:
+      spec:
+        restartPolicy: Never
+        initContainers:
+          - name: wait-for-green
+            image: your-registry/carbon-aware:latest
+            args:
+              - wait-for-green
+              - --zones=auto:green
+              - --max-carbon=200
+              - --max-wait=6h
+              - --poll=15m
+            # Optional provider tokens for broader coverage:
+            # env:
+            #   - name: ENTSOE_TOKEN
+            #     valueFrom: { secretKeyRef: { name: carbon, key: entsoe } }
+        containers:
+          - name: worker
+            image: your-registry/your-batch-job:latest
