@@ -42,6 +42,7 @@ dev = [
     "ruff",
     "mypy",
     "types-requests",
+    "pre-commit",
 ]
 
 [project.scripts]
