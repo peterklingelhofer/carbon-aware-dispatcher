@@ -1,6 +1,6 @@
 # Carbon-Aware Dispatcher
 
-[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-15-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
+[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-16-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
 <!--
   Live lifetime-CO2-saved badge, powered by this repo eating its own dog food
@@ -830,6 +830,7 @@ The action picks the best provider per zone, checking free providers first.
 | [EirGrid](https://www.smartgriddashboard.com/) | Ireland (ROI, NI, all-island) | None | `IE`, `IE-ROI`, `IE-NI`, `IE-ALL` |
 | [Energinet](https://www.energidataservice.dk/) | Denmark (DK1, DK2) | None | `DK-DK1`, `DK-DK2` |
 | [RTE eco2mix](https://www.rte-france.com/eco2mix) | France | None | `FR` |
+| [Energy-Charts](https://energy-charts.info/) (Fraunhofer ISE) | EU (DE, ES, IT, NL, BE, AT, CH, PL, PT, CZ, FI, GR, HU, RO, and more) | None | `DE`, `ES`, `IT`, `NL`, ... |
 | [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
 | [Electricity Maps](https://www.electricitymaps.com/) | 1 zone (free tier) / 200+ (paid) | Token | The single zone registered to your token; see [their map](https://app.electricitymaps.com/map) |
 | [Open-Meteo](https://open-meteo.com/) | Worldwide (90+) | None | Auto-fallback for any zone with known coordinates |
