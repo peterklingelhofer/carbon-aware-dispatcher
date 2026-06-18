@@ -554,6 +554,30 @@ gate >> heavy_training_task
 `mode="reschedule"` frees the worker slot between pokes. See
 [`examples/standalone/airflow_carbon_dag.py`](examples/standalone/airflow_carbon_dag.py).
 
+## Carbon-aware Prefect
+
+Gate a Prefect flow with `carbon_gate`, which blocks until a target zone is clean:
+
+```python
+from prefect import flow, task
+from integrations.prefect_carbon import carbon_gate
+
+
+@flow
+def pipeline():
+    task(carbon_gate)(zones="auto:green", max_carbon=200)
+    retrain()
+```
+
+See [`examples/standalone/prefect_carbon_flow.py`](examples/standalone/prefect_carbon_flow.py).
+
+## Carbon-aware KEDA
+
+Pair event-driven autoscaling with clean-energy timing: a KEDA `ScaledJob`
+scales on your queue, and an initContainer running `carbon-aware wait-for-green`
+holds each job until the grid is clean. See
+[`examples/standalone/keda-scaledjob.yaml`](examples/standalone/keda-scaledjob.yaml).
+
 ## Carbon-aware inference routing
 
 Inference is a fast-growing, often latency-tolerant load. Route async/batch
