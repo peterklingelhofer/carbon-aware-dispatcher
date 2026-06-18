@@ -959,6 +959,19 @@ did respond.
 
 All timestamps are UTC (ISO 8601).
 
+## Development
+
+Install the pre-commit hooks once so a commit can never fail CI's linter:
+
+```bash
+uv run --extra dev pre-commit install
+uv run --extra dev pre-commit install --hook-type pre-push
+```
+
+On commit they run `ruff check --fix` and `ruff format`; on push they run `mypy`
+and the test suite, the same checks as CI, via `uv run` so the tool versions
+match exactly. Run them manually anytime with `uv run --extra dev pre-commit run --all-files`.
+
 ## License
 
 [MIT](LICENSE)

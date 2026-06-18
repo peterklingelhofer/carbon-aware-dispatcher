@@ -1,0 +1,38 @@
+# Pre-commit hooks that mirror CI exactly, so a commit can't fail the linter.
+# Local hooks run through `uv run`, so they use the project's pinned tool
+# versions (no drift between pre-commit and CI).
+#
+# Install once:
+#   uv run --extra dev pre-commit install
+#   uv run --extra dev pre-commit install --hook-type pre-push
+#
+# On commit: ruff lint (autofix) + ruff format. On push: mypy + the test suite.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python]
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python]
+        pass_filenames: false
+      - id: mypy
+        name: mypy
+        entry: uv run mypy check_grid.py providers setup_wizard.py
+        language: system
+        types_or: [python]
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
