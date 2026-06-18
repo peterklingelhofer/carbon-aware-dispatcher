@@ -639,11 +639,12 @@ def cmd_advise(args):
                     1,
                 )
                 if save > 0:
+                    new_cron = suggest_pr.swap_cron_hour(cron, clean_hour)
                     actions.append(
                         {
                             "type": "shift",
                             "file": path,
-                            "detail": f"`{cron}` -> `{suggest_pr.swap_cron_hour(cron, clean_hour)}`",
+                            "detail": f"`{cron}` to `{new_cron}`",
                             "annual_kg": save,
                         }
                     )
