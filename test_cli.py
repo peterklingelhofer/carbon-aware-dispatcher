@@ -482,6 +482,38 @@ class TestScore:
         assert rc == cli.EXIT_NODATA
 
 
+class TestExportCurves:
+    def _seed(self, tmp_path):
+        import json
+
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        p = tmp_path / "led.json"
+        p.write_text(json.dumps(data))
+        return f"file:{p}"
+
+    def test_exports_to_stdout(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path))
+        rc = cli.main(["export-curves"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert "FR" in out["curve"]
+
+    def test_writes_file(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path))
+        dest = tmp_path / "shared.json"
+        rc = cli.main(["export-curves", "--output", str(dest)])
+        assert rc == cli.EXIT_GREEN
+        assert "FR" in json.loads(dest.read_text())["curve"]
+
+    def test_no_ledger(self, monkeypatch):
+        monkeypatch.delenv("LEDGER", raising=False)
+        assert cli.main(["export-curves"]) == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

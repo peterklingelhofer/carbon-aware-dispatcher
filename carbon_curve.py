@@ -194,15 +194,39 @@ def ledger_profile(zone):
     return ledger.curve_profile(data, zone)
 
 
+def community_profile(zone):
+    """Build a profile from a shared community curve file (the data commons).
+
+    Set COMMUNITY_CURVE to a pooled curve file (produced by `carbon-aware
+    export-curves` and merged across users) to get an hour-of-day profile for any
+    zone others have sampled, even with no local history. Returns {} when unset,
+    missing, or too sparse for the zone.
+    """
+    import json
+    import os
+
+    path = os.environ.get("COMMUNITY_CURVE", "")
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    import ledger
+
+    return ledger.curve_profile(data, zone)
+
+
 def build_profile(zone, days=7):
     """Build an hour-of-day profile for a zone, or None when none is available.
 
     Prefers a free historical API (GB today), then the curve accumulated in the
-    ledger over past runs (any zone). Returns None so callers fall back to the
-    forecast rather than pretend to have a curve.
+    local ledger over past runs (any zone), then a shared community curve file.
+    Returns None so callers fall back to the forecast rather than invent a curve.
     """
     if zone in ("GB", "GB-national"):
         profile = profile_from_samples(uk_history_samples(days))
         if profile:
             return profile
-    return ledger_profile(zone) or None
+    return ledger_profile(zone) or community_profile(zone) or None
