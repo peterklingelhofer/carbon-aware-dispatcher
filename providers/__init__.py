@@ -11,6 +11,7 @@ PROVIDER_ONS_BRAZIL = "ons_brazil"
 PROVIDER_ESKOM = "eskom"
 PROVIDER_CANADA = "canada"
 PROVIDER_TAIWAN = "taiwan"
+PROVIDER_EIRGRID = "eirgrid"
 
 # Providers whose get_forecast is a time-of-day HEURISTIC (a generalization
 # about that grid's daily pattern), not a measured/published forecast. Output
@@ -32,6 +33,9 @@ CANADA_ZONE_IDS = {"CA-ON", "CA-AB", "CA-QC"}
 
 # Taiwan (free, no API key): Taipower real-time generation feed
 TAIWAN_ZONE_IDS = {"TW"}
+
+# Ireland (free, no API key): EirGrid Smart Grid Dashboard CO2 intensity
+EIRGRID_ZONE_IDS = {"IE", "IE-ROI", "IE-NI", "IE-ALL"}
 
 # Indian grid region codes (free, no API key)
 GRID_INDIA_ZONE_IDS = {"IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"}
@@ -417,6 +421,7 @@ def detect_provider(zone, entsoe_token=""):
     4. Grid India (no key)
     5. ONS Brazil (no key)
     6. Eskom South Africa (no key)
+    6b. EirGrid Ireland (no key)
     7. ENTSO-E (free token required)
     8. Open-Meteo (free, no key — if zone has known coordinates)
     9. Electricity Maps (last resort; free tier is one registered zone only)
@@ -440,6 +445,8 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_CANADA
     if zone in TAIWAN_ZONE_IDS:
         return PROVIDER_TAIWAN
+    if zone in EIRGRID_ZONE_IDS:
+        return PROVIDER_EIRGRID
     if entsoe_token and zone in ENTSOE_AREA_CODES:
         return PROVIDER_ENTSOE
     # Open-Meteo for zones with known coordinates (free, no key)
