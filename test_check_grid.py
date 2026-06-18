@@ -2811,6 +2811,62 @@ class TestPueAndEmbodied:
             self._clear()
 
 
+class TestGreenSLA:
+    def _reset(self):
+        check_grid._ledger_recorded = False
+        check_grid._lifetime_summary = None
+        check_grid._sla_summary = None
+
+    def _run(self, target, green, dirty):
+        """Seed a ledger with `green` green runs + `dirty` dirty runs, then emit SLA."""
+        import json
+
+        import ledger
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
+            ledger_path = lf.name
+        data = ledger.empty_ledger()
+        for _ in range(green):
+            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=True)
+        for _ in range(dirty):
+            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=False)
+        with open(ledger_path, "w") as f:
+            json.dump(data, f)
+        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        out.close()
+        self._reset()
+        try:
+            os.environ["GITHUB_OUTPUT"] = out.name
+            os.environ["LEDGER"] = f"file:{ledger_path}"
+            os.environ["GREEN_SLA_TARGET"] = str(target)
+            check_grid.record_lifetime_savings(0, 0, is_green=True)  # records one more green run
+            return open(out.name).read()
+        finally:
+            for p in (out.name, ledger_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            for k in ("GITHUB_OUTPUT", "LEDGER", "GREEN_SLA_TARGET"):
+                os.environ.pop(k, None)
+            self._reset()
+
+    def test_compliant(self):
+        # 9 green + this run green = 10 green, 0 dirty -> 100% >= 95
+        content = self._run(target=95, green=9, dirty=0)
+        assert "sla_status=compliant" in content
+        assert "sla_breached=false" in content
+
+    def test_breached(self):
+        # 1 green + this run green = 2 green of 10 total -> 20% < 95
+        content = self._run(target=95, green=1, dirty=8)
+        assert "sla_status=breached" in content
+        assert "sla_breached=true" in content
+
+    def test_unknown_too_few_runs(self):
+        # only 3 runs total (<5) -> unknown
+        content = self._run(target=95, green=2, dirty=0)
+        assert "sla_status=unknown" in content
+
+
 class TestCarbonBudget:
     def _reset(self):
         check_grid._ledger_recorded = False
