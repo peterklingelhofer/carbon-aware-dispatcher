@@ -526,6 +526,16 @@ No Lightning? Use the gate in any loop: `from integrations.lightning_carbon impo
 wait_until_clean; wait_until_clean(zones="auto:green", max_carbon=200)`. See
 [`examples/standalone/lightning_carbon_training.py`](examples/standalone/lightning_carbon_training.py).
 
+Hugging Face Trainer has the same gate as a `TrainerCallback`:
+
+```python
+from integrations.huggingface_carbon import CarbonAwareTrainerCallback
+
+trainer = Trainer(..., callbacks=[CarbonAwareTrainerCallback(zones="auto:green")])
+```
+
+See [`examples/standalone/huggingface_carbon_training.py`](examples/standalone/huggingface_carbon_training.py).
+
 ## Carbon-aware Airflow
 
 Batch ETL, retrains, and report jobs are the deferrable loads Airflow already
