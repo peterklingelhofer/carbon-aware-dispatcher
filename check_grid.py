@@ -22,6 +22,7 @@ from providers import (
     PROVIDER_AEMO,
     PROVIDER_CANADA,
     PROVIDER_EIA,
+    PROVIDER_EIRGRID,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENTSOE,
     PROVIDER_ESKOM,
@@ -35,6 +36,7 @@ from providers import (
     canada,
     detect_provider,
     eia,
+    eirgrid,
     electricity_maps,
     entsoe,
     eskom,
@@ -151,6 +153,7 @@ _PROVIDER_MODULES = {
     PROVIDER_ESKOM: eskom,
     PROVIDER_CANADA: canada,
     PROVIDER_TAIWAN: taiwan,
+    PROVIDER_EIRGRID: eirgrid,
     PROVIDER_ELECTRICITY_MAPS: electricity_maps,
     PROVIDER_EIA: eia,
 }
@@ -439,6 +442,7 @@ def check_multiple_zones(
             PROVIDER_GRID_INDIA,
             PROVIDER_ONS_BRAZIL,
             PROVIDER_ESKOM,
+            PROVIDER_EIRGRID,
         ):
             return 0  # Free, no rate limit concern
         if provider == PROVIDER_OPEN_METEO:
