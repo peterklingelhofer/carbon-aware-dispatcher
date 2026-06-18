@@ -334,6 +334,36 @@ why). Use it to drive matrix includes, conditional steps, or job-level `if:`.
 See [`examples/adaptive-ci.yml`](examples/adaptive-ci.yml) for a full matrix that
 scales test suites to the tier.
 
+## Green SLA
+
+Commit to a carbon target and prove it. Set `green_sla_target` to the percent of
+runs that must run on a clean grid; with the [ledger](#watch-your-impact) enabled,
+the action tracks the green-run share and exposes `sla_status`
+(`compliant` / `warning` / `breached` / `unknown`), `sla_compliance_pct`, and
+`sla_breached`:
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
+    gist_token: ${{ secrets.GIST_TOKEN }}
+    green_sla_target: '95'   # 95% of runs must run clean this month
+```
+
+Gate releases on it, or just report:
+
+```yaml
+release:
+  needs: carbon
+  if: needs.carbon.outputs.sla_breached != 'true'
+```
+
+Check compliance anytime from the CLI: `carbon-aware sla --target 95` (reads the
+same ledger; exit 0 compliant, 1 breached, 2 not enough data). It's an
+uptime-style SLA for carbon: the share of your compute that ran clean, attested
+over time.
+
 ## Carbon budgets as code
 
 Cap how much CO2 your CI is allowed to emit per month. With the [ledger](#watch-your-impact)

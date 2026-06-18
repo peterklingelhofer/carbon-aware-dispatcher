@@ -368,6 +368,44 @@ class TestAdvise:
         assert rc == cli.EXIT_NODATA
 
 
+class TestSla:
+    def _seed(self, tmp_path, green, dirty):
+        import json
+
+        import ledger
+
+        data = ledger.empty_ledger()
+        for _ in range(green):
+            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=True)
+        for _ in range(dirty):
+            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=False)
+        p = tmp_path / "led.json"
+        p.write_text(json.dumps(data))
+        return f"file:{p}"
+
+    def test_compliant(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path, green=10, dirty=0))
+        rc = cli.main(["sla", "--target", "95", "--window", "lifetime", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "compliant" and out["compliance_pct"] == 100.0
+
+    def test_breached(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path, green=5, dirty=5))
+        rc = cli.main(["sla", "--target", "95", "--window", "lifetime", "--json"])
+        assert rc == cli.EXIT_DIRTY
+        assert json.loads(capsys.readouterr().out)["status"] == "breached"
+
+    def test_unknown_few_runs(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path, green=2, dirty=0))
+        rc = cli.main(["sla", "--window", "lifetime"])
+        assert rc == cli.EXIT_NODATA
+
+    def test_no_ledger(self, capsys, monkeypatch):
+        monkeypatch.delenv("LEDGER", raising=False)
+        assert cli.main(["sla"]) == cli.EXIT_NODATA
+
+
 class TestScore:
     def test_grade_thresholds(self):
         assert cli._grade(1.0)[0] == "A"

@@ -33,21 +33,25 @@ def empty_ledger():
     return {"schemaVersion": 1, "totals": {}, "history": []}
 
 
-def merge_entry(data, saved_grams, date_str, emitted_grams=0):
+def merge_entry(data, saved_grams, date_str, emitted_grams=0, is_green=None):
     """Fold one run's savings and emissions into the ledger, aggregating by day.
 
     Pure: returns a new dict, never mutates the input. Negative values are
     clamped to zero so a dirty-grid run still counts as a build without
     subtracting from the running totals. emitted_grams is the actual CO2 the run
-    produced on the grid, used for carbon budgeting.
+    produced on the grid, used for carbon budgeting. is_green (when provided)
+    tallies green runs for Green SLA compliance.
     """
     saved = max(0.0, float(saved_grams or 0))
     emitted = max(0.0, float(emitted_grams or 0))
+    green_inc = 1 if is_green else 0
 
     totals = dict(data.get("totals") or {})
     totals["co2_saved_grams"] = round(float(totals.get("co2_saved_grams", 0)) + saved, 1)
     totals["co2_emitted_grams"] = round(float(totals.get("co2_emitted_grams", 0)) + emitted, 1)
     totals["runs"] = int(totals.get("runs", 0)) + 1
+    if is_green is not None:
+        totals["green_runs"] = int(totals.get("green_runs", 0)) + green_inc
     totals.setdefault("first_run", date_str)
     totals["last_run"] = date_str
 
@@ -57,15 +61,18 @@ def merge_entry(data, saved_grams, date_str, emitted_grams=0):
         last["saved_g"] = round(float(last.get("saved_g", 0)) + saved, 1)
         last["emitted_g"] = round(float(last.get("emitted_g", 0)) + emitted, 1)
         last["runs"] = int(last.get("runs", 0)) + 1
+        if is_green is not None:
+            last["green"] = int(last.get("green", 0)) + green_inc
     else:
-        history.append(
-            {
-                "date": date_str,
-                "saved_g": round(saved, 1),
-                "emitted_g": round(emitted, 1),
-                "runs": 1,
-            }
-        )
+        entry = {
+            "date": date_str,
+            "saved_g": round(saved, 1),
+            "emitted_g": round(emitted, 1),
+            "runs": 1,
+        }
+        if is_green is not None:
+            entry["green"] = green_inc
+        history.append(entry)
 
     result = {
         "schemaVersion": 1,
@@ -127,6 +134,20 @@ def month_to_date_emitted(data, month_prefix):
         if str(h.get("date", "")).startswith(month_prefix):
             total += float(h.get("emitted_g", 0))
     return round(total, 1)
+
+
+def sla_window(data, prefix=""):
+    """Sum (green_runs, total_runs) over history days matching the date prefix.
+
+    An empty prefix covers all history (lifetime). Used for Green SLA compliance:
+    the share of runs that ran on a clean grid.
+    """
+    green = total = 0
+    for h in data.get("history") or []:
+        if str(h.get("date", "")).startswith(prefix):
+            green += int(h.get("green", 0))
+            total += int(h.get("runs", 0))
+    return green, total
 
 
 def format_total(grams):
@@ -266,10 +287,14 @@ def _summary(data, badge_url, month=None):
         "emitted_total": float(totals.get("co2_emitted_grams", 0)),
         "emitted_mtd": month_to_date_emitted(data, month) if month else 0,
         "avoided_total": float(totals.get("co2_avoided_grams", 0)),
+        "green_mtd": sla_window(data, month)[0] if month else 0,
+        "runs_mtd": sla_window(data, month)[1] if month else 0,
     }
 
 
-def _assemble(current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh):
+def _assemble(
+    current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh, is_green=None
+):
     """Build the next ledger state: fold the run, the curve sample, and the
     counterfactual avoided emissions (vs the zone's own typical hour so far)."""
     avoided = 0.0
@@ -277,7 +302,7 @@ def _assemble(current, saved_grams, date_str, emitted_grams, zone, intensity, ho
         mean = curve_mean(current, zone)  # the zone's typical hour, from history so far
         if mean:
             avoided = round(max(0.0, (mean - float(intensity)) * energy_kwh), 1)
-    data = merge_entry(current, saved_grams, date_str, emitted_grams)
+    data = merge_entry(current, saved_grams, date_str, emitted_grams, is_green=is_green)
     data = merge_curve_sample(data, zone, hour, intensity)
     if avoided:
         totals = dict(data.get("totals") or {})
@@ -296,15 +321,17 @@ def record_savings(
     intensity=None,
     hour=None,
     energy_kwh=0,
+    is_green=None,
 ):
     """Append this run to the configured ledger and return a summary.
 
-    Also folds (hour, intensity) into the per-zone hour-of-day curve and tracks
-    counterfactual avoided emissions (cleaner than the zone's typical hour).
-    Returns a dict with total_grams, total_runs, message, badge_url (gist only),
-    emitted_total, emitted_mtd, and avoided_total, or None when the ledger is
-    disabled or an IO/auth step fails. Never raises: failures degrade to a
-    warning so CI is never broken by bookkeeping.
+    Also folds (hour, intensity) into the per-zone hour-of-day curve, tracks
+    counterfactual avoided emissions (cleaner than the zone's typical hour), and
+    tallies green runs for Green SLA compliance. Returns a dict with total_grams,
+    total_runs, message, badge_url (gist only), emitted_total, emitted_mtd,
+    avoided_total, green_mtd, and runs_mtd, or None when the ledger is disabled or
+    an IO/auth step fails. Never raises: failures degrade to a warning so CI is
+    never broken by bookkeeping.
     """
     backend, location = parse_config(config)
     if not backend or not location:
@@ -321,6 +348,7 @@ def record_savings(
             intensity,
             hour,
             energy_kwh,
+            is_green,
         )
         try:
             _save_file(location, data)
@@ -338,7 +366,7 @@ def record_savings(
         return None
     current, owner = _gist_read(location, token)
     data = _assemble(
-        current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh
+        current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh, is_green
     )
     if _gist_write(location, token, data) is None:
         print("::warning::Could not update ledger gist; skipping ledger update")
