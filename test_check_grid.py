@@ -18,6 +18,7 @@ from providers import (
     PROVIDER_CANADA,
     PROVIDER_EIA,
     PROVIDER_ELECTRICITY_MAPS,
+    PROVIDER_ENERGY_CHARTS,
     PROVIDER_ENTSOE,
     PROVIDER_ESKOM,
     PROVIDER_GRID_INDIA,
@@ -1253,7 +1254,7 @@ class TestHandleDirtyGrid:
         mock_trend.return_value = "stable"
         mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
 
-        check_grid.handle_dirty_grid("DE", 250, 400, enable_forecast=False, emaps_api_key="em-key")
+        check_grid.handle_dirty_grid("JP", 250, 400, enable_forecast=False, emaps_api_key="em-key")
 
         output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
         assert output_calls["forecast_green_at"] == "2026-03-10T14:00Z"
@@ -1786,8 +1787,8 @@ class TestEntsoeDetectProvider:
         assert detect_provider("DE", entsoe_token="my-token") == PROVIDER_ENTSOE
 
     def test_de_without_token(self):
-        # DE now has Open-Meteo coordinates, so it falls back there instead of Electricity Maps
-        assert detect_provider("DE") == PROVIDER_OPEN_METEO
+        # DE now has a keyless real source (Energy-Charts), preferred over estimates
+        assert detect_provider("DE") == PROVIDER_ENERGY_CHARTS
 
     def test_fr_with_token(self):
         assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
@@ -4012,10 +4013,12 @@ class TestProviderRegistryConsistency:
     def test_eu_zones_fallback_to_open_meteo_without_token(self):
         """EU zones with coordinates should detect Open-Meteo without ENTSO-E token.
 
-        FR is an exception: it has a national keyless source (RTE), preferred over
-        the Open-Meteo estimate when no token is set.
+        FR and DE are exceptions: they have keyless real sources (RTE,
+        Energy-Charts), preferred over the Open-Meteo estimate when no token is
+        set. NO-NO1 (a subzone with no national keyless source here) still uses
+        Open-Meteo.
         """
-        assert detect_provider("DE") == PROVIDER_OPEN_METEO
+        assert detect_provider("DE") == PROVIDER_ENERGY_CHARTS
         assert detect_provider("FR") == PROVIDER_RTE
         assert detect_provider("NO-NO1") == PROVIDER_OPEN_METEO
 
