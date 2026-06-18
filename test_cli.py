@@ -368,6 +368,41 @@ class TestAdvise:
         assert rc == cli.EXIT_NODATA
 
 
+class TestMarginal:
+    @mock.patch("providers.watttime.get_marginal_index")
+    @mock.patch("providers.watttime.login")
+    def test_clean(self, login, idx, capsys, monkeypatch):
+        monkeypatch.setenv("WATTTIME_USERNAME", "u")
+        monkeypatch.setenv("WATTTIME_PASSWORD", "p")
+        login.return_value = "tok"
+        idx.return_value = 20
+        rc = cli.main(["marginal", "--max-percentile", "33", "--json"])
+        assert rc == cli.EXIT_GREEN
+        assert json.loads(capsys.readouterr().out)["status"] == "clean"
+
+    @mock.patch("providers.watttime.get_marginal_index")
+    @mock.patch("providers.watttime.login")
+    def test_dirty(self, login, idx, capsys, monkeypatch):
+        monkeypatch.setenv("WATTTIME_USERNAME", "u")
+        monkeypatch.setenv("WATTTIME_PASSWORD", "p")
+        login.return_value = "tok"
+        idx.return_value = 90
+        rc = cli.main(["marginal", "--max-percentile", "33"])
+        assert rc == cli.EXIT_DIRTY
+
+    def test_no_credentials(self, capsys, monkeypatch):
+        monkeypatch.delenv("WATTTIME_USERNAME", raising=False)
+        monkeypatch.delenv("WATTTIME_PASSWORD", raising=False)
+        assert cli.main(["marginal"]) == cli.EXIT_NODATA
+
+    @mock.patch("providers.watttime.get_marginal_index", return_value=None)
+    @mock.patch("providers.watttime.login", return_value="tok")
+    def test_no_data(self, login, idx, monkeypatch):
+        monkeypatch.setenv("WATTTIME_USERNAME", "u")
+        monkeypatch.setenv("WATTTIME_PASSWORD", "p")
+        assert cli.main(["marginal"]) == cli.EXIT_NODATA
+
+
 class TestSla:
     def _seed(self, tmp_path, green, dirty):
         import json

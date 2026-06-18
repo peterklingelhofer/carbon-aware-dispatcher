@@ -8,6 +8,7 @@ where the real energy lives: a nightly training run or data pipeline dwarfs CI.
 Commands:
   check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
+  marginal        WattTime marginal-emissions signal (the real avoided-emissions metric)
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
@@ -103,6 +104,58 @@ def _report(args, result, prefix=""):
 
 def cmd_check(args):
     return _report(args, evaluate(args))
+
+
+def cmd_marginal(args):
+    """Report the WattTime marginal-emissions signal for timing decisions.
+
+    Marginal intensity (the generator that responds to YOUR added load) is the
+    metric that reflects real avoided emissions from shifting, unlike average
+    intensity. Free for CAISO_NORTH. A low percentile means a relatively clean
+    margin right now. Exit 0 clean, 1 dirty, 2 no data/credentials.
+    """
+    import os
+
+    from providers import watttime
+
+    user = args.username or os.environ.get("WATTTIME_USERNAME", "")
+    password = args.password or os.environ.get("WATTTIME_PASSWORD", "")
+    if not user or not password:
+        msg = "marginal needs WattTime credentials (--username/--password or env)"
+        print(json.dumps({"status": "no_credentials"}) if args.json else msg, file=sys.stderr)
+        return EXIT_NODATA
+
+    with contextlib.redirect_stdout(sys.stderr):
+        token = watttime.login(user, password)
+        pct = watttime.get_marginal_index(args.region, token) if token else None
+    if pct is None:
+        print(
+            json.dumps({"status": "no_data", "region": args.region})
+            if args.json
+            else f"No marginal signal for {args.region}",
+            file=sys.stderr,
+        )
+        return EXIT_NODATA
+
+    clean = pct <= args.max_percentile
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "clean" if clean else "dirty",
+                    "region": args.region,
+                    "percentile": pct,
+                    "max_percentile": args.max_percentile,
+                }
+            )
+        )
+    else:
+        verdict = "CLEAN" if clean else "DIRTY"
+        print(
+            f"{verdict}: {args.region} marginal at {pct}th percentile "
+            f"(threshold {args.max_percentile}; lower = cleaner margin)"
+        )
+    return EXIT_GREEN if clean else EXIT_DIRTY
 
 
 def cmd_wait(args):
@@ -1146,6 +1199,21 @@ def build_parser():
     ad.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
     ad.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
     ad.set_defaults(func=cmd_advise)
+
+    mg = sub.add_parser(
+        "marginal", help="WattTime marginal-emissions signal (real avoided-emissions metric)"
+    )
+    add_common(mg)
+    mg.add_argument("--region", default="CAISO_NORTH", help="WattTime region. Default: CAISO_NORTH")
+    mg.add_argument(
+        "--max-percentile",
+        type=float,
+        default=33.0,
+        help="Clean when at/below this co2_moer percentile. Default: 33",
+    )
+    mg.add_argument("--username", default="", help="WattTime username (or WATTTIME_USERNAME)")
+    mg.add_argument("--password", default="", help="WattTime password (or WATTTIME_PASSWORD)")
+    mg.set_defaults(func=cmd_marginal)
 
     sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
     add_common(sla)
