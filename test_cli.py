@@ -514,6 +514,37 @@ class TestExportCurves:
         assert cli.main(["export-curves"]) == cli.EXIT_NODATA
 
 
+class TestMergeCurves:
+    def _curve_file(self, tmp_path, name, zone, base):
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, zone, hour, base + hour)
+        p = tmp_path / name
+        p.write_text(json.dumps({"curve": data["curve"]}))
+        return str(p)
+
+    def test_merges_to_stdout(self, capsys, tmp_path):
+        a = self._curve_file(tmp_path, "a.json", "FR", 100)
+        b = self._curve_file(tmp_path, "b.json", "DE", 300)
+        rc = cli.main(["merge-curves", a, b])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert set(out["curve"]) == {"FR", "DE"}
+
+    def test_writes_file(self, tmp_path):
+        a = self._curve_file(tmp_path, "a.json", "FR", 100)
+        dest = tmp_path / "pool.json"
+        rc = cli.main(["merge-curves", a, "--output", str(dest)])
+        assert rc == cli.EXIT_GREEN
+        assert "FR" in json.loads(dest.read_text())["curve"]
+
+    def test_errors_when_no_readable_files(self, tmp_path):
+        rc = cli.main(["merge-curves", str(tmp_path / "missing.json")])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

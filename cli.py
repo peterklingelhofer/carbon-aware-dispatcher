@@ -19,6 +19,7 @@ Commands:
   advise          one prioritized carbon action plan across every lever
   curve           print the hour-of-day carbon curve from historical data
   export-curves   export accumulated curves to share (community data commons)
+  merge-curves    pool many exported curve files into one shared community curve
   worth-it        say whether scheduling helps this zone (flat grids don't)
   sla             report Green SLA compliance (share of runs that ran clean)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -1029,6 +1030,39 @@ def cmd_export_curves(args):
     return EXIT_GREEN
 
 
+def cmd_merge_curves(args):
+    """Pool many exported curve files into one shared community curve.
+
+    Reads each path (a file from `export-curves`), sums their per-hour sum/count
+    so the merged mean is volume-weighted, and writes the pooled curve. This is
+    the server side of the data commons: run it over contributors' files to
+    publish one COMMUNITY_CURVE the whole community can point at. Exit 0 on
+    merge, 2 when no readable input files were given.
+    """
+    import ledger
+
+    docs = []
+    for path in args.paths:
+        try:
+            with open(path) as fh:
+                docs.append(json.load(fh))
+        except (OSError, ValueError) as exc:
+            print(f"skipping {path}: {exc}", file=sys.stderr)
+    if not docs:
+        print("merge-curves needs at least one readable curve file", file=sys.stderr)
+        return EXIT_NODATA
+    merged = ledger.merge_curves(docs)
+    zones = len(merged.get("curve") or {})
+    payload = json.dumps(merged, indent=2)
+    if args.output:
+        with open(args.output, "w") as fh:
+            fh.write(payload)
+        print(f"Merged {len(docs)} file(s) into {zones} zone(s) at {args.output}", file=sys.stderr)
+    else:
+        print(payload)
+    return EXIT_GREEN
+
+
 def cmd_curve(args):
     """Print the hour-of-day carbon curve from historical data (where free)."""
     import carbon_curve
@@ -1275,6 +1309,11 @@ def build_parser():
     add_common(ec)
     ec.add_argument("--output", default="", help="Write to this file instead of stdout")
     ec.set_defaults(func=cmd_export_curves)
+
+    mc = sub.add_parser("merge-curves", help="Pool exported curve files into one community curve")
+    mc.add_argument("paths", nargs="+", help="Curve files to merge (from export-curves)")
+    mc.add_argument("--output", default="", help="Write to this file instead of stdout")
+    mc.set_defaults(func=cmd_merge_curves)
 
     wi = sub.add_parser("worth-it", help="Is carbon-aware scheduling worth it for this zone?")
     add_common(wi)

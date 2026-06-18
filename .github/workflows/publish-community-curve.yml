@@ -1,0 +1,56 @@
+# Publish the community curve commons
+#
+# Merges every contributed curve under community-curves/*.json into one pooled
+# community-curve.json at the repo root, then commits it when it changes. That
+# committed file's raw URL is what users set COMMUNITY_CURVE to, so any zone
+# others have sampled gains an hour-of-day profile even with no free history.
+#
+# Contributors add their `carbon-aware export-curves` output via PR (see
+# community-curves/README.md); this keeps the pool fresh as files land and daily.
+
+name: Publish community curve
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'community-curves/*.json'
+  schedule:
+    - cron: '23 5 * * *'   # daily, after most contributions settle
+  workflow_dispatch:
+
+permissions:
+  contents: write          # to commit the regenerated pool
+
+concurrency:
+  group: publish-community-curve
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Merge contributed curves
+        run: |
+          shopt -s nullglob
+          files=(community-curves/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No contributed curves yet; nothing to publish."
+            exit 0
+          fi
+          uv run cli.py merge-curves "${files[@]}" --output community-curve.json
+
+      - name: Commit the pool if it changed
+        run: |
+          if git diff --quiet -- community-curve.json; then
+            echo "Pool unchanged."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add community-curve.json
+          git commit -m "chore: refresh community curve pool"
+          git push
