@@ -41,7 +41,7 @@ dependencies = [
 # the framework an adapter targets, e.g. pip install carbon-aware-dispatcher[lightning]
 lightning = ["lightning>=2"]
 transformers = ["transformers>=4"]
-airflow = ["apache-airflow>=2"]
+airflow = ["apache-airflow>=3.0.6"]
 prefect = ["prefect>=2"]
 dagster = ["dagster>=1"]
 ray = ["ray>=2"]
