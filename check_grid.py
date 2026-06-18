@@ -25,6 +25,7 @@ from providers import (
     PROVIDER_EIRGRID,
     PROVIDER_ELECTRICITY_MAPS,
     PROVIDER_ENERGINET,
+    PROVIDER_ENERGY_CHARTS,
     PROVIDER_ENTSOE,
     PROVIDER_ESKOM,
     PROVIDER_GRID_INDIA,
@@ -41,6 +42,7 @@ from providers import (
     eirgrid,
     electricity_maps,
     energinet,
+    energy_charts,
     entsoe,
     eskom,
     grid_india,
@@ -160,6 +162,7 @@ _PROVIDER_MODULES = {
     PROVIDER_EIRGRID: eirgrid,
     PROVIDER_ENERGINET: energinet,
     PROVIDER_RTE: rte,
+    PROVIDER_ENERGY_CHARTS: energy_charts,
     PROVIDER_ELECTRICITY_MAPS: electricity_maps,
     PROVIDER_EIA: eia,
 }
@@ -451,6 +454,7 @@ def check_multiple_zones(
             PROVIDER_EIRGRID,
             PROVIDER_ENERGINET,
             PROVIDER_RTE,
+            PROVIDER_ENERGY_CHARTS,
         ):
             return 0  # Free, no rate limit concern
         if provider == PROVIDER_OPEN_METEO:
@@ -1543,6 +1547,7 @@ def handle_dirty_grid(
         PROVIDER_GRID_INDIA,
         PROVIDER_ONS_BRAZIL,
         PROVIDER_ESKOM,
+        PROVIDER_ENERGY_CHARTS,
     ):
         forecast_at, forecast_intensity = get_forecast(
             zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
