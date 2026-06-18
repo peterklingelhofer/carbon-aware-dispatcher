@@ -23,6 +23,7 @@ from providers import (
     PROVIDER_GRID_INDIA,
     PROVIDER_ONS_BRAZIL,
     PROVIDER_OPEN_METEO,
+    PROVIDER_RTE,
     PROVIDER_TAIWAN,
     PROVIDER_UK,
     _time_priority_score,
@@ -4009,9 +4010,13 @@ class TestProviderRegistryConsistency:
         assert detect_provider("AU-NSW") == PROVIDER_AEMO
 
     def test_eu_zones_fallback_to_open_meteo_without_token(self):
-        """EU zones with coordinates should detect Open-Meteo without ENTSO-E token."""
+        """EU zones with coordinates should detect Open-Meteo without ENTSO-E token.
+
+        FR is an exception: it has a national keyless source (RTE), preferred over
+        the Open-Meteo estimate when no token is set.
+        """
         assert detect_provider("DE") == PROVIDER_OPEN_METEO
-        assert detect_provider("FR") == PROVIDER_OPEN_METEO
+        assert detect_provider("FR") == PROVIDER_RTE
         assert detect_provider("NO-NO1") == PROVIDER_OPEN_METEO
 
     def test_eu_zones_prefer_entsoe_with_token(self):
