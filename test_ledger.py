@@ -91,6 +91,29 @@ class TestMergeEntry:
         d = ledger.merge_entry(d, 100, "2026-06-17", emitted_grams=10)
         assert d["curve"]["FR"]["12"]["n"] == 1  # survived the run merge
 
+    def test_green_runs_tracked(self):
+        d = ledger.empty_ledger()
+        d = ledger.merge_entry(d, 0, "2026-06-17", is_green=True)
+        d = ledger.merge_entry(d, 0, "2026-06-17", is_green=False)
+        d = ledger.merge_entry(d, 0, "2026-06-17", is_green=True)
+        assert d["totals"]["green_runs"] == 2
+        assert d["totals"]["runs"] == 3
+        assert d["history"][0]["green"] == 2
+
+    def test_no_green_key_without_is_green(self):
+        # Backward compatible: omitting is_green leaves the daily entry shape clean
+        d = ledger.merge_entry(ledger.empty_ledger(), 100, "2026-06-17")
+        assert "green" not in d["history"][0]
+        assert "green_runs" not in d["totals"]
+
+    def test_sla_window(self):
+        d = ledger.empty_ledger()
+        d = ledger.merge_entry(d, 0, "2026-06-15", is_green=True)
+        d = ledger.merge_entry(d, 0, "2026-06-16", is_green=False)
+        d = ledger.merge_entry(d, 0, "2026-05-31", is_green=True)  # prior month
+        assert ledger.sla_window(d, "2026-06") == (1, 2)  # 1 green of 2 in June
+        assert ledger.sla_window(d, "") == (2, 3)  # lifetime: 2 green of 3
+
     def test_curve_mean(self):
         d = ledger.empty_ledger()
         for hour in range(6):
