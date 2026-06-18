@@ -526,6 +526,24 @@ Without Lightning, use the gate in any loop: `from integrations.lightning_carbon
 wait_until_clean; wait_until_clean(zones="auto:green", max_carbon=200)`. See
 [`examples/standalone/lightning_carbon_training.py`](examples/standalone/lightning_carbon_training.py).
 
+## Carbon-aware Airflow
+
+Batch ETL, retrains, and report jobs are the deferrable loads Airflow already
+orchestrates. Gate any DAG on grid cleanliness with a sensor:
+
+```python
+from integrations.airflow_carbon import CarbonAwareSensor
+
+gate = CarbonAwareSensor(
+    task_id="wait_for_green", zones="auto:green", max_carbon=200,
+    mode="reschedule", poke_interval=900, timeout=6 * 3600,
+)
+gate >> heavy_training_task
+```
+
+`mode="reschedule"` frees the worker slot between pokes. See
+[`examples/standalone/airflow_carbon_dag.py`](examples/standalone/airflow_carbon_dag.py).
+
 ## Carbon-aware inference routing
 
 Inference is a fast-growing, often latency-tolerant load. Route async/batch
