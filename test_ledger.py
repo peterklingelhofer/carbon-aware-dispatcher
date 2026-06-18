@@ -169,6 +169,28 @@ class TestMergeEntry:
         assert d["history"][-1]["date"] == f"day-{ledger.HISTORY_CAP + 19:04d}"
 
 
+class TestMergeCurves:
+    def test_sums_overlapping_cells(self):
+        a = {"curve": {"FR": {"3": {"sum": 100.0, "n": 1}}}}
+        b = {"curve": {"FR": {"3": {"sum": 50.0, "n": 1}}}}
+        merged = ledger.merge_curves([a, b])
+        cell = merged["curve"]["FR"]["3"]
+        assert cell["sum"] == 150.0 and cell["n"] == 2
+        # volume-weighted mean is recoverable: 150/2 = 75
+        assert ledger.curve_profile(merged, "FR", min_hours=1)[3] == 75.0
+
+    def test_unions_zones_and_hours(self):
+        a = {"curve": {"FR": {"3": {"sum": 100.0, "n": 1}}}}
+        b = {"curve": {"DE": {"4": {"sum": 200.0, "n": 2}}}}
+        merged = ledger.merge_curves([a, b])
+        assert set(merged["curve"]) == {"FR", "DE"}
+        assert merged["curve"]["DE"]["4"]["n"] == 2
+
+    def test_empty_and_missing_curve(self):
+        assert ledger.merge_curves([]) == {"curve": {}}
+        assert ledger.merge_curves([{}, {"curve": {}}]) == {"curve": {}}
+
+
 class TestFormatAndBadge:
     def test_format_grams(self):
         assert ledger.format_total(850) == "850 g"

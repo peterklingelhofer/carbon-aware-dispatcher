@@ -194,24 +194,38 @@ def ledger_profile(zone):
     return ledger.curve_profile(data, zone)
 
 
-def community_profile(zone):
-    """Build a profile from a shared community curve file (the data commons).
-
-    Set COMMUNITY_CURVE to a pooled curve file (produced by `carbon-aware
-    export-curves` and merged across users) to get an hour-of-day profile for any
-    zone others have sampled, even with no local history. Returns {} when unset,
-    missing, or too sparse for the zone.
-    """
+def _load_community_curve(src):
+    """Load a pooled curve doc from a local path or an http(s) URL, or {}."""
+    if src.startswith(("http://", "https://")):
+        return base.request(src) or {}
     import json
     import os
 
-    path = os.environ.get("COMMUNITY_CURVE", "")
-    if not path or not os.path.exists(path):
+    if not os.path.exists(src):
         return {}
     try:
-        with open(path) as fh:
-            data = json.load(fh)
+        with open(src) as fh:
+            return json.load(fh)
     except (OSError, ValueError):
+        return {}
+
+
+def community_profile(zone):
+    """Build a profile from a shared community curve (the data commons).
+
+    Set COMMUNITY_CURVE to a pooled curve produced by `carbon-aware export-curves`
+    and merged across users (`carbon-aware merge-curves`) — either a local file or
+    a published http(s) URL — to get an hour-of-day profile for any zone others
+    have sampled, even with no local history. Returns {} when unset, unreachable,
+    or too sparse for the zone.
+    """
+    import os
+
+    src = os.environ.get("COMMUNITY_CURVE", "")
+    if not src:
+        return {}
+    data = _load_community_curve(src)
+    if not data:
         return {}
     import ledger
 

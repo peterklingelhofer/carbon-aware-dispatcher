@@ -668,10 +668,21 @@ aggregates for CSRD / GHG-Protocol reporting.
 ### Shared curve commons
 
 Where no free historical API exists, the curve self-accumulates per zone in your
-ledger. Pool it: `carbon-aware export-curves > curves.json` writes your zones'
-hour-of-day aggregates to share, and pointing `COMMUNITY_CURVE` at a merged pool
-gives `suggest-cron`/`worth-it`/`curve` a profile for any zone others have
-sampled, even with no local history. Coverage compounds with adoption.
+ledger. Pool it: `carbon-aware export-curves --output mine.json` writes your
+zones' hour-of-day aggregates (anonymous `sum`/`count` cells only), and
+`carbon-aware merge-curves a.json b.json --output pool.json` sums many
+contributors' files into one volume-weighted pool. Point `COMMUNITY_CURVE` at a
+pool — a local file or a published URL — and `suggest-cron`/`worth-it`/`curve`
+gain a profile for any zone others have sampled, even with no local history:
+
+```bash
+export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/main/community-curve.json"
+carbon-aware worth-it --zones FR
+```
+
+Contribute via PR to [`community-curves/`](community-curves/); the
+[publish workflow](.github/workflows/publish-community-curve.yml) merges every
+file into the pool automatically. Coverage compounds with adoption.
 
 ### Shift, don't wait
 
