@@ -613,6 +613,14 @@ carbon-aware worth-it --zones GB    # exit 0 worth it, 1 not, 2 can't assess
 record per run — energy, intensity, PUE, embodied, and total emitted — that
 aggregates for CSRD / GHG-Protocol reporting.
 
+### Shared curve commons
+
+Where no free historical API exists, the curve self-accumulates per zone in your
+ledger. Pool it: `carbon-aware export-curves > curves.json` writes your zones'
+hour-of-day aggregates to share, and pointing `COMMUNITY_CURVE` at a merged pool
+gives `suggest-cron`/`worth-it`/`curve` a profile for any zone others have
+sampled, even with no local history. Coverage compounds with adoption.
+
 ### Shift, don't wait
 
 For *recurring* jobs, blocking with `wait-for-green` keeps the machine powered on

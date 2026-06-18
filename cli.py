@@ -18,6 +18,7 @@ Commands:
   score           grade the repo's scheduling carbon posture (A-F) + badge
   advise          one prioritized carbon action plan across every lever
   curve           print the hour-of-day carbon curve from historical data
+  export-curves   export accumulated curves to share (community data commons)
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   sla             report Green SLA compliance (share of runs that ran clean)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -993,6 +994,41 @@ def cmd_sla(args):
     return EXIT_GREEN if status != "breached" else EXIT_DIRTY
 
 
+def cmd_export_curves(args):
+    """Export the ledger's accumulated hour-of-day curves to share (data commons).
+
+    Writes a curve file (the per-zone hour aggregates) that can be pooled across
+    users and fed back via COMMUNITY_CURVE, so zones nobody has a free historical
+    API for still gain a diurnal profile as adoption grows. Exit 0 on export,
+    2 when there's no ledger or no curve yet.
+    """
+    import os
+
+    import ledger
+
+    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
+    if not backend or not location:
+        print("export-curves needs the ledger (LEDGER=gist:<id> or file:<path>)", file=sys.stderr)
+        return EXIT_NODATA
+    if backend == "file":
+        data = ledger._load_file(location)
+    else:
+        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
+
+    curve = data.get("curve") or {}
+    if not curve:
+        print("No accumulated curve to export yet", file=sys.stderr)
+        return EXIT_NODATA
+    payload = json.dumps({"curve": curve}, indent=2)
+    if args.output:
+        with open(args.output, "w") as fh:
+            fh.write(payload)
+        print(f"Exported curves for {len(curve)} zone(s) to {args.output}", file=sys.stderr)
+    else:
+        print(payload)
+    return EXIT_GREEN
+
+
 def cmd_curve(args):
     """Print the hour-of-day carbon curve from historical data (where free)."""
     import carbon_curve
@@ -1234,6 +1270,11 @@ def build_parser():
     cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
     add_common(cv)
     cv.set_defaults(func=cmd_curve)
+
+    ec = sub.add_parser("export-curves", help="Export accumulated curves to share (data commons)")
+    add_common(ec)
+    ec.add_argument("--output", default="", help="Write to this file instead of stdout")
+    ec.set_defaults(func=cmd_export_curves)
 
     wi = sub.add_parser("worth-it", help="Is carbon-aware scheduling worth it for this zone?")
     add_common(wi)
