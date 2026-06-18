@@ -48,8 +48,28 @@ RTE_ZONE_IDS = {"FR"}
 
 # Europe (free, no API key): Fraunhofer ISE Energy-Charts co2eq, keyless EU coverage
 ENERGY_CHARTS_ZONE_IDS = {
-    "DE", "ES", "IT", "NL", "BE", "AT", "CH", "PL", "PT", "CZ", "FI",
-    "GR", "HU", "RO", "SK", "SI", "BG", "HR", "EE", "LV", "LT", "LU",
+    "DE",
+    "ES",
+    "IT",
+    "NL",
+    "BE",
+    "AT",
+    "CH",
+    "PL",
+    "PT",
+    "CZ",
+    "FI",
+    "GR",
+    "HU",
+    "RO",
+    "SK",
+    "SI",
+    "BG",
+    "HR",
+    "EE",
+    "LV",
+    "LT",
+    "LU",
 }
 
 # Indian grid region codes (free, no API key)
