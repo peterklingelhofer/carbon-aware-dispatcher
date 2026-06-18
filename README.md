@@ -526,6 +526,23 @@ Without Lightning, use the gate in any loop: `from integrations.lightning_carbon
 wait_until_clean; wait_until_clean(zones="auto:green", max_carbon=200)`. See
 [`examples/standalone/lightning_carbon_training.py`](examples/standalone/lightning_carbon_training.py).
 
+## Carbon-aware inference routing
+
+Inference is a fast-growing, often latency-tolerant load. Route async/batch
+requests to the cleanest available region in real time:
+
+```python
+from integrations.inference_router import cleanest_endpoint
+
+endpoints = [
+    {"name": "us-west", "zone": "CISO", "url": "https://us-west/infer"},
+    {"name": "norway", "zone": "NO-NO1", "url": "https://no/infer"},
+]
+target = cleanest_endpoint(endpoints)   # re-rank hourly and reuse between requests
+```
+
+See [`examples/standalone/inference_routing.py`](examples/standalone/inference_routing.py).
+
 ## Use outside GitHub Actions (CLI & container)
 
 CI is a small load. The real carbon wins are large, deferrable workloads:
