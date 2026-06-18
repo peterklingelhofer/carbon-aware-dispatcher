@@ -14,6 +14,7 @@ PROVIDER_TAIWAN = "taiwan"
 PROVIDER_EIRGRID = "eirgrid"
 PROVIDER_ENERGINET = "energinet"
 PROVIDER_RTE = "rte"
+PROVIDER_ENERGY_CHARTS = "energy_charts"
 
 # Providers whose get_forecast is a time-of-day HEURISTIC (a generalization
 # about that grid's daily pattern), not a measured/published forecast. Output
@@ -44,6 +45,12 @@ ENERGINET_ZONE_IDS = {"DK-DK1", "DK-DK2", "DK1", "DK2"}
 
 # France (free, no API key): RTE eco2mix national CO2 intensity via ODRE
 RTE_ZONE_IDS = {"FR"}
+
+# Europe (free, no API key): Fraunhofer ISE Energy-Charts co2eq, keyless EU coverage
+ENERGY_CHARTS_ZONE_IDS = {
+    "DE", "ES", "IT", "NL", "BE", "AT", "CH", "PL", "PT", "CZ", "FI",
+    "GR", "HU", "RO", "SK", "SI", "BG", "HR", "EE", "LV", "LT", "LU",
+}
 
 # Indian grid region codes (free, no API key)
 GRID_INDIA_ZONE_IDS = {"IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"}
@@ -463,6 +470,8 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_ENERGINET
     if zone in RTE_ZONE_IDS:
         return PROVIDER_RTE
+    if zone in ENERGY_CHARTS_ZONE_IDS:
+        return PROVIDER_ENERGY_CHARTS
     # Open-Meteo for zones with known coordinates (free, no key)
     if zone in ZONE_COORDINATES:
         return PROVIDER_OPEN_METEO
