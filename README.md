@@ -436,6 +436,14 @@ Gate deferrable work on `marginal_clean == 'true'`. WattTime's free tier covers
 `CAISO_NORTH`; other regions need WattTime Pro. See
 [`examples/marginal-timing.yml`](examples/marginal-timing.yml).
 
+From the CLI, `carbon-aware marginal` reports the same signal and composes via
+exit codes, so a batch job can run on the *marginal* metric (the one that
+reflects real avoided emissions) rather than average intensity:
+
+```bash
+carbon-aware marginal --region CAISO_NORTH --max-percentile 33 && ./train.sh
+```
+
 ## Weekly digest
 
 Run the action in `mode: digest` on a schedule to post (and keep updating) a
