@@ -15,6 +15,7 @@ PROVIDER_EIRGRID = "eirgrid"
 PROVIDER_ENERGINET = "energinet"
 PROVIDER_RTE = "rte"
 PROVIDER_ENERGY_CHARTS = "energy_charts"
+PROVIDER_CAMMESA = "cammesa"
 
 # Providers whose get_forecast is a time-of-day HEURISTIC (a generalization
 # about that grid's daily pattern), not a measured/published forecast. Output
@@ -80,6 +81,9 @@ ONS_BRAZIL_ZONE_IDS = {"BR-S", "BR-SE", "BR-CS", "BR-NE", "BR-N"}
 
 # South Africa (free, no API key)
 ESKOM_ZONE_IDS = {"ZA"}
+
+# Argentina (free, no API key): CAMMESA SADI generation-by-source feed
+CAMMESA_ZONE_IDS = {"AR"}
 
 # UK Carbon Intensity API region IDs
 UK_REGION_IDS = {
@@ -456,6 +460,7 @@ def detect_provider(zone, entsoe_token=""):
     4. Grid India (no key)
     5. ONS Brazil (no key)
     6. Eskom South Africa (no key)
+    6a. CAMMESA Argentina (no key)
     6b. EirGrid Ireland (no key)
     7. ENTSO-E (free token required)
     8. Open-Meteo (free, no key; if zone has known coordinates)
@@ -476,6 +481,8 @@ def detect_provider(zone, entsoe_token=""):
         return PROVIDER_ONS_BRAZIL
     if zone in ESKOM_ZONE_IDS:
         return PROVIDER_ESKOM
+    if zone in CAMMESA_ZONE_IDS:
+        return PROVIDER_CAMMESA
     if zone in CANADA_ZONE_IDS:
         return PROVIDER_CANADA
     if zone in TAIWAN_ZONE_IDS:
