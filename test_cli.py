@@ -55,6 +55,46 @@ class TestCheck:
         assert rc == cli.EXIT_NODATA
 
 
+class TestScale:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_clean_grid_full_scale(self, cmz, capsys):
+        cmz.return_value = ("GB", 80, None, [])  # below green boundary
+        rc = cli.main(["scale", "--zones", "GB"])
+        assert rc == cli.EXIT_GREEN
+        assert capsys.readouterr().out.strip() == "1.0"
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_dirty_grid_floor_scale(self, cmz, capsys):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.append(("GB", 400))  # above amber boundary
+            return (None, None, None, [])
+
+        cmz.side_effect = fake
+        rc = cli.main(["scale", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN  # a scaling signal always exits 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["scale"] == 0.25 and out["intensity"] == 400
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_max_replicas_rounds_up(self, cmz, capsys):
+        cmz.return_value = ("GB", 80, None, [])  # full scale -> all replicas
+        rc = cli.main(["scale", "--zones", "GB", "--max-replicas", "10"])
+        assert rc == cli.EXIT_GREEN
+        assert capsys.readouterr().out.strip() == "10"
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_data_fails_open(self, cmz, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["scale", "--zones", "GB", "--max-replicas", "8"])
+        assert rc == cli.EXIT_NODATA
+        # fail open: still recommends full fleet rather than zero
+        assert capsys.readouterr().out.strip() == "8"
+
+
 class TestWait:
     @mock.patch("cli.time.sleep")
     @mock.patch("cli.evaluate")
