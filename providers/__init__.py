@@ -405,6 +405,66 @@ NEAREST_ZONES_BY_OFFSET = {
 }
 
 
+# Coordinates for zones that escape-coal routing needs but that aren't in
+# Open-Meteo's ZONE_COORDINATES (grid-operator zones keyed by their own codes).
+# Only the clean candidate grids missing elsewhere need to live here.
+SUPPLEMENTAL_COORDS = {
+    "CISO": (36.8, -119.4),  # California
+    "BPAT": (45.8, -119.5),  # US Pacific Northwest
+    "GB-16": (56.8, -4.2),  # Scotland
+    "AU-TAS": (-42.0, 147.0),  # Tasmania
+    "BR-S": (-27.6, -48.6),  # Brazil South
+}
+
+
+def _zone_latlon(zone):
+    """Best-effort (lat, lon) for a zone, or None when its location is unknown."""
+    from providers.open_meteo import ZONE_COORDINATES
+
+    return (
+        SUPPLEMENTAL_COORDS.get(zone)
+        or ZONE_COORDINATES.get(zone)
+        or ZONE_COORDINATES.get(zone.split("-")[0])
+    )
+
+
+def _haversine_km(a, b):
+    """Great-circle distance in km between two (lat, lon) points."""
+    import math
+
+    lat1, lon1 = a
+    lat2, lon2 = b
+    radius = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(h))
+
+
+def nearest_clean_zones(origin, n=5):
+    """Rank the curated clean grids by great-circle distance from `origin`.
+
+    A self-maintaining escape-coal route for any origin with known coordinates:
+    instead of a hand-curated mapping, it sends the job to the geographically
+    nearest clean grids (which usually means the least latency/egress among the
+    clean options). Returns a list of zone-config dicts nearest-first, or None
+    when the origin's location is unknown (caller falls back to the static map).
+    """
+    origin_ll = _zone_latlon(origin)
+    if origin_ll is None:
+        return None
+    ranked = []
+    for entry in AUTO_ESCAPE_COAL_ZONES:
+        ll = _zone_latlon(entry["zone"])
+        if ll is None:
+            continue
+        ranked.append((entry, _haversine_km(origin_ll, ll)))
+    ranked.sort(key=lambda pair: pair[1])
+    chosen = [dict(entry, runner_label=None) for entry, _ in ranked[:n]]
+    return chosen or None
+
+
 def _time_priority_score(zone_entry, utc_hour):
     """Score a zone's likelihood of being green at the given UTC hour.
 

@@ -105,6 +105,14 @@ inputs:
     description: 'Two gCO2eq/kWh boundaries "green,amber" for the carbon_tier dial. At or below the first is green (run full workloads), at or below the second is amber (trim work), above is red (defer heavy work). Lets downstream jobs scale to the grid instead of skipping. Default: "150,300".'
     required: false
     default: '150,300'
+  scale_min:
+    description: 'Floor for the continuous carbon_scale autoscaling factor when the grid is dirty (work still makes progress). Default: "0.25".'
+    required: false
+    default: '0.25'
+  scale_max:
+    description: 'Ceiling for the continuous carbon_scale autoscaling factor when the grid is clean. Default: "1.0".'
+    required: false
+    default: '1.0'
   monthly_budget_grams:
     description: 'Carbon budget for the current month in gCO2eq (e.g. "2000" for 2 kg). Requires the ledger input to track month-to-date emissions. Sets the budget_* outputs; gate your build with "if: steps.X.outputs.budget_exceeded != \"true\"". Empty disables budgeting.'
     required: false
@@ -197,6 +205,9 @@ outputs:
   carbon_tier_reason:
     description: 'Human-readable explanation of the carbon_tier classification.'
     value: ${{ steps.grid-check.outputs.carbon_tier_reason }}
+  carbon_scale:
+    description: 'Continuous autoscaling factor in [scale_min, scale_max]: scale_max when at/below the green boundary, scale_min when at/above amber, linear between. Multiply your replica/parallelism count by it to concentrate heavy compute in clean hours (e.g. matrix size, KEDA/HPA target). Fails open to scale_max when intensity is unknown.'
+    value: ${{ steps.grid-check.outputs.carbon_scale }}
   grid_zone:
     description: 'The zone that was selected (useful in multi-zone mode).'
     value: ${{ steps.grid-check.outputs.grid_zone }}
@@ -312,6 +323,9 @@ runs:
       env:
         GRID_ZONE: ${{ inputs.grid_zone }}
         GRID_ZONES: ${{ inputs.grid_zones }}
+        # Reuse a grid reading for 5 min so repeated/composed calls in one job
+        # don't re-fetch the same endpoint. Set to 0 to disable.
+        CARBON_CACHE_TTL: '300'
         EIA_API_KEY: ${{ inputs.eia_api_key }}
         GRID_STATUS_API_KEY: ${{ inputs.gridstatus_api_key }}
         MAX_CARBON: ${{ inputs.max_carbon_intensity }}
@@ -336,6 +350,8 @@ runs:
         GIST_TOKEN: ${{ inputs.gist_token }}
         PR_COMMENT: ${{ inputs.pr_comment }}
         TIER_THRESHOLDS: ${{ inputs.tier_thresholds }}
+        SCALE_MIN: ${{ inputs.scale_min }}
+        SCALE_MAX: ${{ inputs.scale_max }}
         MONTHLY_BUDGET_GRAMS: ${{ inputs.monthly_budget_grams }}
         GREEN_SLA_TARGET: ${{ inputs.green_sla_target }}
         COST_WEIGHT: ${{ inputs.cost_weight }}

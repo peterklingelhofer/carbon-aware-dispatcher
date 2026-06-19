@@ -13,14 +13,15 @@ from providers.base import (
 EIA_API_BASE = "https://api.eia.gov/v2"
 
 
-def _fuel_mix_to_intensity(fuel_data):
-    """Calculate carbon intensity from EIA fuel mix data.
+def _fuel_mix_totals(fuel_data):
+    """Sum EIA fuel-mix rows into (total_generation, generation_weighted_co2).
 
-    fuel_data: list of dicts with 'fueltype' and 'value' keys.
-    Returns carbon intensity in gCO2eq/kWh, or None on error.
+    total_generation is MWh; generation_weighted_co2 is Sum(MWh x lifecycle
+    factor), so their ratio is the interval's average intensity in gCO2eq/kWh and
+    their inter-interval changes feed the marginal regression.
     """
-    total_generation = 0
-    total_co2 = 0
+    total_generation = 0.0
+    total_co2 = 0.0
 
     for row in fuel_data:
         fuel_type = row.get("fueltype", "")
@@ -45,10 +46,58 @@ def _fuel_mix_to_intensity(fuel_data):
         total_generation += mwh
         total_co2 += mwh * ef
 
+    return total_generation, total_co2
+
+
+def _fuel_mix_to_intensity(fuel_data):
+    """Calculate carbon intensity from EIA fuel mix data.
+
+    fuel_data: list of dicts with 'fueltype' and 'value' keys.
+    Returns carbon intensity in gCO2eq/kWh, or None on error.
+    """
+    total_generation, total_co2 = _fuel_mix_totals(fuel_data)
     if total_generation == 0:
         return None
-
     return round(total_co2 / total_generation)
+
+
+def _fuel_mix_rows(zone, eia_api_key="", length=100):
+    """Fetch recent hourly fuel-mix rows for a zone (newest first), or []."""
+    api_key = eia_api_key or "DEMO_KEY"
+    url = (
+        f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
+        f"?api_key={api_key}"
+        f"&frequency=hourly"
+        f"&data[0]=value"
+        f"&facets[respondent][]={zone}"
+        f"&sort[0][column]=period"
+        f"&sort[0][direction]=desc"
+        f"&length={length}"
+    )
+    data = api_request(url)
+    if data is None:
+        return []
+    return data.get("response", {}).get("data", [])
+
+
+def fuel_mix_series(zone, eia_api_key="", length=100):
+    """Per-hour (generation, generation_weighted_co2) series, oldest first.
+
+    Feeds the free marginal-emissions estimator: each interval's totals let it
+    regress emission change on generation change across hours. Returns [] when no
+    history is available.
+    """
+    from collections import OrderedDict
+
+    rows = _fuel_mix_rows(zone, eia_api_key, length)
+    if not rows:
+        return []
+    periods = OrderedDict()
+    for row in rows:
+        periods.setdefault(row.get("period"), []).append(row)
+    series = [_fuel_mix_totals(period_rows) for period_rows in periods.values()]
+    series.reverse()  # API returns newest first; estimator wants time order
+    return [(g, e) for g, e in series if g > 0]
 
 
 def check_carbon_intensity(zone, max_carbon, eia_api_key=""):

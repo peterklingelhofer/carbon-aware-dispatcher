@@ -1,5 +1,10 @@
 """Shared utilities for all providers."""
 
+import hashlib
+import json
+import os
+import tempfile
+import threading
 import time
 from typing import Any, Optional, Protocol
 
@@ -27,9 +32,15 @@ class CarbonProvider(Protocol):
 
 
 # Defaults
-DEFAULT_TIMEOUT = 30
+# 10s is ample for these small JSON grid endpoints; the old 30s meant a single
+# hung host could stall a check for ~90s (3 attempts) of pure runner-on time
+DEFAULT_TIMEOUT = 10
 MAX_RETRIES = 2
 RETRY_DELAY = 5
+
+# Upper bound on pooled connections. Sized to cover a fanned-out multi-zone run
+# (see MAX_ZONE_WORKERS) hitting several providers at once
+MAX_POOL = 16
 
 # A descriptive User-Agent. Some public grid APIs (notably AEMO) reject or
 # silently empty the default python-requests UA, which breaks them on shared
@@ -37,6 +48,26 @@ RETRY_DELAY = 5
 USER_AGENT = (
     "carbon-aware-dispatcher/1.1 (+https://github.com/peterklingelhofer/carbon-aware-dispatcher)"
 )
+
+
+def _build_session():
+    """A shared session for connection pooling and keep-alive.
+
+    Reusing TCP+TLS connections across a multi-zone run (and repeated calls to
+    the same provider) avoids a fresh handshake per request, the single most
+    CPU-expensive part of this otherwise I/O-bound process. We do our own
+    retries in request(), so the adapter retries zero times itself.
+    """
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=MAX_POOL, pool_maxsize=MAX_POOL, max_retries=0
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
 
 # Canonical lifecycle emission factors in gCO2eq/kWh by generic fuel name.
 # IPCC AR5 (2014) lifecycle medians. This is the single source of truth: every
@@ -120,19 +151,96 @@ MAX_RETRY_AFTER = 60
 
 # Category of the most recent request() failure, so the dispatcher can report
 # *why* a zone was skipped (auth failed / rate limited / network error / ...)
-# rather than a flat "API error". Safe as module state because the dispatcher
-# checks zones sequentially, one request() at a time
-LAST_FAILURE_REASON = None
+# rather than a flat "API error". Stored thread-locally so concurrent zone
+# checks (the dispatcher fans them out across a thread pool) never clobber each
+# other's reason; each worker reads back the reason its own request() set
+_failure_state = threading.local()
 
 
 def _set_failure_reason(reason):
-    global LAST_FAILURE_REASON
-    LAST_FAILURE_REASON = reason
+    _failure_state.reason = reason
 
 
 def last_failure_reason():
-    """Return the category of the most recent request() failure, or None."""
-    return LAST_FAILURE_REASON
+    """Return the category of the most recent request() failure on this thread, or None."""
+    return getattr(_failure_state, "reason", None)
+
+
+# Short-lived disk cache for GET/JSON reads. Grid feeds only refresh every
+# 5-30 min, so a job that composes several calls (or back-to-back CLI runs on the
+# same host) can reuse a recent reading instead of re-fetching, saving energy on
+# both ends, including the free grid-operator APIs we depend on. Opt-in via
+# CARBON_CACHE_TTL (seconds; 0/unset disables), so direct library/test callers are
+# unaffected; the container and action turn it on by default. Cache stores only
+# the parsed public reading, never the request URL (which may carry a token); the
+# filename is a hash of method+url+parse, so different tokens stay isolated.
+
+
+def _cache_ttl() -> int:
+    try:
+        return int(os.environ.get("CARBON_CACHE_TTL", "0"))
+    except ValueError:
+        return 0
+
+
+def _cache_dir() -> str:
+    return os.environ.get("CARBON_CACHE_DIR") or os.path.join(
+        tempfile.gettempdir(), "carbon-aware-cache"
+    )
+
+
+def _cache_path(method: str, url: str, parse: str) -> str:
+    key = hashlib.sha256(f"{method}\0{url}\0{parse}".encode()).hexdigest()
+    return os.path.join(_cache_dir(), key + ".json")
+
+
+def _cache_read(method: str, url: str, parse: str) -> Any:
+    """Return the full cache entry (data, ts, validators) regardless of freshness.
+
+    Returns None on miss/error. The caller checks the timestamp against the TTL
+    and, when stale, uses the stored ETag / Last-Modified to revalidate cheaply.
+    """
+    if method != "GET" or parse != "json":
+        return None
+    try:
+        with open(_cache_path(method, url, parse)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_put(
+    method: str,
+    url: str,
+    parse: str,
+    data: Any,
+    etag: Any = None,
+    last_modified: Any = None,
+) -> None:
+    """Best-effort write; cache failures must never break a request.
+
+    Stores the validators (ETag / Last-Modified) alongside the data so a later
+    stale read can ask the server "still current?" and accept a tiny 304 instead
+    of refetching the whole payload.
+    """
+    if method != "GET" or parse != "json":
+        return
+    # Only persist validators that are real strings; a mock or odd header type
+    # must not make the entry unserializable (json.dump would raise).
+    etag = etag if isinstance(etag, str) else None
+    last_modified = last_modified if isinstance(last_modified, str) else None
+    path = _cache_path(method, url, parse)
+    try:
+        os.makedirs(_cache_dir(), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(
+                {"ts": time.time(), "data": data, "etag": etag, "last_modified": last_modified},
+                fh,
+            )
+        os.replace(tmp, path)  # atomic, so concurrent writers can't tear a file
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def _retry_after_seconds(response):
@@ -176,20 +284,31 @@ def request(
     # Identify ourselves unless the caller already set a UA
     headers.setdefault("User-Agent", USER_AGENT)
     # Reset the per-call failure reason; set on any failure path below so the
-    # dispatcher can report *why* a zone was skipped (see LAST_FAILURE_REASON)
+    # dispatcher can report *why* a zone was skipped (see _failure_state)
     _set_failure_reason(None)
+
+    verb = method.upper()
+    ttl = _cache_ttl()
+    cache_entry = _cache_read(verb, url, parse) if ttl > 0 else None
+    if cache_entry is not None and time.time() - cache_entry.get("ts", 0) <= ttl:
+        return cache_entry["data"]
+    # Stale (or absent): if we have a validator, ask the server to confirm the
+    # cached copy is still current; a 304 avoids re-downloading the payload.
+    if cache_entry is not None:
+        if cache_entry.get("etag"):
+            headers.setdefault("If-None-Match", cache_entry["etag"])
+        if cache_entry.get("last_modified"):
+            headers.setdefault("If-Modified-Since", cache_entry["last_modified"])
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            # Dispatch to the verb-specific helper so the mockable seam stays
-            # requests.get / requests.post, matching the rest of the codebase
-            verb = method.upper()
+            # Dispatch to the verb-specific helper on the shared pooled session
             if verb == "POST":
-                response = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+                response = _SESSION.post(url, headers=headers, json=json_body, timeout=timeout)
             elif verb == "PATCH":
-                response = requests.patch(url, headers=headers, json=json_body, timeout=timeout)
+                response = _SESSION.patch(url, headers=headers, json=json_body, timeout=timeout)
             else:
-                response = requests.get(url, headers=headers, timeout=timeout)
+                response = _SESSION.get(url, headers=headers, timeout=timeout)
         except requests.RequestException as exc:
             print(f"::warning::Network error (attempt {attempt + 1}): {exc}")
             if attempt < MAX_RETRIES:
@@ -198,17 +317,41 @@ def request(
             _set_failure_reason("network error")
             return None
 
+        # Not Modified: our cached copy is still current. Refresh its freshness
+        # and serve it without re-parsing a payload we never received.
+        if response.status_code == 304 and cache_entry is not None:
+            _cache_put(
+                verb,
+                url,
+                parse,
+                cache_entry["data"],
+                cache_entry.get("etag"),
+                cache_entry.get("last_modified"),
+            )
+            return cache_entry["data"]
+
         if response.status_code == 200:
             if parse == "response":
                 return response
             if parse == "text":
                 return response.text
             try:
-                return response.json()
+                data = response.json()
             except (ValueError, requests.exceptions.JSONDecodeError):
                 print(f"::warning::Invalid JSON response: {response.text[:200]}")
                 _set_failure_reason("invalid data")
                 return None
+            if ttl > 0:
+                headers_obj = getattr(response, "headers", None) or {}
+                _cache_put(
+                    verb,
+                    url,
+                    parse,
+                    data,
+                    headers_obj.get("ETag"),
+                    headers_obj.get("Last-Modified"),
+                )
+            return data
 
         print(
             f"::warning::API returned {response.status_code} "

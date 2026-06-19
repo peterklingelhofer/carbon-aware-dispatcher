@@ -8,6 +8,7 @@ the live forecast. The analysis functions are pure and provider-agnostic, so any
 sample source (a paid provider, a local log) can feed them.
 """
 
+import math
 from datetime import datetime, timedelta, timezone
 
 from providers import base
@@ -29,6 +30,116 @@ def profile_from_samples(samples):
             continue
         buckets.setdefault(hour, []).append(float(intensity))
     return {h: round(sum(v) / len(v), 1) for h, v in buckets.items()}
+
+
+def profile_stats_from_samples(samples):
+    """Per-hour statistics from raw samples (pure).
+
+    Returns {hour: {"mean", "count", "var"}} using the sample variance (n-1);
+    an hour with a single sample gets variance 0.0. Feeds the ANOVA significance
+    test and the confidence band, which a bare {hour: mean} profile can't support.
+    """
+    buckets = {}
+    for hour, intensity in samples:
+        if intensity is None:
+            continue
+        buckets.setdefault(hour, []).append(float(intensity))
+    stats = {}
+    for hour, vals in buckets.items():
+        n = len(vals)
+        mean = sum(vals) / n
+        var = sum((v - mean) ** 2 for v in vals) / (n - 1) if n > 1 else 0.0
+        stats[hour] = {"mean": round(mean, 1), "count": n, "var": round(var, 2)}
+    return stats
+
+
+def median_profile_from_samples(samples):
+    """Per-hour MEDIAN intensity (pure): resists spikes, unlike the mean.
+
+    A single bad reading (a grid data glitch) can drag an hour's mean around;
+    the median ignores it, so the cleanest-hour pick is more trustworthy.
+    """
+    buckets = {}
+    for hour, intensity in samples:
+        if intensity is None:
+            continue
+        buckets.setdefault(hour, []).append(float(intensity))
+    out = {}
+    for hour, vals in buckets.items():
+        vals.sort()
+        n = len(vals)
+        mid = n // 2
+        out[hour] = round(vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2, 1)
+    return out
+
+
+def anova_f(stats):
+    """One-way ANOVA F statistic: does hour-of-day explain intensity variance?
+
+    F = between-hour mean square / within-hour mean square. A large F means the
+    diurnal pattern is real signal beyond the noise of a few samples. Returns
+    (F, df_between, df_within), or None when there are too few groups/samples.
+    """
+    groups = [s for s in stats.values() if s["count"] > 0]
+    k = len(groups)
+    total_n = sum(s["count"] for s in groups)
+    if k < 2 or total_n - k < 1:
+        return None
+    grand = sum(s["mean"] * s["count"] for s in groups) / total_n
+    ss_between = sum(s["count"] * (s["mean"] - grand) ** 2 for s in groups)
+    ss_within = sum((s["count"] - 1) * s["var"] for s in groups)
+    df_between = k - 1
+    df_within = total_n - k
+    # Floor the within-group mean square so a perfectly clean pattern (zero noise)
+    # yields a huge finite F rather than dividing by zero.
+    ms_within = max(ss_within / df_within, 1e-9)
+    ms_between = ss_between / df_between
+    return ms_between / ms_within, df_between, df_within
+
+
+# A deliberately conservative F bar. The exact 0.05 critical value for the large
+# degrees of freedom we get from many hourly samples is ~1.5-2.0; 4.0 means we
+# only call a diurnal pattern "real" when it clearly beats sampling noise, so we
+# never tell a user to add scheduling complexity for a curve that is mostly noise.
+DEFAULT_F_CRIT = 4.0
+
+
+def is_significant(stats, f_crit=DEFAULT_F_CRIT):
+    """True when hour-of-day variation is statistically real (ANOVA F >= f_crit)."""
+    result = anova_f(stats)
+    return bool(result and result[0] >= f_crit)
+
+
+def confidence_band(stats, z=1.96):
+    """95% confidence band on each hour's mean: mean +/- z x standard error.
+
+    Returns {hour: {"mean","lo","hi","count"}}. A wide band flags an
+    under-sampled hour whose number should be trusted less.
+    """
+    band = {}
+    for hour, s in stats.items():
+        n = s["count"]
+        margin = z * math.sqrt(s["var"] / n) if n > 0 else 0.0
+        band[hour] = {
+            "mean": s["mean"],
+            "lo": round(s["mean"] - margin, 1),
+            "hi": round(s["mean"] + margin, 1),
+            "count": n,
+        }
+    return band
+
+
+def build_profile_samples(zone, days=7):
+    """Raw [(hour, intensity)] for a zone with a free historical feed, else None.
+
+    Only GB exposes raw half-hourly history for free today; the accumulated
+    ledger/community curves store aggregates without the per-sample detail the
+    significance test and confidence band need, so this returns None for them and
+    callers fall back to the spread heuristic.
+    """
+    if zone in ("GB", "GB-national"):
+        return uk_history_samples(days) or None
+    return None
 
 
 def cleanest_hour(profile):

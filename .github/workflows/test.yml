@@ -3,6 +3,7 @@ name: tests
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -11,7 +12,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # Boundary versions (oldest + newest) on every push/PR; the full matrix
+        # only on release tags. Catches the vast majority of version-specific
+        # breakage while spinning ~60% fewer runners on routine commits.
+        python-version: ${{ fromJSON(startsWith(github.ref, 'refs/tags/') && '["3.9", "3.10", "3.11", "3.12", "3.13"]' || '["3.9", "3.13"]') }}
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7

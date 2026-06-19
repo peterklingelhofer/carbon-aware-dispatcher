@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import requests
@@ -49,6 +50,7 @@ from providers import (
     eskom,
     grid_india,
     gridstatus,
+    nearest_clean_zones,
     ons_brazil,
     open_meteo,
     rte,
@@ -445,13 +447,22 @@ def rank_by_cost_carbon(candidates, cost_weight):
     return zone, intensity, label
 
 
+# Upper bound on concurrent zone checks. Each check is network-bound (the GIL is
+# released across the blocking HTTP call), so threads overlap the I/O wait and a
+# multi-zone run finishes in roughly one zone's latency instead of the sum. The
+# cap keeps us from opening a flood of sockets or hammering one provider at once.
+MAX_ZONE_WORKERS = 8
+
+
 def check_multiple_zones(
     zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token="", collect=None
 ):
     """Check carbon intensity for multiple zones, return the best green option.
 
-    Checks free-provider zones first (to avoid exhausting paid API rate limits),
-    then token-requiring zones. Falls back to Open-Meteo for zones without tokens.
+    Zone checks run concurrently across a small thread pool, so wall-clock time
+    (and therefore runner-on energy) tracks the slowest single zone rather than
+    the sum of all of them. Results are reduced in input order, so the chosen
+    zone, the skipped list, and the collected comparison stay deterministic.
 
     Returns (best_zone, best_intensity, best_runner_label, skipped) where
     skipped is a list of (zone, reason) for zones that could not be checked.
@@ -466,9 +477,9 @@ def check_multiple_zones(
     skipped = []
     green_candidates = []
 
-    # Sort: free providers first, then token-requiring ones.
-    # This avoids exhausting Electricity Maps rate limits (50 req/hr)
-    # when free providers could have answered the question.
+    # Sort: free providers first, then token-requiring ones. With concurrent
+    # checks the call count is unchanged (every zone is measured either way), but
+    # the order keeps logs and the deterministic reduction stable.
     from providers.open_meteo import ZONE_COORDINATES
 
     def _provider_cost(entry):
@@ -495,7 +506,13 @@ def check_multiple_zones(
 
     sorted_zones = sorted(zones_config, key=_provider_cost)
 
-    for entry in sorted_zones:
+    def _check_one(entry):
+        """Resolve the provider and measure one zone, in its own thread.
+
+        Captures the failure reason inside this thread (base records it
+        thread-locally), so a concurrent run still reports *why* each zone was
+        skipped instead of a flat "API error".
+        """
         zone = entry["zone"]
         label = entry.get("runner_label")
         provider = detect_provider(zone, entsoe_token)
@@ -506,27 +523,53 @@ def check_multiple_zones(
                 provider = PROVIDER_OPEN_METEO
                 print(f"  Zone {zone}: no electricity_maps_token, using Open-Meteo estimate")
             else:
-                reason = "no electricity_maps_token"
-                skipped.append((zone, reason))
-                continue
+                return {"zone": zone, "label": label, "skip": "no electricity_maps_token"}
 
-        is_green, intensity = check_carbon_intensity(
-            zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
-        )
+        try:
+            is_green, intensity = check_carbon_intensity(
+                zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
+            )
+        except Exception as exc:  # one zone's failure must not sink the rest
+            print(f"::warning::Zone {zone} check raised: {exc}")
+            return {"zone": zone, "label": label, "skip": "API error"}
+
+        skip = None
         if is_green is None:
             # Surface why it failed (auth failed / rate limited / network error /
             # ...) instead of a flat "API error", so users can act on it
-            skipped.append((zone, last_failure_reason() or "API error"))
-        elif intensity is not None:
-            # Record every measured zone (green or not) for the comparison panel
-            if collect is not None:
-                collect.append((zone, intensity))
-            if is_green:
-                green_candidates.append((zone, intensity, label))
-                if best_intensity is None or intensity < best_intensity:
-                    best_zone = zone
-                    best_intensity = intensity
-                    best_label = label
+            skip = last_failure_reason() or "API error"
+        return {
+            "zone": zone,
+            "label": label,
+            "is_green": is_green,
+            "intensity": intensity,
+            "skip": skip,
+        }
+
+    workers = min(MAX_ZONE_WORKERS, len(sorted_zones)) or 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_check_one, sorted_zones))
+    else:
+        results = [_check_one(entry) for entry in sorted_zones]
+
+    # Reduce in input order so the chosen zone, skipped, and collect are stable
+    for res in results:
+        if res["skip"] is not None:
+            skipped.append((res["zone"], res["skip"]))
+            continue
+        intensity = res["intensity"]
+        if intensity is None:
+            continue
+        # Record every measured zone (green or not) for the comparison panel
+        if collect is not None:
+            collect.append((res["zone"], intensity))
+        if res["is_green"]:
+            green_candidates.append((res["zone"], intensity, res["label"]))
+            if best_intensity is None or intensity < best_intensity:
+                best_zone = res["zone"]
+                best_intensity = intensity
+                best_label = res["label"]
 
     # When cost weighting is on, re-rank the green zones by a cost+carbon blend
     cost_weight = _cost_weight()
@@ -635,12 +678,26 @@ def expand_auto_zones(zones_str):
     # auto:escape-coal:ZONE escapes from a specific dirty zone
     if normalized.startswith("auto:escape-coal:"):
         dirty_zone = zones_str.strip().split(":", 2)[2].strip()
+        # Curated mappings win: they encode latency/region preferences beyond raw
+        # distance for the well-known dirty grids.
         alternatives = ESCAPE_COAL_MAPPINGS.get(dirty_zone)
         if alternatives:
             zones = [{"zone": z, "runner_label": None} for z in alternatives]
             return sort_auto_green_by_time(zones, utc_hour)
-        # Unknown dirty zone: use default escape zones
-        print(f"::warning::No escape mapping for '{dirty_zone}', using default clean zones")
+        # Without a curated mapping, compute the nearest clean grids from coordinates,
+        # so any locatable zone gets a sensible escape route without hand-curation.
+        dynamic = nearest_clean_zones(dirty_zone)
+        if dynamic:
+            print(
+                f"auto:escape-coal:{dirty_zone}: routing to nearest clean grids "
+                f"{', '.join(z['zone'] for z in dynamic)}"
+            )
+            return sort_auto_green_by_time(dynamic, utc_hour)
+        # Location unknown too; use default escape zones
+        print(
+            f"::warning::No escape mapping or location for '{dirty_zone}', "
+            "using default clean zones"
+        )
         return sort_auto_green_by_time(list(AUTO_ESCAPE_COAL_ZONES), utc_hour)
 
     return None
@@ -798,6 +855,83 @@ def estimate_emissions(intensity, job_minutes=None):
     return round(operational + _embodied_grams(), 1)
 
 
+def worth_waiting(
+    intensity_now, intensity_future, hours_until, energy_kwh, idle_kw=CI_JOB_POWER_KW
+):
+    """Optimal-stopping test: does blocking for a cleaner window beat running now?
+
+    Blocking with wait-for-green keeps the machine powered on, so waiting only
+    pays off when the carbon saved by running on the cleaner future grid exceeds
+    the carbon burned idling until then:
+
+        saved = max(0, I_now - I_future) * energy_kwh
+        idle  = idle_kw * hours_until * I_now   # idle energy, valued at today's grid
+
+    Using I_now to value the idle period is deliberately conservative (the grid
+    is usually cleaning up on the way to the window). Returns
+    (should_wait, saved_grams, idle_grams), failing toward running now when any
+    input is missing or non-positive.
+    """
+    if (
+        intensity_now is None
+        or intensity_future is None
+        or hours_until is None
+        or hours_until <= 0
+        or energy_kwh <= 0
+    ):
+        return False, 0.0, 0.0
+    saved = max(0.0, (intensity_now - intensity_future) * energy_kwh)
+    idle = max(0.0, idle_kw * hours_until * intensity_now)
+    return saved > idle, round(saved, 1), round(idle, 1)
+
+
+def allocate_shards(zone_intensities, shards, capacities=None):
+    """Emissions-optimal split of N divisible shards across zones (water-filling).
+
+    For divisible load (batch inference, embarrassingly-parallel jobs) the
+    per-shard emissions are linear in a zone's intensity, so the minimal-emissions
+    allocation is to fill the cleanest zone first, then the next, up to each
+    zone's capacity: the greedy fractional-knapsack / transportation optimum.
+
+    zone_intensities: iterable of (zone, intensity); zones with None intensity are
+    dropped. capacities: optional dict zone -> max shards (zones absent from the
+    map are unbounded; pass 0 to exclude one). Returns
+    (allocation, unplaced) where allocation is a list of (zone, shards, intensity)
+    cleanest-first and unplaced is any shards that capacity could not absorb.
+    """
+    rows = [(z, i) for z, i in zone_intensities if i is not None]
+    shards = int(shards)
+    if not rows or shards <= 0:
+        return [], max(0, shards)
+    rows.sort(key=lambda r: r[1])  # cleanest first
+    remaining = shards
+    out = []
+    for zone, intensity in rows:
+        if remaining <= 0:
+            break
+        cap = remaining if capacities is None else int(capacities.get(zone, remaining))
+        take = max(0, min(remaining, cap))
+        if take > 0:
+            out.append((zone, take, intensity))
+            remaining -= take
+    return out, remaining
+
+
+def allocation_emissions(allocation, energy_per_shard_kwh):
+    """gCO2 for an allocation: sum of shards x per-shard energy x zone intensity."""
+    return round(sum(n * energy_per_shard_kwh * i for _, n, i in allocation), 1)
+
+
+def even_split_emissions(zone_intensities, shards, energy_per_shard_kwh):
+    """gCO2 from spreading shards evenly across all candidates: the naive baseline."""
+    rows = [i for _, i in zone_intensities if i is not None]
+    shards = int(shards)
+    if not rows or shards <= 0:
+        return 0.0
+    per = shards / len(rows)
+    return round(sum(per * energy_per_shard_kwh * i for i in rows), 1)
+
+
 def carbon_equivalents(grams):
     """Translate grams of CO2 into relatable real-world equivalents.
 
@@ -861,6 +995,47 @@ def classify_tier(intensity, thresholds):
     if intensity <= amber:
         return "amber", f"{intensity:.0f} gCO2eq/kWh: trim non-critical work"
     return "red", f"{intensity:.0f} gCO2eq/kWh: defer heavy work"
+
+
+# A continuous version of the tier dial for carbon-aware autoscaling. The three
+# tiers are a coarse signal; this is the smooth one an autoscaler (KEDA/HPA, a
+# Ray driver, a batch fan-out) multiplies its replica/parallelism count by, so
+# the heaviest compute concentrates in the cleanest hours instead of toggling
+# fully on/off. CarbonScaler-style (Hanafy et al., 2023).
+DEFAULT_SCALE_MIN = 0.25
+DEFAULT_SCALE_MAX = 1.0
+
+
+def compute_carbon_scale(
+    intensity, thresholds, scale_min=DEFAULT_SCALE_MIN, scale_max=DEFAULT_SCALE_MAX
+):
+    """Map carbon intensity to a scale factor in [scale_min, scale_max].
+
+    At or below the green boundary -> scale_max (run everything); at or above the
+    amber boundary -> scale_min (run a floor so work still makes progress);
+    linearly interpolated between. Unknown intensity returns scale_max: fail
+    open, never throttle on missing data.
+    """
+    if intensity is None:
+        return scale_max
+    green, amber = thresholds
+    if intensity <= green:
+        return scale_max
+    if intensity >= amber:
+        return scale_min
+    frac = (intensity - green) / (amber - green)
+    return round(scale_max - frac * (scale_max - scale_min), 3)
+
+
+def _scale_bounds():
+    """Read the autoscale floor/ceiling from env, falling back to sane defaults."""
+    lo = _soft_float("SCALE_MIN")
+    hi = _soft_float("SCALE_MAX")
+    scale_min = lo if lo is not None and lo >= 0 else DEFAULT_SCALE_MIN
+    scale_max = hi if hi is not None and hi > 0 else DEFAULT_SCALE_MAX
+    if scale_max < scale_min:
+        return DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX
+    return scale_min, scale_max
 
 
 # Set once per process when the cumulative ledger is updated, so write_job_summary
@@ -1456,6 +1631,12 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
     if tier != "unknown":
         set_output("carbon_tier", tier)
         set_output("carbon_tier_reason", tier_reason)
+
+    # Continuous autoscaling signal: a factor downstream multiplies its replica
+    # or parallelism count by, concentrating heavy compute in the cleanest hours.
+    scale_min, scale_max = _scale_bounds()
+    scale = compute_carbon_scale(intensity, thresholds, scale_min, scale_max)
+    set_output("carbon_scale", str(scale))
 
     # Provenance: which provider produced this reading, and whether it's a grid
     # measurement or a modeled estimate, so the number's origin is never opaque.

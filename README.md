@@ -282,6 +282,11 @@ Route jobs from a coal-dependent region to the nearest clean alternative:
     max_carbon_intensity: '150'
 ```
 
+Well-known dirty grids use curated routes (tuned for latency/region). Any other
+zone with known coordinates is routed automatically to its geographically
+nearest clean grids; no hand-curated mapping needed, so coverage extends to any
+locatable origin (e.g. `auto:escape-coal:VN`).
+
 ## Smart wait & queue strategy
 
 ### Wait for a green window
@@ -333,6 +338,45 @@ shifts to the cleanest hours.
 why). Use it to drive matrix includes, conditional steps, or job-level `if:`.
 See [`examples/adaptive-ci.yml`](examples/adaptive-ci.yml) for a full matrix that
 scales test suites to the tier.
+
+## Carbon-aware autoscaling (the continuous dial)
+
+The three tiers are coarse; `carbon_scale` is the smooth version, a factor in
+`[scale_min, scale_max]` that ramps linearly from `scale_max` at or below the
+green boundary down to `scale_min` at or above the amber boundary. Multiply your
+replica count, batch parallelism, or test-shard count by it so the heaviest
+compute concentrates in the cleanest hours instead of toggling fully on/off
+(CarbonScaler-style). It fails open to `scale_max` when intensity is unknown, so
+missing data never throttles you.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    tier_thresholds: '150,300'   # ramp endpoints
+    scale_min: '0.25'            # floor: still make progress when dirty
+```
+
+From the CLI (for KEDA/HPA, a Ray driver, or a cron that resizes a fleet):
+
+```bash
+carbon-aware scale --zones GB                      # -> 0.625
+carbon-aware scale --zones GB --max-replicas 16    # -> 10  (ceil(0.625 x 16))
+```
+
+### Splitting divisible work across regions
+
+For divisible batch or inference, the cleanest single region isn't enough if it
+can't hold the whole load. `split` water-fills N shards into the cleanest
+reachable zones first, respecting optional per-zone capacity. This is the
+emissions-optimal allocation for linear per-shard cost:
+
+```bash
+# Place 100 shards, cleanest-first, capped per region; show the saving vs even
+carbon-aware split --zones CISO,GB,FR --shards 100 \
+  --capacity '{"FR":40,"GB":40,"CISO":40}' --energy-kwh 0.5
+#  -> FR: 40  GB: 40  CISO: 20   emits ~X g vs ~Y g even split (saves ~Z g)
+```
 
 ## Green SLA
 
@@ -411,7 +455,7 @@ Output (job summary):
 | Zone | Provider | Token | Status | Detail |
 |---|---|---|---|---|
 | `GB` | uk_carbon_intensity | n/a | OK | 203 gCO2eq/kWh |
-| `FR` | open_meteo | n/a | OK | 550 gCO2eq/kWh |
+| `FR` | open_meteo | n/a | OK | 56 gCO2eq/kWh (estimated) |
 
 See [`examples/doctor.yml`](examples/doctor.yml).
 
@@ -443,6 +487,23 @@ reflects real avoided emissions) rather than average intensity:
 ```bash
 carbon-aware marginal --region CAISO_NORTH --max-percentile 33 && ./train.sh
 ```
+
+### Free marginal estimate (no WattTime, US/EIA zones)
+
+WattTime's free tier only covers `CAISO_NORTH`. For any EIA (US) zone you can
+*estimate* the marginal rate for free: `marginal-estimate` regresses the change
+in emissions on the change in generation across recent hours (the marginal
+generator is the one that moves to meet a load change), so you get a marginal
+number without a key. The `r_squared` says how much the load change explains,
+i.e. how much to trust it.
+
+```bash
+carbon-aware marginal-estimate --zones PJM --json
+#  -> {"marginal": 510, "average": 360, "r_squared": 0.78, "n": 96}
+```
+
+It's an estimate: a free middle ground between the
+average (which overstates avoided emissions) and WattTime's measured marginal.
 
 ## Weekly digest
 
@@ -648,6 +709,10 @@ carbon-aware check --zones auto:green --max-carbon 200 && ./train.sh
 # Or block until a green window opens (up to 6h), then run
 carbon-aware wait-for-green --zones GB,CISO --max-carbon 200 --max-wait 6h && ./train.sh
 
+# Add --energy-kwh for optimal stopping: it runs now instead of blocking when
+# idling for the cleaner forecast window would emit more carbon than it saves
+carbon-aware wait-for-green --zones GB --max-wait 6h --energy-kwh 0.2 && ./job.sh
+
 # Plan ahead: print the cleanest upcoming window from forecasts
 carbon-aware best-window --zones GB --hours 24 --json
 
@@ -690,10 +755,18 @@ carbon-aware score --zones GB --badge-file carbon-posture.json
 carbon-aware advise --zones GB --dir .github/workflows --energy-kwh 5
 #  -> 1. [shift] ...  2. [throttle] ...  with kg/yr each
 
+# Grade our own forecasts over time: run on a schedule; it resolves past
+# predictions against reality and reports the bias (the offset to trust less)
+carbon-aware forecast-accuracy --zones GB --store .carbon/forecast-log.json
+#  -> n=42, MAE 18.4, bias +6.1 gCO2eq/kWh; subtract 6.1 from forecasts
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
 # Gut-check whether scheduling is even worth it here (flat grids: no)
+# Where raw history exists (GB), this runs a one-way ANOVA F-test, so a curve
+# that only looks bumpy from a few noisy samples is called out as not worth it.
+# `curve` adds a median cleanest hour and a 95% confidence band per hour.
 carbon-aware worth-it --zones GB    # exit 0 worth it, 1 not, 2 can't assess
 ```
 
@@ -771,6 +844,15 @@ for nothing.
 
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
 stderr; stdout carries only the result (add `--json` for machine output).
+
+Grid feeds only refresh every 5-30 min, so composed runs can reuse a recent
+reading instead of re-fetching: pass `--cache-ttl 300` (or set
+`CARBON_CACHE_TTL=300`) to cache reads for 5 minutes on the host. The container
+and GitHub Action enable a 5-minute cache by default (set `0` to disable). It
+caches only the public reading, never the token-bearing URL. When a cached entry
+expires, it revalidates with `If-None-Match` / `If-Modified-Since`, so a provider
+that supports ETags answers with a tiny `304 Not Modified` instead of resending
+the whole payload, saving bandwidth and energy on both ends.
 
 For a container (no Python needed), pull the published image or build locally:
 
@@ -855,6 +937,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `grid_clean` | `true` if a zone was clean enough, `false` otherwise. |
 | `carbon_intensity` | Intensity in gCO2eq/kWh, or `unknown` on error. |
 | `carbon_tier` | Adaptive-CI dial: `green` / `amber` / `red` (plus `carbon_tier_reason`). |
+| `carbon_scale` | Continuous autoscaling factor in `[scale_min, scale_max]`; multiply your replica/parallelism count by it. See [Carbon-aware autoscaling](#carbon-aware-autoscaling-the-continuous-dial). |
 | `budget_used_pct` / `budget_remaining_grams` / `budget_exceeded` / `budget_state` | Monthly carbon budget status (needs `monthly_budget_grams` + `ledger`). |
 | `selected_cost_usd_hr` | Representative price of the selected zone when `cost_weight` > 0. |
 | `grid_zone` | Selected zone. |
@@ -1074,7 +1157,7 @@ labels the estimates "(estimated)" so the two are easy to tell apart.
 
 ### How carbon intensity is calculated
 
-Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
+Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo modulates each zone's approximate annual-average intensity (a per-zone prior from public yearly data) by real-time solar irradiance and wind speed, so a structurally clean grid (e.g. nuclear France, hydro Norway) reads clean rather than defaulting to a fossil average.
 
 ### Consumption-based intensity (EU)
 

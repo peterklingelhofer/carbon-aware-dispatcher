@@ -1,5 +1,6 @@
 """Tests for carbon-aware dispatcher."""
 
+import json
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -191,7 +192,7 @@ class TestDetectProvider:
 
 
 class TestApiRequest:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_no_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -206,7 +207,7 @@ class TestApiRequest:
 class TestFailureReason:
     """request() classifies why a call failed, for actionable skip reasons."""
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_failed(self, mock_get):
         from providers import base
 
@@ -214,7 +215,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "auth failed"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_rate_limited(self, mock_get):
         from providers import base
 
@@ -222,7 +223,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "rate limited"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_network_error(self, mock_get):
         from providers import base
 
@@ -230,7 +231,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "network error"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_resets_reason(self, mock_get):
         from providers import base
 
@@ -242,15 +243,20 @@ class TestFailureReason:
     def test_dispatcher_surfaces_reason(self, mock_check):
         from providers import base
 
-        # check_carbon_intensity returns (None, None); base recorded a reason
-        mock_check.return_value = (None, None)
-        base._set_failure_reason("auth failed")
+        # check_carbon_intensity returns (None, None) and records the reason in
+        # the same thread it ran on, exactly as the real request() does; the
+        # dispatcher then reads it back thread-locally.
+        def _fail(*_a, **_k):
+            base._set_failure_reason("auth failed")
+            return (None, None)
+
+        mock_check.side_effect = _fail
         _zone, _i, _label, skipped = check_grid.check_multiple_zones(
             [{"zone": "CISO", "runner_label": None}], 250
         )
         assert skipped == [("CISO", "auth failed")]
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_with_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -261,7 +267,7 @@ class TestFailureReason:
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("auth-token") == "my-token"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_retries_on_500(self, mock_get):
         fail = mock.Mock(status_code=500, text="Server Error")
         success = mock.Mock(status_code=200, json=lambda: {"ok": True})
@@ -270,26 +276,125 @@ class TestFailureReason:
         assert result == {"ok": True}
         assert mock_get.call_count == 2
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_returns_none_on_all_failures(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
         result = api_request("https://example.com")
         assert result is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_error_no_retry(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=403, text="Forbidden")
         result = api_request("https://example.com")
         assert result is None
         assert mock_get.call_count == 1
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_invalid_json(self, mock_get):
         resp = mock.Mock(status_code=200, text="not json")
         resp.json.side_effect = ValueError("bad")
         mock_get.return_value = resp
         result = api_request("https://example.com")
         assert result is None
+
+
+class TestRequestCache:
+    @pytest.fixture
+    def cache_env(self, tmp_path):
+        from providers import base
+
+        prev_ttl = os.environ.get("CARBON_CACHE_TTL")
+        prev_dir = os.environ.get("CARBON_CACHE_DIR")
+        os.environ["CARBON_CACHE_DIR"] = str(tmp_path)
+        yield base
+        for key, prev in (("CARBON_CACHE_TTL", prev_ttl), ("CARBON_CACHE_DIR", prev_dir)):
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_caches_get_json_within_ttl(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        first = cache_env.request("https://grid.example/intensity")
+        second = cache_env.request("https://grid.example/intensity")
+        assert first == second == {"v": 1}
+        assert mock_get.call_count == 1  # second served from cache
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_disabled_by_default(self, mock_get, cache_env):
+        os.environ.pop("CARBON_CACHE_TTL", None)
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/intensity")
+        cache_env.request("https://grid.example/intensity")
+        assert mock_get.call_count == 2  # no caching when TTL unset
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_expired_entry_refetched(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/intensity")
+        # Backdate the cached entry beyond the TTL
+        path = cache_env._cache_path("GET", "https://grid.example/intensity", "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+        cache_env.request("https://grid.example/intensity")
+        assert mock_get.call_count == 2
+
+    @mock.patch("providers.base._SESSION.post")
+    def test_post_not_cached(self, mock_post, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_post.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        assert mock_post.call_count == 2  # writes are never cached
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_etag_revalidation_serves_cache_on_304(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        ok = mock.Mock(status_code=200, json=lambda: {"v": 1}, headers={"ETag": "abc"})
+        not_modified = mock.Mock(status_code=304, headers={})
+        mock_get.side_effect = [ok, not_modified]
+        url = "https://grid.example/intensity"
+
+        assert cache_env.request(url) == {"v": 1}  # 200, cached with ETag
+        # Make the entry stale so the next call revalidates instead of using TTL
+        path = cache_env._cache_path("GET", url, "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+
+        assert cache_env.request(url) == {"v": 1}  # 304 -> served from cache
+        assert mock_get.call_count == 2
+        sent = mock_get.call_args.kwargs["headers"]
+        assert sent.get("If-None-Match") == "abc"  # conditional request was made
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_304_refreshes_freshness(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        ok = mock.Mock(status_code=200, json=lambda: {"v": 9}, headers={"ETag": "z"})
+        not_modified = mock.Mock(status_code=304, headers={})
+        mock_get.side_effect = [ok, not_modified]
+        url = "https://grid.example/x"
+
+        cache_env.request(url)
+        path = cache_env._cache_path("GET", url, "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+
+        cache_env.request(url)  # 304 -> bumps ts back to now
+        # A third call is within TTL again, so it serves from cache (no 3rd GET)
+        assert cache_env.request(url) == {"v": 9}
+        assert mock_get.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +625,31 @@ class TestEiaFuelMixToIntensity:
         assert eia._fuel_mix_to_intensity(data) == 820
 
 
+class TestEiaFuelMixSeries:
+    @mock.patch("providers.eia.api_request")
+    def test_series_totals_oldest_first(self, mock_api):
+        # Two periods (API returns newest first); series should be oldest-first
+        # with (generation, generation-weighted co2) per period.
+        mock_api.return_value = {
+            "response": {
+                "data": [
+                    {"period": "2026-03-09T07", "fueltype": "NG", "value": 100},
+                    {"period": "2026-03-09T07", "fueltype": "WND", "value": 100},
+                    {"period": "2026-03-09T06", "fueltype": "NG", "value": 50},
+                    {"period": "2026-03-09T06", "fueltype": "WND", "value": 100},
+                ]
+            }
+        }
+        series = eia.fuel_mix_series("CISO")
+        # Oldest (06): gen 150, co2 50*490 + 100*12 = 25700
+        # Newest (07): gen 200, co2 100*490 + 100*12 = 50200
+        assert series == [(150.0, 25700.0), (200.0, 50200.0)]
+
+    @mock.patch("providers.eia.api_request", return_value=None)
+    def test_empty_on_no_data(self, _mock_api):
+        assert eia.fuel_mix_series("CISO") == []
+
+
 class TestEiaCheckCarbonIntensity:
     @mock.patch("providers.eia.api_request")
     def test_green_grid(self, mock_api):
@@ -737,7 +867,7 @@ class TestElectricityMapsGetHistoryTrend:
 
 
 class TestGridstatusApiRequest:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -748,7 +878,7 @@ class TestGridstatusApiRequest:
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("x-api-key") == "my-key"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_error(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
         result = api_request_with_header(
@@ -1033,11 +1163,10 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_picks_greenest(self, _mock_detect, mock_check):
-        mock_check.side_effect = [
-            (True, 200),  # zone A
-            (True, 50),  # zone B (best)
-            (False, 400),  # zone C
-        ]
+        # Map by zone: zones are checked concurrently, so the
+        # nth call is not guaranteed to be the nth zone.
+        by_zone = {"CISO": (True, 200), "NYIS": (True, 50), "ERCO": (False, 400)}
+        mock_check.side_effect = lambda zone, *a, **k: by_zone[zone]
         zones = [
             {"zone": "CISO", "runner_label": "label-a"},
             {"zone": "NYIS", "runner_label": "label-b"},
@@ -1052,7 +1181,7 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_dirty(self, _mock_detect, mock_check):
-        mock_check.side_effect = [(False, 400), (False, 500)]
+        mock_check.return_value = (False, 400)
         zones = [{"zone": "ERCO"}, {"zone": "PJM"}]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
@@ -1060,7 +1189,7 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_errors(self, _mock_detect, mock_check):
-        mock_check.side_effect = [(None, None), (None, None)]
+        mock_check.return_value = (None, None)
         zones = [{"zone": "CISO"}, {"zone": "ERCO"}]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
@@ -1868,7 +1997,7 @@ class TestEntsoeParseGenerationXml:
 
 
 class TestEntsoeCheckCarbonIntensity:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_green(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1887,7 +2016,7 @@ class TestEntsoeCheckCarbonIntensity:
         # = (9600 + 98000) / 1000 = 107.6 -> 108
         assert intensity == 108
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_dirty(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1915,21 +2044,21 @@ class TestEntsoeCheckCarbonIntensity:
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_failure(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "bad-token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_rate_limit(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=429, text="Too Many Requests")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_network_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
@@ -2041,8 +2170,9 @@ class TestOpenMeteoEstimateIntensity:
 
 
 class TestOpenMeteoCheckCarbonIntensity:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_green_zone(self, mock_get):
+        # A clean grid (France ~56 prior) reads clean even modulated by weather
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {
@@ -2052,12 +2182,13 @@ class TestOpenMeteoCheckCarbonIntensity:
                 }
             },
         )
-        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        is_green, intensity = open_meteo.check_carbon_intensity("FR", 300)
         assert is_green is True
-        assert intensity == round(550 * 0.60 * 0.75)
+        assert intensity == round(56 * 0.60 * 0.75)
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_dirty_zone(self, mock_get):
+        # A coal grid (South Africa ~700 prior) sits at its prior when calm/dark
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {
@@ -2069,14 +2200,27 @@ class TestOpenMeteoCheckCarbonIntensity:
         )
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
         assert is_green is False
-        assert intensity == 550
+        assert intensity == 700
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_clean_zone_not_misread_as_dirty(self, mock_get):
+        # Regression: before per-zone priors, nuclear France read ~550 at night
+        # (≈7x too high) and would be wrongly skipped as dirty. Now it tracks
+        # its ~56 prior even with zero sun and no wind.
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {"current": {"global_tilted_irradiance": 0, "wind_speed_10m": 0}},
+        )
+        is_green, intensity = open_meteo.check_carbon_intensity("FR", 100)
+        assert is_green is True
+        assert intensity == 56
 
     def test_unknown_zone_no_coords(self):
         is_green, intensity = open_meteo.check_carbon_intensity("XX-NONE", 300)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_with_explicit_lat_lon(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2090,14 +2234,14 @@ class TestOpenMeteoCheckCarbonIntensity:
         is_green, intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
         assert is_green is True
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_non_200_response(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
@@ -2106,7 +2250,7 @@ class TestOpenMeteoCheckCarbonIntensity:
 
 
 class TestOpenMeteoForecast:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_finds_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2118,11 +2262,13 @@ class TestOpenMeteoForecast:
                 }
             },
         )
-        dt, intensity = open_meteo.get_forecast("ZA", 300)
+        # ZA prior ~700: the dark 06:00 hour stays dirty, midday sun+wind
+        # (700*0.45=315) crosses a 350 threshold, so the green window is 12:00
+        dt, intensity = open_meteo.get_forecast("ZA", 350)
         assert dt is not None
         assert "12:00" in dt
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_no_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2420,6 +2566,108 @@ class TestCarbonTier:
     def test_classify_negative_intensity_is_green(self):
         # Negative intensity should not crash; treated as cleanest (green)
         assert check_grid.classify_tier(-10, (150, 300))[0] == "green"
+
+
+class TestWorthWaiting:
+    def test_waits_when_savings_beat_idle(self):
+        # 1 kWh job, grid drops 300 -> 50 in 1h. Saved = 250 g; idle = 0.05*1*300
+        # = 15 g. Worth waiting.
+        should, saved, idle = check_grid.worth_waiting(300, 50, 1.0, 1.0)
+        assert should is True
+        assert saved == 250.0
+        assert idle == 15.0
+
+    def test_runs_now_when_idle_dominates(self):
+        # Tiny improvement (300 -> 290) but a 20h wait on a small job: idle wins.
+        should, saved, idle = check_grid.worth_waiting(300, 290, 20.0, 0.1)
+        assert should is False
+
+    def test_future_dirtier_never_waits(self):
+        should, saved, _ = check_grid.worth_waiting(100, 200, 1.0, 5.0)
+        assert should is False
+        assert saved == 0.0
+
+    def test_missing_inputs_fail_to_run_now(self):
+        assert check_grid.worth_waiting(None, 50, 1.0, 1.0)[0] is False
+        assert check_grid.worth_waiting(300, 50, 0, 1.0)[0] is False
+        assert check_grid.worth_waiting(300, 50, 1.0, 0)[0] is False
+
+
+class TestAllocateShards:
+    def test_all_to_cleanest_when_unbounded(self):
+        alloc, unplaced = check_grid.allocate_shards([("GB", 200), ("FR", 50)], 10)
+        assert alloc == [("FR", 10, 50)]
+        assert unplaced == 0
+
+    def test_fills_cleanest_first_with_capacity(self):
+        alloc, unplaced = check_grid.allocate_shards(
+            [("GB", 200), ("FR", 50), ("DE", 400)], 10, {"FR": 4, "GB": 3, "DE": 10}
+        )
+        # FR (cleanest) takes its 4, GB next takes 3, DE takes the last 3
+        assert alloc == [("FR", 4, 50), ("GB", 3, 200), ("DE", 3, 400)]
+        assert unplaced == 0
+
+    def test_reports_unplaced_when_capacity_short(self):
+        alloc, unplaced = check_grid.allocate_shards([("FR", 50)], 10, {"FR": 4})
+        assert alloc == [("FR", 4, 50)]
+        assert unplaced == 6
+
+    def test_zero_capacity_excludes_zone(self):
+        alloc, _ = check_grid.allocate_shards([("FR", 50), ("GB", 200)], 5, {"FR": 0})
+        assert alloc == [("GB", 5, 200)]
+
+    def test_drops_none_intensity(self):
+        alloc, _ = check_grid.allocate_shards([("GB", None), ("FR", 50)], 3)
+        assert alloc == [("FR", 3, 50)]
+
+    def test_emissions_and_even_split(self):
+        alloc, _ = check_grid.allocate_shards([("FR", 50), ("GB", 250)], 4, {"FR": 2, "GB": 2})
+        # 2 shards FR @ 1 kWh @ 50 + 2 @ 250 = 100 + 500 = 600
+        assert check_grid.allocation_emissions(alloc, 1.0) == 600.0
+        # even split: 2 @ 50 + 2 @ 250 = 600 (same here, both capacity-limited)
+        assert check_grid.even_split_emissions([("FR", 50), ("GB", 250)], 4, 1.0) == 600.0
+
+    def test_optimal_beats_even_split(self):
+        zones = [("FR", 50), ("GB", 250)]
+        alloc, _ = check_grid.allocate_shards(zones, 4)  # all to FR
+        opt = check_grid.allocation_emissions(alloc, 1.0)  # 4*50 = 200
+        even = check_grid.even_split_emissions(zones, 4, 1.0)  # 2*50 + 2*250 = 600
+        assert opt < even
+
+
+class TestComputeCarbonScale:
+    def test_clean_returns_max(self):
+        assert check_grid.compute_carbon_scale(100, (150, 300)) == 1.0
+
+    def test_dirty_returns_min(self):
+        assert check_grid.compute_carbon_scale(400, (150, 300)) == 0.25
+
+    def test_boundaries_inclusive(self):
+        assert check_grid.compute_carbon_scale(150, (150, 300)) == 1.0
+        assert check_grid.compute_carbon_scale(300, (150, 300)) == 0.25
+
+    def test_linear_interpolation_midpoint(self):
+        # Halfway between 150 and 300 -> halfway between 1.0 and 0.25 = 0.625
+        assert check_grid.compute_carbon_scale(225, (150, 300)) == 0.625
+
+    def test_unknown_fails_open_to_max(self):
+        assert check_grid.compute_carbon_scale(None, (150, 300)) == 1.0
+
+    def test_custom_bounds(self):
+        # Floor of 0.5, ceiling of 2.0; dirty -> floor
+        assert check_grid.compute_carbon_scale(400, (150, 300), 0.5, 2.0) == 0.5
+        assert check_grid.compute_carbon_scale(100, (150, 300), 0.5, 2.0) == 2.0
+
+    def test_scale_bounds_from_env(self):
+        with mock.patch.dict(os.environ, {"SCALE_MIN": "0.1", "SCALE_MAX": "3"}):
+            assert check_grid._scale_bounds() == (0.1, 3.0)
+
+    def test_scale_bounds_rejects_inverted(self):
+        with mock.patch.dict(os.environ, {"SCALE_MIN": "2", "SCALE_MAX": "1"}):
+            assert check_grid._scale_bounds() == (
+                check_grid.DEFAULT_SCALE_MIN,
+                check_grid.DEFAULT_SCALE_MAX,
+            )
 
     def test_summary_sets_tier_output(self):
         with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
@@ -3559,6 +3807,46 @@ class TestAutoEscapeCoalPreset:
         for dirty, alternatives in ESCAPE_COAL_MAPPINGS.items():
             assert len(alternatives) > 0, f"No alternatives for {dirty}"
 
+    def test_escape_coal_dynamic_for_uncurated_zone(self):
+        # Vietnam has no curated mapping but has coordinates, so it routes to a
+        # short list of the nearest clean grids (5), not the full default set.
+        result = check_grid.expand_auto_zones("auto:escape-coal:VN")
+        assert result is not None and len(result) == 5
+        pool = {z["zone"] for z in AUTO_ESCAPE_COAL_ZONES}
+        assert {z["zone"] for z in result} <= pool
+
+    def test_escape_coal_unlocatable_zone_uses_default(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:ZZ-NOWHERE")
+        assert result is not None
+        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
+
+
+class TestNearestCleanZones:
+    def test_returns_nearest_first(self):
+        from providers import _haversine_km, _zone_latlon, nearest_clean_zones
+
+        result = nearest_clean_zones("VN")  # Hanoi
+        assert len(result) == 5
+        origin = _zone_latlon("VN")
+        dists = [_haversine_km(origin, _zone_latlon(z["zone"])) for z in result]
+        assert dists == sorted(dists)  # nearest-first ordering
+
+    def test_respects_n(self):
+        from providers import nearest_clean_zones
+
+        assert len(nearest_clean_zones("PL", n=3)) == 3
+
+    def test_none_for_unlocatable(self):
+        from providers import nearest_clean_zones
+
+        assert nearest_clean_zones("ZZ-NOWHERE") is None
+
+    def test_haversine_known_distance(self):
+        from providers import _haversine_km
+
+        # London (51.5, -0.13) to Paris (48.85, 2.35) is ~340 km
+        assert 320 < _haversine_km((51.5, -0.13), (48.85, 2.35)) < 360
+
 
 class TestParseZonesAutoPresets:
     def test_parse_auto_cleanest(self):
@@ -4643,7 +4931,7 @@ class TestCanadaProvider:
         assert is_green is True
         assert intensity == 30
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_ieso_ontario_parse(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, text=_IESO_XML)
         is_green, intensity = canada.check_carbon_intensity("CA-ON", 250)
@@ -4652,7 +4940,7 @@ class TestCanadaProvider:
         assert intensity == 51
         assert is_green is True
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_aeso_alberta_parse(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, text=_AESO_HTML)
         is_green, intensity = canada.check_carbon_intensity("CA-AB", 250)
@@ -4661,7 +4949,7 @@ class TestCanadaProvider:
         assert intensity == 536
         assert is_green is False
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="err")
         assert canada.check_carbon_intensity("CA-ON", 250) == (None, None)
@@ -4698,7 +4986,7 @@ class TestTaiwanProvider:
     def test_detect_provider(self):
         assert detect_provider("TW") == PROVIDER_TAIWAN
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_parse_generation(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, content=_TAIPOWER_JSON)
         is_green, intensity = taiwan.check_carbon_intensity("TW", 250)
@@ -4708,7 +4996,7 @@ class TestTaiwanProvider:
         assert intensity == 513
         assert is_green is False
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, content=b"", text="err")
         assert taiwan.check_carbon_intensity("TW", 250) == (None, None)

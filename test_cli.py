@@ -55,6 +55,46 @@ class TestCheck:
         assert rc == cli.EXIT_NODATA
 
 
+class TestScale:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_clean_grid_full_scale(self, cmz, capsys):
+        cmz.return_value = ("GB", 80, None, [])  # below green boundary
+        rc = cli.main(["scale", "--zones", "GB"])
+        assert rc == cli.EXIT_GREEN
+        assert capsys.readouterr().out.strip() == "1.0"
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_dirty_grid_floor_scale(self, cmz, capsys):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.append(("GB", 400))  # above amber boundary
+            return (None, None, None, [])
+
+        cmz.side_effect = fake
+        rc = cli.main(["scale", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN  # a scaling signal always exits 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["scale"] == 0.25 and out["intensity"] == 400
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_max_replicas_rounds_up(self, cmz, capsys):
+        cmz.return_value = ("GB", 80, None, [])  # full scale -> all replicas
+        rc = cli.main(["scale", "--zones", "GB", "--max-replicas", "10"])
+        assert rc == cli.EXIT_GREEN
+        assert capsys.readouterr().out.strip() == "10"
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_data_fails_open(self, cmz, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["scale", "--zones", "GB", "--max-replicas", "8"])
+        assert rc == cli.EXIT_NODATA
+        # fail open: still recommends full fleet rather than zero
+        assert capsys.readouterr().out.strip() == "8"
+
+
 class TestWait:
     @mock.patch("cli.time.sleep")
     @mock.patch("cli.evaluate")
@@ -74,6 +114,161 @@ class TestWait:
         rc = cli.main(["wait-for-green", "--max-wait", "30s", "--poll", "60s"])
         assert rc == cli.EXIT_DIRTY
         assert "TIMEOUT" in capsys.readouterr().out
+
+
+class TestSplit:
+    @staticmethod
+    def _measured(pairs):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.extend(pairs)
+            return (None, None, None, [])
+
+        return fake
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_water_fills_cleanest_first(self, cmz, capsys):
+        cmz.side_effect = self._measured([("GB", 200), ("FR", 50)])
+        rc = cli.main(
+            ["split", "--zones", "GB,FR", "--shards", "6", "--capacity", '{"FR":4}', "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        alloc = {a["zone"]: a["shards"] for a in out["allocation"]}
+        assert alloc == {"FR": 4, "GB": 2} and out["unplaced"] == 0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_reports_saving_vs_even_split(self, cmz, capsys):
+        cmz.side_effect = self._measured([("FR", 50), ("GB", 250)])
+        rc = cli.main(["split", "--zones", "FR,GB", "--shards", "4", "--energy-kwh", "1", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["emitted_grams"] == 200.0  # all 4 to FR
+        assert out["even_split_grams"] == 600.0
+        assert out["saved_grams"] == 400.0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_data_exit_2(self, cmz, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["split", "--zones", "GB", "--shards", "4"])
+        assert rc == cli.EXIT_NODATA
+
+    def test_bad_capacity_is_usage_error(self, capsys):
+        rc = cli.main(["split", "--zones", "GB", "--shards", "4", "--capacity", "not-json"])
+        assert rc == cli.EXIT_USAGE
+
+
+class TestForecastAccuracy:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_resolves_seeded_prediction(self, cmz, qf, tmp_path, capsys):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.append(("GB", 100))  # actual reading now
+            return (None, None, None, [])
+
+        cmz.side_effect = fake
+        qf.return_value = ("GB", "2026-09-01T03:00Z", 150)  # a fresh forecast to log
+
+        from datetime import datetime, timedelta, timezone
+
+        store = tmp_path / "log.json"
+        target = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%MZ")
+        store.write_text(
+            json.dumps(
+                {
+                    "predictions": [
+                        {
+                            "zone": "GB",
+                            "predicted_at": target,
+                            "predicted_intensity": 130,
+                            "made_at": "x",
+                            "actual": None,
+                            "error": None,
+                        }
+                    ]
+                }
+            )
+        )
+        rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(store), "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["resolved_now"] == 1
+        assert out["n"] == 1 and out["bias"] == 30.0  # predicted 130 vs actual 100
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_reading_exit_2(self, cmz, tmp_path, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(tmp_path / "l.json")])
+        assert rc == cli.EXIT_NODATA
+
+
+class TestMarginalEstimate:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("providers.eia.fuel_mix_series")
+    def test_estimates_from_series(self, series, capsys):
+        series.return_value = [
+            (100.0, 100 * 24),
+            (130.0, 100 * 24 + 30 * 490),
+            (190.0, 100 * 24 + 90 * 490),
+        ]
+        rc = cli.main(["marginal-estimate", "--zones", "CISO", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["marginal"] == 490 and out["r_squared"] == 1.0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("providers.eia.fuel_mix_series", return_value=[])
+    def test_no_series_exit_2(self, _series, capsys):
+        rc = cli.main(["marginal-estimate", "--zones", "GB"])
+        assert rc == cli.EXIT_NODATA
+
+
+class TestWaitOptimalStopping:
+    @mock.patch("cli.time.sleep")
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.evaluate")
+    def test_runs_now_when_waiting_not_worth_it(self, ev, qf, sleep, capsys):
+        # Dirty now (300), but the cleanest forecast window is only slightly
+        # cleaner and ~20h out, so idling that long emits more than it saves.
+        ev.return_value = {"status": "dirty", "zone": "GB", "intensity": 300}
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=20)).strftime("%Y-%m-%dT%H:%MZ")
+        qf.return_value = ("GB", future, 280)
+        rc = cli.main(
+            ["wait-for-green", "--zones", "GB", "--max-wait", "24h", "--energy-kwh", "1", "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "run_now"
+        sleep.assert_not_called()
+
+    @mock.patch("cli.time.sleep")
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.evaluate")
+    def test_waits_when_worth_it(self, ev, qf, sleep, capsys):
+        # Big drop (300 -> 50) soon (1h): waiting clearly pays, so it blocks and
+        # then catches the green window.
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%MZ")
+        qf.return_value = ("GB", future, 50)
+        ev.side_effect = [
+            {"status": "dirty", "zone": "GB", "intensity": 300},
+            {"status": "green", "zone": "GB", "intensity": 50},
+        ]
+        rc = cli.main(
+            ["wait-for-green", "--zones", "GB", "--max-wait", "6h", "--poll", "1m"]
+            + ["--energy-kwh", "5"]
+        )
+        assert rc == cli.EXIT_GREEN
+        sleep.assert_called_once()
 
 
 class TestBestWindow:
@@ -622,15 +817,30 @@ class TestValidateCurves:
 
 
 class TestCurve:
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_curve_json(self, bp, capsys):
+    def test_curve_json(self, bp, _samples, capsys):
         bp.return_value = {12: 82.0, 19: 145.0}
         rc = cli.main(["curve", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
         assert out["cleanest_hour"] == 12
         assert out["spread_pct"] > 0
+        assert "confidence_band" not in out  # no raw samples -> no band
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_curve_adds_band_and_median(self, bp, samples, capsys):
+        bp.return_value = {12: 80.0, 19: 160.0}
+        # Hour 12 has a spike (1000) the mean would chase but the median ignores
+        samples.return_value = [(12, 70), (12, 70), (12, 1000), (19, 160), (19, 160)]
+        rc = cli.main(["curve", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["median_profile"]["12"] == 70.0  # resists the spike
+        assert "confidence_band" in out
 
     @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
@@ -640,9 +850,10 @@ class TestCurve:
 
 
 class TestWorthIt:
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_worth(self, bp, capsys):
+    def test_worth(self, bp, _samples, capsys):
         bp.return_value = {12: 80.0, 19: 160.0}  # big spread
         rc = cli.main(["worth-it", "--zones", "GB", "--energy-kwh", "10", "--json"])
         assert rc == cli.EXIT_GREEN
@@ -650,13 +861,46 @@ class TestWorthIt:
         assert out["status"] == "worth"
         assert out["best_case_savings_g_per_run"] == 800.0  # (160-80)*10
 
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_not_worth(self, bp, capsys):
+    def test_not_worth(self, bp, _samples, capsys):
         bp.return_value = {0: 100.0, 1: 101.0, 2: 99.0}  # flat
         rc = cli.main(["worth-it", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_DIRTY
         assert json.loads(capsys.readouterr().out)["status"] == "not_worth"
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_significant_spread_is_worth(self, bp, samples, capsys):
+        bp.return_value = {2: 60.0, 14: 200.0}  # big spread
+        # Tight within-hour clusters far apart -> clearly significant
+        samples.return_value = [(2, 58), (2, 62), (2, 60), (14, 198), (14, 202), (14, 200)]
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["status"] == "worth" and out["significant"] is True
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_spread_from_noise_is_not_worth(self, bp, samples, capsys):
+        # The means look spread out, but each hour's samples are so scattered the
+        # gap is just noise -> the ANOVA test vetoes the spread heuristic.
+        bp.return_value = {2: 60.0, 14: 200.0}
+        samples.return_value = [
+            (2, -200),
+            (2, 320),
+            (2, 60),
+            (14, 0),
+            (14, 400),
+            (14, 200),
+        ]
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_DIRTY
+        assert out["status"] == "not_worth" and out["significant"] is False
 
     @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

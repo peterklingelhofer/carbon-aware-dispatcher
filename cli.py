@@ -7,9 +7,13 @@ where the real energy lives: a nightly training run or data pipeline dwarfs CI.
 
 Commands:
   check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
+  scale           print a carbon-aware autoscale factor (or replica count) for the grid now
+  split           emissions-optimal split of N divisible shards across the cleanest regions
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   marginal        WattTime marginal-emissions signal (the real avoided-emissions metric)
+  marginal-estimate  free marginal estimate from EIA fuel-mix history (no WattTime needed)
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
+  forecast-accuracy  grade our own past forecasts vs reality and report the bias
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
   plan            combined when+where: the cleanest (region, hour) across zones
@@ -34,6 +38,7 @@ the tool composes cleanly in pipes and scripts.
 import argparse
 import contextlib
 import json
+import os
 import sys
 import time
 
@@ -110,6 +115,102 @@ def cmd_check(args):
     return _report(args, evaluate(args))
 
 
+def cmd_scale(args):
+    """Print a carbon-aware autoscale factor in [scale_min, scale_max].
+
+    The continuous companion to the gate: an autoscaler (KEDA/HPA, a Ray driver,
+    a batch fan-out) multiplies its replica or parallelism count by this, so heavy
+    compute concentrates in clean hours instead of toggling fully on/off. With
+    --max-replicas N it prints the integer replica count (>=1) instead. It is a
+    signal for scaling: exit 0 normally, 2 only when no zone could be read.
+    """
+    result = evaluate(args)
+    intensity = result.get("intensity")  # None on read error -> fail open
+    thresholds = check_grid.parse_tier_thresholds(args.tier_thresholds)
+    factor = check_grid.compute_carbon_scale(intensity, thresholds, args.scale_min, args.scale_max)
+    replicas = None
+    if args.max_replicas is not None:
+        import math
+
+        replicas = max(1, math.ceil(factor * args.max_replicas))
+    if args.json:
+        out = {
+            "status": result["status"],
+            "zone": result.get("zone"),
+            "intensity": intensity,
+            "scale": factor,
+        }
+        if replicas is not None:
+            out["replicas"] = replicas
+        print(json.dumps(out))
+    else:
+        print(replicas if replicas is not None else factor)
+    return EXIT_NODATA if result["status"] == "error" else EXIT_GREEN
+
+
+def _parse_capacity(raw):
+    """Parse a JSON zone->max-shards capacity map, or None when unset."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return {str(k): int(v) for k, v in data.items()}
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("--capacity must be a JSON object of zone -> max shards") from exc
+
+
+def cmd_split(args):
+    """Emissions-optimal split of N divisible shards across regions (water-filling).
+
+    For divisible batch/inference: fills the cleanest reachable zones first (up to
+    optional per-zone --capacity), since per-shard emissions are linear in
+    intensity. With --energy-kwh it also reports the emissions and the saving vs
+    an even split. Exit 0 if any zone was placed, 2 if no zone could be read.
+    """
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    capacities = _parse_capacity(args.capacity)  # may raise ValueError -> EXIT_USAGE
+    measured = []
+    with contextlib.redirect_stdout(sys.stderr):
+        check_grid.check_multiple_zones(
+            zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
+        )
+    if not measured:
+        if args.json:
+            print(json.dumps({"status": "error"}))
+        else:
+            print("NO DATA: could not read any zone", file=sys.stderr)
+        return EXIT_NODATA
+
+    allocation, unplaced = check_grid.allocate_shards(measured, args.shards, capacities)
+    result = {
+        "status": "ok",
+        "shards": int(args.shards),
+        "unplaced": unplaced,
+        "allocation": [{"zone": z, "shards": n, "intensity": i} for z, n, i in allocation],
+    }
+    if args.energy_kwh:
+        emitted = check_grid.allocation_emissions(allocation, args.energy_kwh)
+        even = check_grid.even_split_emissions(measured, args.shards, args.energy_kwh)
+        result["emitted_grams"] = emitted
+        result["even_split_grams"] = even
+        result["saved_grams"] = round(max(0.0, even - emitted), 1)
+
+    if args.json:
+        print(json.dumps(result))
+    else:
+        for z, n, i in allocation:
+            print(f"  {z}: {n} shards ({i} gCO2eq/kWh)")
+        if unplaced:
+            print(f"  unplaced: {unplaced} shards (insufficient capacity)")
+        if args.energy_kwh:
+            print(
+                f"  emits ~{result['emitted_grams']} g vs ~{result['even_split_grams']} g "
+                f"even split (saves ~{result['saved_grams']} g)"
+            )
+    return EXIT_GREEN
+
+
 def cmd_marginal(args):
     """Report the WattTime marginal-emissions signal for timing decisions.
 
@@ -162,6 +263,200 @@ def cmd_marginal(args):
     return EXIT_GREEN if clean else EXIT_DIRTY
 
 
+def cmd_marginal_estimate(args):
+    """Free marginal-emissions estimate from a fuel-mix time series (no WattTime).
+
+    Marginal intensity (the emissions of the generator that responds to YOUR
+    added load) is what reflects real avoided emissions, but live marginal data
+    is free only for CAISO_NORTH. Here we estimate it for any EIA (US) zone by
+    regressing the change in emissions on the change in generation across recent
+    hours; r_squared says how much of the move the load change explains, i.e. how
+    much to trust it. Exit 0 with an estimate, 2 when there isn't enough signal.
+    """
+    import marginal as marginal_mod
+    from providers import eia
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        series = eia.fuel_mix_series(first, tok["eia"])
+    est = marginal_mod.estimate_marginal(series) if series else None
+    if not est:
+        if args.json:
+            print(json.dumps({"status": "unavailable", "zone": first}))
+        else:
+            print(
+                f"Can't estimate marginal for {first}: needs an EIA (US) zone with "
+                "recent fuel-mix history.",
+                file=sys.stderr,
+            )
+        return EXIT_NODATA
+
+    if args.json:
+        print(json.dumps({"status": "ok", "zone": first, **est}))
+    else:
+        print(
+            f"Estimated marginal for {first}: ~{est['marginal']} gCO2eq/kWh "
+            f"(average ~{est['average']}; fit r2={est['r_squared']}, n={est['n']} intervals)."
+        )
+        print(
+            "  Marginal = emissions of the generator that responds to added load, "
+            "the metric for real avoided emissions. Free estimate; trust scales with r2."
+        )
+    return EXIT_GREEN
+
+
+def cmd_forecast_accuracy(args):
+    """Grade our own green-window forecasts over time (self-calibration).
+
+    Run on a schedule: each call resolves past predictions whose target time has
+    arrived against the live reading, records the current forecast for later
+    grading, and reports mean error, bias, and a suggested bias correction.
+    Persists to --store. Exit 0 (a report), 2 when the zone can't be read.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    import forecast_log
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    tok = _tokens(args)
+
+    doc = forecast_log.empty_log()
+    if args.store and os.path.exists(args.store):
+        try:
+            with open(args.store) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            doc = forecast_log.empty_log()
+
+    now = datetime.now(timezone.utc)
+    measured: list = []
+    with contextlib.redirect_stdout(sys.stderr):
+        check_grid.check_multiple_zones(
+            [{"zone": first, "runner_label": None}],
+            args.max_carbon,
+            tok["eia"],
+            tok["emaps"],
+            tok["entsoe"],
+            collect=measured,
+        )
+    actual = measured[0][1] if measured else None
+    if actual is None:
+        if args.json:
+            print(json.dumps({"status": "no_data", "zone": first}))
+        else:
+            print(f"No reading for {first}", file=sys.stderr)
+        return EXIT_NODATA
+
+    doc, resolved = forecast_log.resolve_due(doc, now, actual, zone=first, window_min=args.window)
+
+    with contextlib.redirect_stdout(sys.stderr):
+        fz, when, fi = check_grid.queue_find_optimal_window(
+            zones,
+            args.max_carbon,
+            args.hours,
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
+    if when and when != "none_in_forecast" and fi is not None:
+        doc = forecast_log.record_prediction(
+            doc, fz or first, when, fi, now.strftime("%Y-%m-%dT%H:%MZ")
+        )
+
+    if args.store:
+        try:
+            with open(args.store, "w") as fh:
+                json.dump(doc, fh, indent=2)
+        except OSError as exc:
+            print(f"::warning::could not write {args.store}: {exc}", file=sys.stderr)
+
+    report = forecast_log.accuracy_report(doc)
+    correction = forecast_log.bias_correction(doc)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": first,
+                    "resolved_now": resolved,
+                    "suggested_bias_correction": correction,
+                    **report,
+                }
+            )
+        )
+    elif report["n"]:
+        print(
+            f"Forecast accuracy for {first}: n={report['n']}, MAE {report['mae']}, "
+            f"bias {report['bias']} gCO2eq/kWh (resolved {resolved} this run)."
+        )
+        if correction is not None:
+            print(f"  Suggested bias correction: subtract {correction} gCO2eq/kWh from forecasts.")
+    else:
+        print(f"Forecast accuracy for {first}: nothing resolved yet (recorded one for next time).")
+    return EXIT_GREEN
+
+
+def _run_now_instead_of_waiting(args, now_result, deadline, energy_kwh):
+    """Optimal-stopping guard for wait-for-green.
+
+    Returns an exit code if the forecast says the grid won't improve enough to
+    justify the idle carbon of blocking (so run now), or None to keep waiting.
+    Only invoked when the caller supplied --energy-kwh, since the idle-vs-saved
+    trade-off is meaningless without the job's energy.
+    """
+    from datetime import datetime, timezone
+
+    i_now = now_result.get("intensity")
+    if i_now is None:
+        return None
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        zone, when, i_future = check_grid.queue_find_optimal_window(
+            zones,
+            args.max_carbon,
+            max(1.0, deadline / 3600.0),
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
+    if zone is None or when is None or i_future is None:
+        return None  # no forecast -> fall back to plain blocking
+    try:
+        ft = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        hours_until = (ft - datetime.now(timezone.utc)).total_seconds() / 3600.0
+    except (ValueError, TypeError):
+        return None
+    should_wait, saved, idle = check_grid.worth_waiting(i_now, i_future, hours_until, energy_kwh)
+    if should_wait:
+        return None
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "run_now",
+                    "zone": now_result.get("zone"),
+                    "intensity": i_now,
+                    "forecast_intensity": i_future,
+                    "saved_grams": saved,
+                    "idle_grams": idle,
+                }
+            )
+        )
+    else:
+        print(
+            f"RUN NOW: waiting ~{hours_until:.1f}h for {zone} (~{i_future} gCO2eq/kWh) would "
+            f"save ~{saved} g, but idling until then costs ~{idle} g, so running now is cleaner."
+        )
+    return EXIT_GREEN
+
+
 def cmd_wait(args):
     deadline = parse_duration(args.max_wait)
     poll = parse_duration(args.poll)
@@ -172,11 +467,20 @@ def cmd_wait(args):
         "`carbon-aware suggest-cron` to shift the schedule instead.",
         file=sys.stderr,
     )
+
+    result = evaluate(args)
+    if result["status"] == "green":
+        return _report(args, result)
+
+    # Optimal-stopping guard: only block if a cleaner forecast window saves more
+    # carbon than idling until it costs (needs the job's energy to weigh).
+    if getattr(args, "energy_kwh", None) is not None:
+        verdict = _run_now_instead_of_waiting(args, result, deadline, _energy_kwh(args))
+        if verdict is not None:
+            return verdict
+
     waited = 0
     while True:
-        result = evaluate(args)
-        if result["status"] == "green":
-            return _report(args, result)
         if waited >= deadline:
             if not args.json:
                 print(f"TIMEOUT: no green window within {args.max_wait}")
@@ -191,6 +495,9 @@ def cmd_wait(args):
         )
         time.sleep(sleep_for)
         waited += sleep_for
+        result = evaluate(args)
+        if result["status"] == "green":
+            return _report(args, result)
 
 
 def _energy_kwh(args):
@@ -1171,25 +1478,40 @@ def cmd_curve(args):
 
     hour, intensity = carbon_curve.cleanest_hour(profile)
     spread = carbon_curve.spread_pct(profile)
+
+    # Where raw samples exist, add a median view and a confidence band so
+    # an under-sampled or spike-skewed hour is visible rather than taken at face value.
+    samples = carbon_curve.build_profile_samples(first)
+    band = median = robust_hour = None
+    if samples:
+        stats = carbon_curve.profile_stats_from_samples(samples)
+        band = carbon_curve.confidence_band(stats)
+        median = carbon_curve.median_profile_from_samples(samples)
+        robust_hour, _ = carbon_curve.cleanest_hour(median)
+
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "zone": first,
-                    "cleanest_hour": hour,
-                    "cleanest_intensity": intensity,
-                    "spread_pct": spread,
-                    "profile": profile,
-                }
-            )
-        )
+        payload = {
+            "status": "ok",
+            "zone": first,
+            "cleanest_hour": hour,
+            "cleanest_intensity": intensity,
+            "spread_pct": spread,
+            "profile": profile,
+        }
+        if band is not None:
+            payload["confidence_band"] = band
+            payload["median_profile"] = median
+            payload["robust_cleanest_hour"] = robust_hour
+        print(json.dumps(payload))
     else:
         print(f"Hour-of-day carbon curve for {first} (gCO2eq/kWh, UTC):")
         for h in sorted(profile):
             mark = "  <- cleanest" if h == hour else ""
-            print(f"  {h:02d}:00  {profile[h]:.0f}{mark}")
+            ci = f"  +/-{round((band[h]['hi'] - band[h]['lo']) / 2):.0f}" if band else ""
+            print(f"  {h:02d}:00  {profile[h]:.0f}{ci}{mark}")
         print(f"Cleanest hour: {hour:02d}:00 UTC ({intensity:.0f}); spread {spread:.0f}%")
+        if robust_hour is not None and robust_hour != hour:
+            print(f"Median cleanest hour: {robust_hour:02d}:00 UTC")
     return EXIT_GREEN
 
 
@@ -1218,6 +1540,20 @@ def cmd_worth_it(args):
     worth = spread >= args.min_spread
     best = carbon_curve.best_case_savings_grams(profile, _energy_kwh(args))
     annual_kg = best * 365 / 1000
+
+    # Where raw samples exist (GB today), upgrade the spread heuristic with a
+    # statistical test: only call the pattern worth shifting if the hour-of-day
+    # variation is significant beyond the noise of a few samples.
+    f_stat = None
+    significant = None
+    samples = carbon_curve.build_profile_samples(first)
+    if samples:
+        stats = carbon_curve.profile_stats_from_samples(samples)
+        result = carbon_curve.anova_f(stats)
+        f_stat = round(result[0], 2) if result else None
+        significant = carbon_curve.is_significant(stats)
+        worth = worth and significant
+
     if args.json:
         print(
             json.dumps(
@@ -1226,23 +1562,27 @@ def cmd_worth_it(args):
                     "zone": first,
                     "spread_pct": spread,
                     "min_spread": args.min_spread,
+                    "significant": significant,
+                    "anova_f": f_stat,
                     "cleanest_hour": hour,
                     "best_case_savings_g_per_run": best,
                     "best_case_savings_kg_per_year": round(annual_kg, 2),
                 }
             )
         )
-    elif worth:
-        print(
-            f"Worth shifting: {first} varies {spread:.0f}% across the day "
-            f"(cleanest {hour:02d}:00 UTC). Up to ~{best:.0f} g/run "
-            f"(~{annual_kg:.1f} kg/yr daily). Use `suggest-cron`."
-        )
     else:
-        print(
-            f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread, "
-            f"~{best:.0f} g/run best case). Scheduling saves little; skip the complexity."
-        )
+        sig_note = "" if significant is None else f", pattern {'real' if significant else 'noise'}"
+        if worth:
+            print(
+                f"Worth shifting: {first} varies {spread:.0f}% across the day{sig_note} "
+                f"(cleanest {hour:02d}:00 UTC). Up to ~{best:.0f} g/run "
+                f"(~{annual_kg:.1f} kg/yr daily). Use `suggest-cron`."
+            )
+        else:
+            print(
+                f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread{sig_note}, "
+                f"~{best:.0f} g/run best case). Scheduling saves little; skip the complexity."
+            )
     return EXIT_GREEN if worth else EXIT_DIRTY
 
 
@@ -1295,15 +1635,77 @@ def build_parser():
         sp.add_argument("--electricity-maps-token", default="")
         sp.add_argument("--entsoe-token", default="")
         sp.add_argument("--gridstatus-key", default="")
+        sp.add_argument(
+            "--cache-ttl",
+            type=int,
+            default=None,
+            help="Cache grid reads for N seconds (reuses recent data across composed "
+            "runs on the same host). Default: off, unless CARBON_CACHE_TTL is set",
+        )
 
     c = sub.add_parser("check", help="Exit 0 if the grid is green now")
     add_common(c)
     c.set_defaults(func=cmd_check)
 
+    scl = sub.add_parser("scale", help="Print a carbon-aware autoscale factor (or replica count)")
+    add_common(scl)
+    scl.add_argument(
+        "--scale-min",
+        type=float,
+        default=check_grid.DEFAULT_SCALE_MIN,
+        help="Floor factor when the grid is dirty. Default: 0.25",
+    )
+    scl.add_argument(
+        "--scale-max",
+        type=float,
+        default=check_grid.DEFAULT_SCALE_MAX,
+        help="Ceiling factor when the grid is clean. Default: 1.0",
+    )
+    scl.add_argument(
+        "--tier-thresholds",
+        default="",
+        help="green,amber gCO2eq/kWh boundaries for the ramp. Default: 150,300",
+    )
+    scl.add_argument(
+        "--max-replicas",
+        type=int,
+        default=None,
+        help="Print integer replicas (ceil(factor x N), >=1) instead of the factor",
+    )
+    scl.set_defaults(func=cmd_scale)
+
+    spl = sub.add_parser(
+        "split", help="Emissions-optimal split of N divisible shards across regions"
+    )
+    add_common(spl)
+    spl.add_argument(
+        "--shards", type=int, required=True, help="Number of divisible work units to place"
+    )
+    spl.add_argument(
+        "--capacity",
+        default="",
+        help='Optional JSON zone -> max shards, e.g. \'{"CISO":4,"GB":2}\' '
+        "(zones omitted are unbounded; 0 excludes one)",
+    )
+    spl.add_argument(
+        "--energy-kwh",
+        type=float,
+        default=None,
+        help="Per-shard energy (kWh) to report emissions and saving vs an even split",
+    )
+    spl.set_defaults(func=cmd_split)
+
     w = sub.add_parser("wait-for-green", help="Block until green or a deadline")
     add_common(w)
     w.add_argument("--max-wait", default="6h", help="Give up after this long. Default: 6h")
     w.add_argument("--poll", default="15m", help="How often to recheck. Default: 15m")
+    w.add_argument(
+        "--energy-kwh",
+        type=float,
+        default=None,
+        help="Job energy (kWh). Enables optimal stopping: run now if idling for a "
+        "cleaner forecast window would emit more than it saves",
+    )
     w.set_defaults(func=cmd_wait)
 
     b = sub.add_parser("best-window", help="Print the cleanest upcoming forecast window")
@@ -1377,6 +1779,29 @@ def build_parser():
     mg.add_argument("--username", default="", help="WattTime username (or WATTTIME_USERNAME)")
     mg.add_argument("--password", default="", help="WattTime password (or WATTTIME_PASSWORD)")
     mg.set_defaults(func=cmd_marginal)
+
+    me = sub.add_parser(
+        "marginal-estimate",
+        help="Free marginal-emissions estimate from EIA (US) fuel-mix history",
+    )
+    add_common(me)
+    me.set_defaults(func=cmd_marginal_estimate)
+
+    fa = sub.add_parser("forecast-accuracy", help="Grade our own green-window forecasts over time")
+    add_common(fa)
+    fa.add_argument(
+        "--store",
+        default="forecast-log.json",
+        help="JSON file to persist predictions. Default: forecast-log.json",
+    )
+    fa.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
+    fa.add_argument(
+        "--window",
+        type=int,
+        default=90,
+        help="Minutes after a predicted time to resolve it against the actual. Default: 90",
+    )
+    fa.set_defaults(func=cmd_forecast_accuracy)
 
     sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
     add_common(sla)
@@ -1463,6 +1888,10 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Only override the environment when the flag is explicitly passed, so the
+    # container/action defaults (and unit tests) are left untouched.
+    if getattr(args, "cache_ttl", None) is not None:
+        os.environ["CARBON_CACHE_TTL"] = str(args.cache_ttl)
     try:
         return args.func(args)
     except ValueError as exc:
