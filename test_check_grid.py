@@ -191,7 +191,7 @@ class TestDetectProvider:
 
 
 class TestApiRequest:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_no_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -206,7 +206,7 @@ class TestApiRequest:
 class TestFailureReason:
     """request() classifies why a call failed, for actionable skip reasons."""
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_failed(self, mock_get):
         from providers import base
 
@@ -214,7 +214,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "auth failed"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_rate_limited(self, mock_get):
         from providers import base
 
@@ -222,7 +222,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "rate limited"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_network_error(self, mock_get):
         from providers import base
 
@@ -230,7 +230,7 @@ class TestFailureReason:
         base.request("https://x")
         assert base.last_failure_reason() == "network error"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_resets_reason(self, mock_get):
         from providers import base
 
@@ -255,7 +255,7 @@ class TestFailureReason:
         )
         assert skipped == [("CISO", "auth failed")]
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success_with_auth(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -266,7 +266,7 @@ class TestFailureReason:
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("auth-token") == "my-token"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_retries_on_500(self, mock_get):
         fail = mock.Mock(status_code=500, text="Server Error")
         success = mock.Mock(status_code=200, json=lambda: {"ok": True})
@@ -275,20 +275,20 @@ class TestFailureReason:
         assert result == {"ok": True}
         assert mock_get.call_count == 2
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_returns_none_on_all_failures(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
         result = api_request("https://example.com")
         assert result is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_error_no_retry(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=403, text="Forbidden")
         result = api_request("https://example.com")
         assert result is None
         assert mock_get.call_count == 1
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_invalid_json(self, mock_get):
         resp = mock.Mock(status_code=200, text="not json")
         resp.json.side_effect = ValueError("bad")
@@ -742,7 +742,7 @@ class TestElectricityMapsGetHistoryTrend:
 
 
 class TestGridstatusApiRequest:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_success(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -753,7 +753,7 @@ class TestGridstatusApiRequest:
         call_headers = mock_get.call_args[1].get("headers", {})
         assert call_headers.get("x-api-key") == "my-key"
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_error(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
         result = api_request_with_header(
@@ -1872,7 +1872,7 @@ class TestEntsoeParseGenerationXml:
 
 
 class TestEntsoeCheckCarbonIntensity:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_green(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1891,7 +1891,7 @@ class TestEntsoeCheckCarbonIntensity:
         # = (9600 + 98000) / 1000 = 107.6 -> 108
         assert intensity == 108
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_dirty(self, mock_get):
         xml = """
         <TimeSeries>
@@ -1919,21 +1919,21 @@ class TestEntsoeCheckCarbonIntensity:
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_auth_failure(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "bad-token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_rate_limit(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=429, text="Too Many Requests")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_network_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
@@ -2045,7 +2045,7 @@ class TestOpenMeteoEstimateIntensity:
 
 
 class TestOpenMeteoCheckCarbonIntensity:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_green_zone(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2060,7 +2060,7 @@ class TestOpenMeteoCheckCarbonIntensity:
         assert is_green is True
         assert intensity == round(550 * 0.60 * 0.75)
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_dirty_zone(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2080,7 +2080,7 @@ class TestOpenMeteoCheckCarbonIntensity:
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_with_explicit_lat_lon(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2094,14 +2094,14 @@ class TestOpenMeteoCheckCarbonIntensity:
         is_green, intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
         assert is_green is True
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("timeout")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
         assert is_green is None
         assert intensity is None
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_non_200_response(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
@@ -2110,7 +2110,7 @@ class TestOpenMeteoCheckCarbonIntensity:
 
 
 class TestOpenMeteoForecast:
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_finds_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -2126,7 +2126,7 @@ class TestOpenMeteoForecast:
         assert dt is not None
         assert "12:00" in dt
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_no_green_window(self, mock_get):
         mock_get.return_value = mock.Mock(
             status_code=200,
@@ -4647,7 +4647,7 @@ class TestCanadaProvider:
         assert is_green is True
         assert intensity == 30
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_ieso_ontario_parse(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, text=_IESO_XML)
         is_green, intensity = canada.check_carbon_intensity("CA-ON", 250)
@@ -4656,7 +4656,7 @@ class TestCanadaProvider:
         assert intensity == 51
         assert is_green is True
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_aeso_alberta_parse(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, text=_AESO_HTML)
         is_green, intensity = canada.check_carbon_intensity("CA-AB", 250)
@@ -4665,7 +4665,7 @@ class TestCanadaProvider:
         assert intensity == 536
         assert is_green is False
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, text="err")
         assert canada.check_carbon_intensity("CA-ON", 250) == (None, None)
@@ -4702,7 +4702,7 @@ class TestTaiwanProvider:
     def test_detect_provider(self):
         assert detect_provider("TW") == PROVIDER_TAIWAN
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_parse_generation(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, content=_TAIPOWER_JSON)
         is_green, intensity = taiwan.check_carbon_intensity("TW", 250)
@@ -4712,7 +4712,7 @@ class TestTaiwanProvider:
         assert intensity == 513
         assert is_green is False
 
-    @mock.patch("providers.base.requests.get")
+    @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=500, content=b"", text="err")
         assert taiwan.check_carbon_intensity("TW", 250) == (None, None)
