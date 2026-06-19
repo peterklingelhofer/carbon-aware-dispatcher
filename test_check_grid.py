@@ -353,6 +353,49 @@ class TestRequestCache:
         cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
         assert mock_post.call_count == 2  # writes are never cached
 
+    @mock.patch("providers.base._SESSION.get")
+    def test_etag_revalidation_serves_cache_on_304(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        ok = mock.Mock(status_code=200, json=lambda: {"v": 1}, headers={"ETag": "abc"})
+        not_modified = mock.Mock(status_code=304, headers={})
+        mock_get.side_effect = [ok, not_modified]
+        url = "https://grid.example/intensity"
+
+        assert cache_env.request(url) == {"v": 1}  # 200, cached with ETag
+        # Make the entry stale so the next call revalidates instead of using TTL
+        path = cache_env._cache_path("GET", url, "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+
+        assert cache_env.request(url) == {"v": 1}  # 304 -> served from cache
+        assert mock_get.call_count == 2
+        sent = mock_get.call_args.kwargs["headers"]
+        assert sent.get("If-None-Match") == "abc"  # conditional request was made
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_304_refreshes_freshness(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        ok = mock.Mock(status_code=200, json=lambda: {"v": 9}, headers={"ETag": "z"})
+        not_modified = mock.Mock(status_code=304, headers={})
+        mock_get.side_effect = [ok, not_modified]
+        url = "https://grid.example/x"
+
+        cache_env.request(url)
+        path = cache_env._cache_path("GET", url, "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+
+        cache_env.request(url)  # 304 -> bumps ts back to now
+        # A third call is within TTL again, so it serves from cache (no 3rd GET)
+        assert cache_env.request(url) == {"v": 9}
+        assert mock_get.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # UK Carbon Intensity API tests
