@@ -750,15 +750,30 @@ class TestValidateCurves:
 
 
 class TestCurve:
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_curve_json(self, bp, capsys):
+    def test_curve_json(self, bp, _samples, capsys):
         bp.return_value = {12: 82.0, 19: 145.0}
         rc = cli.main(["curve", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
         assert out["cleanest_hour"] == 12
         assert out["spread_pct"] > 0
+        assert "confidence_band" not in out  # no raw samples -> no band
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_curve_adds_band_and_median(self, bp, samples, capsys):
+        bp.return_value = {12: 80.0, 19: 160.0}
+        # Hour 12 has a spike (1000) the mean would chase but the median ignores
+        samples.return_value = [(12, 70), (12, 70), (12, 1000), (19, 160), (19, 160)]
+        rc = cli.main(["curve", "--zones", "GB", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["median_profile"]["12"] == 70.0  # resists the spike
+        assert "confidence_band" in out
 
     @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
@@ -768,9 +783,10 @@ class TestCurve:
 
 
 class TestWorthIt:
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_worth(self, bp, capsys):
+    def test_worth(self, bp, _samples, capsys):
         bp.return_value = {12: 80.0, 19: 160.0}  # big spread
         rc = cli.main(["worth-it", "--zones", "GB", "--energy-kwh", "10", "--json"])
         assert rc == cli.EXIT_GREEN
@@ -778,13 +794,46 @@ class TestWorthIt:
         assert out["status"] == "worth"
         assert out["best_case_savings_g_per_run"] == 800.0  # (160-80)*10
 
+    @mock.patch("carbon_curve.build_profile_samples", return_value=None)
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
-    def test_not_worth(self, bp, capsys):
+    def test_not_worth(self, bp, _samples, capsys):
         bp.return_value = {0: 100.0, 1: 101.0, 2: 99.0}  # flat
         rc = cli.main(["worth-it", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_DIRTY
         assert json.loads(capsys.readouterr().out)["status"] == "not_worth"
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_significant_spread_is_worth(self, bp, samples, capsys):
+        bp.return_value = {2: 60.0, 14: 200.0}  # big spread
+        # Tight within-hour clusters far apart -> clearly significant
+        samples.return_value = [(2, 58), (2, 62), (2, 60), (14, 198), (14, 202), (14, 200)]
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["status"] == "worth" and out["significant"] is True
+
+    @mock.patch("carbon_curve.build_profile_samples")
+    @mock.patch("carbon_curve.build_profile")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    def test_spread_from_noise_is_not_worth(self, bp, samples, capsys):
+        # The means look spread out, but each hour's samples are so scattered the
+        # gap is just noise -> the ANOVA test vetoes the spread heuristic.
+        bp.return_value = {2: 60.0, 14: 200.0}
+        samples.return_value = [
+            (2, -200),
+            (2, 320),
+            (2, 60),
+            (14, 0),
+            (14, 400),
+            (14, 200),
+        ]
+        rc = cli.main(["worth-it", "--zones", "GB", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_DIRTY
+        assert out["status"] == "not_worth" and out["significant"] is False
 
     @mock.patch("carbon_curve.build_profile", return_value=None)
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
