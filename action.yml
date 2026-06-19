@@ -312,6 +312,9 @@ runs:
       env:
         GRID_ZONE: ${{ inputs.grid_zone }}
         GRID_ZONES: ${{ inputs.grid_zones }}
+        # Reuse a grid reading for 5 min so repeated/composed calls in one job
+        # don't re-fetch the same endpoint. Set to 0 to disable.
+        CARBON_CACHE_TTL: '300'
         EIA_API_KEY: ${{ inputs.eia_api_key }}
         GRID_STATUS_API_KEY: ${{ inputs.gridstatus_api_key }}
         MAX_CARBON: ${{ inputs.max_carbon_intensity }}

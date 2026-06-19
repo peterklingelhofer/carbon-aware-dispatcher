@@ -1,5 +1,6 @@
 """Tests for carbon-aware dispatcher."""
 
+import json
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -295,6 +296,62 @@ class TestFailureReason:
         mock_get.return_value = resp
         result = api_request("https://example.com")
         assert result is None
+
+
+class TestRequestCache:
+    @pytest.fixture
+    def cache_env(self, tmp_path):
+        from providers import base
+
+        prev_ttl = os.environ.get("CARBON_CACHE_TTL")
+        prev_dir = os.environ.get("CARBON_CACHE_DIR")
+        os.environ["CARBON_CACHE_DIR"] = str(tmp_path)
+        yield base
+        for key, prev in (("CARBON_CACHE_TTL", prev_ttl), ("CARBON_CACHE_DIR", prev_dir)):
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_caches_get_json_within_ttl(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        first = cache_env.request("https://grid.example/intensity")
+        second = cache_env.request("https://grid.example/intensity")
+        assert first == second == {"v": 1}
+        assert mock_get.call_count == 1  # second served from cache
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_disabled_by_default(self, mock_get, cache_env):
+        os.environ.pop("CARBON_CACHE_TTL", None)
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/intensity")
+        cache_env.request("https://grid.example/intensity")
+        assert mock_get.call_count == 2  # no caching when TTL unset
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_expired_entry_refetched(self, mock_get, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/intensity")
+        # Backdate the cached entry beyond the TTL
+        path = cache_env._cache_path("GET", "https://grid.example/intensity", "json")
+        with open(path) as fh:
+            entry = json.load(fh)
+        entry["ts"] -= 10_000
+        with open(path, "w") as fh:
+            json.dump(entry, fh)
+        cache_env.request("https://grid.example/intensity")
+        assert mock_get.call_count == 2
+
+    @mock.patch("providers.base._SESSION.post")
+    def test_post_not_cached(self, mock_post, cache_env):
+        os.environ["CARBON_CACHE_TTL"] = "300"
+        mock_post.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        assert mock_post.call_count == 2  # writes are never cached
 
 
 # ---------------------------------------------------------------------------

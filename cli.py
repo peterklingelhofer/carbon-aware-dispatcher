@@ -34,6 +34,7 @@ the tool composes cleanly in pipes and scripts.
 import argparse
 import contextlib
 import json
+import os
 import sys
 import time
 
@@ -1295,6 +1296,13 @@ def build_parser():
         sp.add_argument("--electricity-maps-token", default="")
         sp.add_argument("--entsoe-token", default="")
         sp.add_argument("--gridstatus-key", default="")
+        sp.add_argument(
+            "--cache-ttl",
+            type=int,
+            default=None,
+            help="Cache grid reads for N seconds (reuses recent data across composed "
+            "runs on the same host). Default: off, unless CARBON_CACHE_TTL is set",
+        )
 
     c = sub.add_parser("check", help="Exit 0 if the grid is green now")
     add_common(c)
@@ -1463,6 +1471,10 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Only override the environment when the flag is explicitly passed, so the
+    # container/action defaults (and unit tests) are left untouched.
+    if getattr(args, "cache_ttl", None) is not None:
+        os.environ["CARBON_CACHE_TTL"] = str(args.cache_ttl)
     try:
         return args.func(args)
     except ValueError as exc:
