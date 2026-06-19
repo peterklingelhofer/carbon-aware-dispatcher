@@ -411,7 +411,7 @@ Output (job summary):
 | Zone | Provider | Token | Status | Detail |
 |---|---|---|---|---|
 | `GB` | uk_carbon_intensity | n/a | OK | 203 gCO2eq/kWh |
-| `FR` | open_meteo | n/a | OK | 550 gCO2eq/kWh |
+| `FR` | open_meteo | n/a | OK | 56 gCO2eq/kWh (estimated) |
 
 See [`examples/doctor.yml`](examples/doctor.yml).
 
@@ -1074,7 +1074,7 @@ labels the estimates "(estimated)" so the two are easy to tell apart.
 
 ### How carbon intensity is calculated
 
-Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo estimates from solar irradiance and wind speed.
+Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value; Electricity Maps returns intensity directly; Open-Meteo modulates each zone's approximate annual-average intensity (a per-zone prior from public yearly data) by real-time solar irradiance and wind speed, so a structurally clean grid (e.g. nuclear France, hydro Norway) reads clean rather than defaulting to a fossil average.
 
 ### Consumption-based intensity (EU)
 

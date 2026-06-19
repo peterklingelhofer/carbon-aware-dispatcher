@@ -147,6 +147,121 @@ ZONE_COORDINATES = {
     "GE": (41.7, 44.8),  # Georgia Tbilisi
 }
 
+# Approximate annual-average carbon intensity (gCO2eq/kWh) by zone, used as the
+# *base* the weather model modulates instead of assuming every grid is
+# fossil-default (~550). This is what lets a structurally clean grid read clean:
+# France (nuclear) and Norway/Iceland/Quebec (hydro) sit near 30-60 regardless
+# of the weather, while a coal grid like South Africa or Poland sits near
+# 650-700. Without this, weather alone put nuclear France at ~550 (≈7x too high)
+# and understated coal grids. Figures are rounded annual means from public
+# yearly data (Ember / Electricity Maps, ~2023); they are priors, so the result
+# is still labeled "(estimated)".
+#
+# Keys are country codes with sub-zone overrides only where intensity varies a
+# lot within a country (notably Canada). _annual_prior() falls back from a
+# specific zone (e.g. NO-NO1) to its country code (NO).
+ZONE_ANNUAL_INTENSITY = {
+    # Europe
+    "NO": 30,
+    "SE": 40,
+    "FI": 80,
+    "EE": 460,
+    "LV": 120,
+    "LT": 150,
+    "FR": 56,
+    "DE": 380,
+    "NL": 330,
+    "BE": 140,
+    "AT": 110,
+    "CH": 40,
+    "PL": 660,
+    "CZ": 410,
+    "ES": 170,
+    "PT": 160,
+    "IT": 330,
+    "IE": 330,
+    "IS": 28,
+    "GR": 330,
+    "RO": 250,
+    "BG": 370,
+    "HU": 200,
+    "SK": 120,
+    "HR": 200,
+    "RS": 600,
+    "SI": 230,
+    "BA": 600,
+    "ME": 450,
+    "MK": 540,
+    "AL": 24,
+    "UA": 250,
+    "GE": 130,
+    "DK-DK1": 230,
+    "DK-DK2": 120,
+    # Americas (Canada split by province: QC/BC hydro vs AB/SK coal)
+    "CA-QC": 30,
+    "CA-ON": 120,
+    "CA-BC": 40,
+    "CA-AB": 600,
+    "CA-SK": 660,
+    "CA-MB": 12,
+    "CA-NB": 300,
+    "CA-NS": 600,
+    "UY": 120,
+    "PY": 25,
+    "CR": 40,
+    "CL": 330,
+    "AR": 330,
+    "CO": 160,
+    "PA": 180,
+    "PE": 230,
+    "EC": 180,
+    "MX": 430,
+    # Asia-Pacific
+    "JP": 480,
+    "KR": 430,
+    "NZ": 110,
+    "SG": 480,
+    "TW": 560,
+    "HK": 600,
+    "TH": 470,
+    "VN": 430,
+    "PH": 600,
+    "ID": 640,
+    "MY": 530,
+    "CN": 580,
+    # South Asia
+    "PK": 430,
+    "BD": 530,
+    "LK": 530,
+    # Africa
+    "ZA": 700,
+    "KE": 110,
+    "NG": 430,
+    "EG": 450,
+    "MA": 610,
+    "GH": 430,
+    "TZ": 430,
+    "ET": 25,
+    # Middle East & Central Asia
+    "AE": 480,
+    "SA": 600,
+    "IL": 530,
+    "TR": 430,
+    "KZ": 600,
+    "UZ": 530,
+}
+
+
+def _annual_prior(zone):
+    """Return the zone's annual-average intensity prior, or None if unknown.
+
+    Falls back from a specific sub-zone (NO-NO1) to its country code (NO).
+    """
+    if zone in ZONE_ANNUAL_INTENSITY:
+        return ZONE_ANNUAL_INTENSITY[zone]
+    return ZONE_ANNUAL_INTENSITY.get(zone.split("-")[0])
+
+
 # Solar irradiance thresholds (W/m²)
 HIGH_SOLAR = 600  # Strong solar: significant PV generation
 MEDIUM_SOLAR = 300  # Moderate solar
@@ -156,17 +271,19 @@ HIGH_WIND = 8  # Strong wind: good turbine output
 MEDIUM_WIND = 5  # Moderate wind
 
 
-def _estimate_intensity_from_weather(solar_w_m2, wind_speed_ms):
+def _estimate_intensity_from_weather(solar_w_m2, wind_speed_ms, base=FOSSIL_AVG_INTENSITY):
     """Estimate grid carbon intensity from solar irradiance and wind speed.
 
     This is a heuristic; actual grid intensity depends on the local generation
-    mix which we don't know. But high solar + high wind strongly correlates with
-    cleaner grids in most regions.
+    mix which we don't fully know. But high solar + high wind correlates with a
+    cleaner grid, so we modulate down from ``base`` (the zone's annual-average
+    prior when known, else the fossil default). The calm/dark case lands at the
+    prior, which slightly understates the no-renewables hours; that is a known
+    simplification of an already-estimated number, and far closer than the old
+    one-size-fits-all fossil base.
 
     Returns estimated gCO2eq/kWh.
     """
-    # Start from global average fossil intensity
-    base = FOSSIL_AVG_INTENSITY  # ~550
 
     # Solar contribution: up to 40% reduction
     if solar_w_m2 >= HIGH_SOLAR:
@@ -225,7 +342,8 @@ def check_carbon_intensity(zone, max_carbon, lat=None, lon=None):
     solar = current.get("global_tilted_irradiance", 0) or 0
     wind = current.get("wind_speed_10m", 0) or 0
 
-    intensity = _estimate_intensity_from_weather(solar, wind)
+    base = _annual_prior(zone) or FOSSIL_AVG_INTENSITY
+    intensity = _estimate_intensity_from_weather(solar, wind, base)
     is_green = intensity <= max_carbon
     status = "GREEN (estimated)" if is_green else "over threshold (estimated)"
     print(f"  Zone {zone}: ~{intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
@@ -260,10 +378,11 @@ def get_forecast(zone, max_carbon, lat=None, lon=None):
     solar_values = hourly.get("global_tilted_irradiance", [])
     wind_values = hourly.get("wind_speed_10m", [])
 
+    base = _annual_prior(zone) or FOSSIL_AVG_INTENSITY
     for i, time_str in enumerate(times):
         solar = solar_values[i] if i < len(solar_values) else 0
         wind = wind_values[i] if i < len(wind_values) else 0
-        intensity = _estimate_intensity_from_weather(solar or 0, wind or 0)
+        intensity = _estimate_intensity_from_weather(solar or 0, wind or 0, base)
 
         if intensity <= max_carbon:
             dt = time_str.replace(" ", "T") + "Z" if "T" not in time_str else time_str
