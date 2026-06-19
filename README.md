@@ -483,6 +483,23 @@ reflects real avoided emissions) rather than average intensity:
 carbon-aware marginal --region CAISO_NORTH --max-percentile 33 && ./train.sh
 ```
 
+### Free marginal estimate (no WattTime, US/EIA zones)
+
+WattTime's free tier only covers `CAISO_NORTH`. For any EIA (US) zone you can
+*estimate* the marginal rate for free: `marginal-estimate` regresses the change
+in emissions on the change in generation across recent hours (the marginal
+generator is the one that moves to meet a load change), so you get a marginal
+number without a key. The `r_squared` says how much the load change explains,
+i.e. how much to trust it.
+
+```bash
+carbon-aware marginal-estimate --zones PJM --json
+#  -> {"marginal": 510, "average": 360, "r_squared": 0.78, "n": 96}
+```
+
+It's an estimate: a free middle ground between the
+average (which overstates avoided emissions) and WattTime's measured marginal.
+
 ## Weekly digest
 
 Run the action in `mode: digest` on a schedule to post (and keep updating) a

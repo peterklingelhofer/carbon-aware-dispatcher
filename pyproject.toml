@@ -71,6 +71,7 @@ only-include = [
     "pr_comment.py",
     "carbon_curve.py",
     "suggest_pr.py",
+    "marginal.py",
     "providers",
     "integrations",
 ]
@@ -85,6 +86,7 @@ only-include = [
 "pr_comment.py" = "pr_comment.py"
 "carbon_curve.py" = "carbon_curve.py"
 "suggest_pr.py" = "suggest_pr.py"
+"marginal.py" = "marginal.py"
 "providers" = "providers"
 "integrations" = "integrations"
 
