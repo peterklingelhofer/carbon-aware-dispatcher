@@ -1021,7 +1021,11 @@ def cmd_export_curves(args):
     if not curve:
         print("No accumulated curve to export yet", file=sys.stderr)
         return EXIT_NODATA
-    payload = json.dumps({"curve": curve}, indent=2)
+    doc = {"curve": curve}
+    weekday_curve = data.get("weekday_curve") or {}
+    if weekday_curve:
+        doc["weekday_curve"] = weekday_curve
+    payload = json.dumps(doc, indent=2)
     if args.output:
         with open(args.output, "w") as fh:
             fh.write(payload)
