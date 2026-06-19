@@ -1,12 +1,13 @@
 # Publish the community curve commons
 #
-# Merges every contributed curve under community-curves/*.json into one pooled
-# community-curve.json at the repo root, then commits it when it changes. That
-# committed file's raw URL is what users set COMMUNITY_CURVE to, so any zone
-# others have sampled gains an hour-of-day profile even with no free history.
+# Pools the human contributions reviewed on main (community-curves/*.json) with
+# the accumulated self-samples (seed-self.json on the community-data branch) into
+# one community-curve.json. That file's raw URL is what users set COMMUNITY_CURVE
+# to, so any zone others have sampled gains an hour-of-day and day-of-week profile
+# even with no free history.
 #
-# Contributors add their `carbon-aware export-curves` output via PR (see
-# community-curves/README.md); this keeps the pool fresh as files land and daily.
+# The pool is published to the orphan `community-data` branch (not main), so the
+# bot's refreshes never touch main's history.
 
 name: Publish community curve
 
@@ -20,42 +21,60 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # to commit the regenerated pool
+  contents: write          # to push to the community-data branch
 
 concurrency:
-  group: publish-community-curve
-  cancel-in-progress: true
+  group: community-data     # serialize with the sampler: both write community-data
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5    # main: code + reviewed community-curves/
       - uses: astral-sh/setup-uv@v7
 
-      - name: Merge contributed curves
+      - name: Check out the community-data branch into a worktree
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin community-data || true
+          if git worktree add -B community-data ../data origin/community-data 2>/dev/null; then
+            echo "Tracking existing community-data branch."
+          else
+            echo "Creating orphan community-data branch."
+            git worktree add --detach ../data
+            git -C ../data checkout --orphan community-data
+            git -C ../data rm -rf . >/dev/null 2>&1 || true
+          fi
+
+      - name: Merge contributions and self-samples into the pool
         run: |
           shopt -s nullglob
-          files=(community-curves/*.json)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No contributed curves yet; nothing to publish."
+          inputs=(community-curves/*.json)          # reviewed human contributions on main
+          [ -f ../data/seed-self.json ] && inputs+=(../data/seed-self.json)
+          if [ ${#inputs[@]} -eq 0 ]; then
+            echo "Nothing to pool yet."
             exit 0
           fi
           # Defense in depth: refuse to pool malformed or implausible data.
           # --min-hours 0 because accumulating seed files are legitimately sparse
           # early on; volume-weighting and --cap-n already neutralize any skew.
-          uv run cli.py validate-curves --min-hours 0 "${files[@]}"
-          # Cap each contributor's per-hour weight so no single repo dominates a zone
-          uv run cli.py merge-curves "${files[@]}" --cap-n 1000 --output community-curve.json
+          uv run cli.py validate-curves --min-hours 0 "${inputs[@]}"
+          # Cap each contributor's per-cell weight so no single repo dominates a zone
+          uv run cli.py merge-curves "${inputs[@]}" --cap-n 1000 --output ../data/community-curve.json
 
-      - name: Commit the pool if it changed
+      - name: Commit and push if changed
+        working-directory: ../data
         run: |
-          if git diff --quiet -- community-curve.json; then
-            echo "Pool unchanged."
+          if [ ! -f community-curve.json ]; then
+            echo "No pool produced."
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add community-curve.json
-          git commit -m "chore: refresh community curve pool"
-          git push
+          if git diff --cached --quiet; then
+            echo "Pool unchanged."
+          else
+            git commit -m "chore: refresh community curve pool"
+            git push origin community-data
+          fi

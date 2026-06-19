@@ -29,15 +29,17 @@ could measure alone; coverage compounds with adoption.
 
 3. On merge, the
    [`publish-community-curve`](../.github/workflows/publish-community-curve.yml)
-   workflow re-validates, merges every file here into a single pooled
-   `community-curve.json` at the repo root, and commits it.
+   workflow re-validates, merges every file here together with the accumulated
+   self-samples, and publishes `community-curve.json` to the orphan
+   `community-data` branch (keeping `main`'s history free of bot commits).
 
 ## Use the pool
 
-Point `COMMUNITY_CURVE` at the published pool, a local file or the raw URL:
+Point `COMMUNITY_CURVE` at the published pool: a local file or the raw URL on
+the `community-data` branch:
 
 ```bash
-export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/main/community-curve.json"
+export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/community-data/community-curve.json"
 carbon-aware worth-it --zones FR        # now has a profile even with no local history
 ```
 

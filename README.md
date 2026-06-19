@@ -710,7 +710,7 @@ pool (a local file or a published URL) and `suggest-cron`/`worth-it`/`curve`
 gain a profile for any zone others have sampled, even with no local history:
 
 ```bash
-export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/main/community-curve.json"
+export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carbon-aware-dispatcher/community-data/community-curve.json"
 carbon-aware worth-it --zones FR
 ```
 
@@ -718,8 +718,10 @@ The pool carries both axes (hour of day and day of week), so a zone gains a
 weekend-vs-weekday profile (often a real second saving, since weekend grids run
 cleaner) as well as a diurnal one. Contribute via PR to
 [`community-curves/`](community-curves/); the
-[publish workflow](.github/workflows/publish-community-curve.yml) merges every
-file into the pool automatically. Coverage compounds with adoption.
+[publish workflow](.github/workflows/publish-community-curve.yml) pools every
+contribution with the [self-sampled](.github/workflows/sample-community-curves.yml)
+zones and publishes the result to the `community-data` branch automatically.
+Coverage compounds with adoption.
 
 ### Shift the schedule once
 
