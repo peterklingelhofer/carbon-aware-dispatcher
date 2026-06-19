@@ -16,6 +16,7 @@ someone's CI, so every IO path degrades to a warning and a skip.
 """
 
 import json
+from datetime import datetime
 
 from providers import base
 
@@ -31,6 +32,14 @@ HISTORY_CAP = 365
 def empty_ledger():
     """Return a fresh, empty ledger structure."""
     return {"schemaVersion": 1, "totals": {}, "history": []}
+
+
+def _weekday_of(date_str):
+    """Weekday (Mon=0..Sun=6) for a YYYY-MM-DD date_str, or None if unparseable."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").weekday()
+    except (TypeError, ValueError):
+        return None
 
 
 def merge_entry(data, saved_grams, date_str, emitted_grams=0, is_green=None):
@@ -81,6 +90,8 @@ def merge_entry(data, saved_grams, date_str, emitted_grams=0, is_green=None):
     }
     if data.get("curve"):  # preserve the accumulated hour-of-day curve
         result["curve"] = data["curve"]
+    if data.get("weekday_curve"):  # and the accumulated day-of-week curve
+        result["weekday_curve"] = data["weekday_curve"]
     return result
 
 
@@ -106,47 +117,122 @@ def merge_curve_sample(data, zone, hour, intensity):
     return out
 
 
-def merge_curves(docs, cap_n=None):
-    """Pool several curve documents into one by summing each hour's sum/n.
+def merge_weekday_sample(data, zone, weekday, intensity):
+    """Fold one (weekday, intensity) reading into the per-zone day-of-week curve.
 
-    Each doc is shaped like a ledger ({"curve": {zone: {hour: {sum, n}}}}); the
-    running sum/count form means pooling across contributors is just addition, so
-    the merged mean is the true volume-weighted average. Powers the community
-    data commons: many users' exported curves merge into one shared profile.
-
-    cap_n limits how much any single document can weigh on an hour: a cell with
-    more than cap_n samples is scaled down to cap_n samples while preserving its
-    mean, so the pool reflects breadth across contributors rather than one
-    high-volume repo dominating a zone.
+    Mirror of merge_curve_sample for weekday (Mon=0..Sun=6), so the pool can
+    capture weekend-vs-weekday shifts as a second scheduling axis. Pure, tiny
+    (7 cells per zone). No-op when zone/weekday/intensity are missing.
     """
-    merged = {}
+    if zone is None or weekday is None or intensity is None:
+        return data
+    out = dict(data)
+    wc = {z: dict(cells) for z, cells in (data.get("weekday_curve") or {}).items()}
+    zone_wc = dict(wc.get(zone, {}))
+    cell = dict(zone_wc.get(str(weekday), {"sum": 0.0, "n": 0}))
+    cell["sum"] = round(float(cell.get("sum", 0)) + float(intensity), 1)
+    cell["n"] = int(cell.get("n", 0)) + 1
+    zone_wc[str(weekday)] = cell
+    wc[zone] = zone_wc
+    out["weekday_curve"] = wc
+    return out
+
+
+def weekday_profile(data, zone, min_days=3):
+    """Derive a {weekday: mean_intensity} profile from the day-of-week curve.
+
+    Returns {} until at least min_days distinct weekdays have been sampled, so a
+    repo that only ever runs on one day doesn't get a misleading curve.
+    """
+    zone_wc = (data.get("weekday_curve") or {}).get(zone) or {}
+    profile = {}
+    for key, cell in zone_wc.items():
+        n = int(cell.get("n", 0))
+        if n > 0:
+            profile[int(key)] = round(float(cell.get("sum", 0)) / n, 1)
+    return profile if len(profile) >= min_days else {}
+
+
+def _fold_cells(into, cells, cap_n):
+    """Add one zone's sum/n cells into an accumulator, honoring the weight cap."""
+    for key, cell in cells.items():
+        n = int(cell.get("n", 0))
+        if n <= 0:
+            continue
+        s = float(cell.get("sum", 0))
+        if cap_n and n > cap_n:
+            s = s * cap_n / n  # keep the mean, cap the weight
+            n = cap_n
+        acc = into.setdefault(str(key), {"sum": 0.0, "n": 0})
+        acc["sum"] = round(acc["sum"] + s, 1)
+        acc["n"] += n
+
+
+def merge_curves(docs, cap_n=None):
+    """Pool several curve documents into one by summing each cell's sum/n.
+
+    Each doc is shaped like a ledger ({"curve": {zone: {hour: {sum, n}}}} plus an
+    optional "weekday_curve"); the running sum/count form means pooling across
+    contributors is just addition, so the merged mean is the true volume-weighted
+    average. Powers the community data commons: many users' exported curves merge
+    into one shared hour-of-day and day-of-week profile.
+
+    cap_n limits how much any single document can weigh on a cell: one with more
+    than cap_n samples is scaled down to cap_n samples while preserving its mean,
+    so the pool reflects breadth across contributors rather than one high-volume
+    repo dominating a zone.
+    """
+    pooled = {"curve": {}, "weekday_curve": {}}
     for doc in docs:
-        for zone, cells in (doc.get("curve") or {}).items():
-            zone_curve = merged.setdefault(zone, {})
-            for hour, cell in cells.items():
-                n = int(cell.get("n", 0))
-                if n <= 0:
-                    continue
-                s = float(cell.get("sum", 0))
-                if cap_n and n > cap_n:
-                    s = s * cap_n / n  # keep the mean, cap the weight
-                    n = cap_n
-                acc = zone_curve.setdefault(str(hour), {"sum": 0.0, "n": 0})
-                acc["sum"] = round(acc["sum"] + s, 1)
-                acc["n"] += n
-    return {"curve": merged}
+        for field in ("curve", "weekday_curve"):
+            for zone, cells in (doc.get(field) or {}).items():
+                _fold_cells(pooled[field].setdefault(zone, {}), cells, cap_n)
+    result = {"curve": pooled["curve"]}
+    if pooled["weekday_curve"]:
+        result["weekday_curve"] = pooled["weekday_curve"]
+    return result
 
 
 MAX_PLAUSIBLE_INTENSITY = 2000.0
+
+
+def _validate_cells(zone, unit, cells, lo, hi, max_intensity, problems):
+    """Validate one zone's sum/n cells (keys in [lo, hi]), appending problems."""
+    if not isinstance(cells, dict) or not cells:
+        problems.append(f"{zone}: no {unit} cells")
+        return
+    for key, cell in cells.items():
+        try:
+            k = int(key)
+        except (TypeError, ValueError):
+            problems.append(f"{zone}: non-integer {unit} {key!r}")
+            continue
+        if not lo <= k <= hi:
+            problems.append(f"{zone}: {unit} {k} out of range")
+        if not isinstance(cell, dict):
+            problems.append(f"{zone} {unit} {k}: cell is not an object")
+            continue
+        n = cell.get("n")
+        s = cell.get("sum")
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            problems.append(f"{zone} {unit} {k}: bad count {n!r}")
+            continue
+        if isinstance(s, bool) or not isinstance(s, (int, float)):
+            problems.append(f"{zone} {unit} {k}: bad sum {s!r}")
+            continue
+        mean = s / n
+        if mean < 0 or mean > max_intensity:
+            problems.append(f"{zone} {unit} {k}: implausible mean {mean:.0f} gCO2/kWh")
 
 
 def validate_curve_doc(doc, max_intensity=MAX_PLAUSIBLE_INTENSITY, min_hours=6):
     """Check a contributed curve doc, returning a list of problems ([] = valid).
 
     Guards the community pool against malformed or skewing input before it is
-    merged: structural shape, hour keys in 0-23, positive integer counts, numeric
-    sums, per-hour means within a plausible grid range, and at least one zone with
-    enough distinct hours to be a real contribution rather than a sparse dump.
+    merged: structural shape, hour keys in 0-23 (and weekday keys in 0-6 when a
+    weekday_curve is present), positive integer counts, numeric sums, per-cell
+    means within a plausible grid range, and at least one zone with enough
+    distinct hours to be a real contribution rather than a sparse dump.
     """
     if not isinstance(doc, dict):
         return ["not a JSON object"]
@@ -156,31 +242,15 @@ def validate_curve_doc(doc, max_intensity=MAX_PLAUSIBLE_INTENSITY, min_hours=6):
 
     problems = []
     for zone, cells in curve.items():
-        if not isinstance(cells, dict) or not cells:
-            problems.append(f"{zone}: no hour cells")
-            continue
-        for hour, cell in cells.items():
-            try:
-                h = int(hour)
-            except (TypeError, ValueError):
-                problems.append(f"{zone}: non-integer hour {hour!r}")
-                continue
-            if not 0 <= h <= 23:
-                problems.append(f"{zone}: hour {h} out of range")
-            if not isinstance(cell, dict):
-                problems.append(f"{zone} hour {h}: cell is not an object")
-                continue
-            n = cell.get("n")
-            s = cell.get("sum")
-            if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-                problems.append(f"{zone} hour {h}: bad count {n!r}")
-                continue
-            if isinstance(s, bool) or not isinstance(s, (int, float)):
-                problems.append(f"{zone} hour {h}: bad sum {s!r}")
-                continue
-            mean = s / n
-            if mean < 0 or mean > max_intensity:
-                problems.append(f"{zone} hour {h}: implausible mean {mean:.0f} gCO2/kWh")
+        _validate_cells(zone, "hour", cells, 0, 23, max_intensity, problems)
+
+    weekday_curve = doc.get("weekday_curve")
+    if weekday_curve is not None:
+        if not isinstance(weekday_curve, dict):
+            problems.append("weekday_curve: not an object")
+        else:
+            for zone, cells in weekday_curve.items():
+                _validate_cells(zone, "weekday", cells, 0, 6, max_intensity, problems)
 
     if min_hours and not problems:
         usable = any(len(curve_profile(doc, z, min_hours)) for z in curve)
@@ -387,6 +457,7 @@ def _assemble(
             avoided = round(max(0.0, (mean - float(intensity)) * energy_kwh), 1)
     data = merge_entry(current, saved_grams, date_str, emitted_grams, is_green=is_green)
     data = merge_curve_sample(data, zone, hour, intensity)
+    data = merge_weekday_sample(data, zone, _weekday_of(date_str), intensity)
     if avoided:
         totals = dict(data.get("totals") or {})
         totals["co2_avoided_grams"] = round(float(totals.get("co2_avoided_grams", 0)) + avoided, 1)

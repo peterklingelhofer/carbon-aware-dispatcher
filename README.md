@@ -714,7 +714,10 @@ export COMMUNITY_CURVE="https://raw.githubusercontent.com/peterklingelhofer/carb
 carbon-aware worth-it --zones FR
 ```
 
-Contribute via PR to [`community-curves/`](community-curves/); the
+The pool carries both axes (hour of day and day of week), so a zone gains a
+weekend-vs-weekday profile (often a real second saving, since weekend grids run
+cleaner) as well as a diurnal one. Contribute via PR to
+[`community-curves/`](community-curves/); the
 [publish workflow](.github/workflows/publish-community-curve.yml) merges every
 file into the pool automatically. Coverage compounds with adoption.
 

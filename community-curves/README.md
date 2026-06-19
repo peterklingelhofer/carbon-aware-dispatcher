@@ -14,8 +14,8 @@ could measure alone; coverage compounds with adoption.
    ```
 
    (Set `LEDGER=gist:<id>` or `file:<path>` first so it knows where your ledger
-   is.) The file holds only per-zone, per-hour aggregates (`sum`/`count`), with no
-   timestamps, repo names, or anything identifying.
+   is.) The file holds only per-zone aggregates (`sum`/`count`) by hour of day
+   and by day of week, with no timestamps, repo names, or anything identifying.
 
 2. Open a pull request adding that file. A
    [validation check](../.github/workflows/validate-community-curves.yml) runs on
