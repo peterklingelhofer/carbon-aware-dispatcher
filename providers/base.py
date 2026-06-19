@@ -194,30 +194,50 @@ def _cache_path(method: str, url: str, parse: str) -> str:
     return os.path.join(_cache_dir(), key + ".json")
 
 
-def _cache_get(method: str, url: str, parse: str, ttl: int) -> Any:
-    """Return a fresh cached reading, or None on miss/expiry/error."""
-    if ttl <= 0 or method != "GET" or parse != "json":
+def _cache_read(method: str, url: str, parse: str) -> Any:
+    """Return the full cache entry (data, ts, validators) regardless of freshness.
+
+    Returns None on miss/error. The caller checks the timestamp against the TTL
+    and, when stale, uses the stored ETag / Last-Modified to revalidate cheaply.
+    """
+    if method != "GET" or parse != "json":
         return None
     try:
         with open(_cache_path(method, url, parse)) as fh:
-            entry = json.load(fh)
-        if time.time() - entry["ts"] <= ttl:
-            return entry["data"]
-    except (OSError, ValueError, KeyError):
+            return json.load(fh)
+    except (OSError, ValueError):
         return None
-    return None
 
 
-def _cache_put(method: str, url: str, parse: str, data: Any) -> None:
-    """Best-effort write; cache failures must never break a request."""
+def _cache_put(
+    method: str,
+    url: str,
+    parse: str,
+    data: Any,
+    etag: Any = None,
+    last_modified: Any = None,
+) -> None:
+    """Best-effort write; cache failures must never break a request.
+
+    Stores the validators (ETag / Last-Modified) alongside the data so a later
+    stale read can ask the server "still current?" and accept a tiny 304 instead
+    of refetching the whole payload.
+    """
     if method != "GET" or parse != "json":
         return
+    # Only persist validators that are real strings; a mock or odd header type
+    # must not make the entry unserializable (json.dump would raise).
+    etag = etag if isinstance(etag, str) else None
+    last_modified = last_modified if isinstance(last_modified, str) else None
     path = _cache_path(method, url, parse)
     try:
         os.makedirs(_cache_dir(), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w") as fh:
-            json.dump({"ts": time.time(), "data": data}, fh)
+            json.dump(
+                {"ts": time.time(), "data": data, "etag": etag, "last_modified": last_modified},
+                fh,
+            )
         os.replace(tmp, path)  # atomic, so concurrent writers can't tear a file
     except (OSError, TypeError, ValueError):
         pass
@@ -269,9 +289,16 @@ def request(
 
     verb = method.upper()
     ttl = _cache_ttl()
-    cached = _cache_get(verb, url, parse, ttl)
-    if cached is not None:
-        return cached
+    cache_entry = _cache_read(verb, url, parse) if ttl > 0 else None
+    if cache_entry is not None and time.time() - cache_entry.get("ts", 0) <= ttl:
+        return cache_entry["data"]
+    # Stale (or absent): if we have a validator, ask the server to confirm the
+    # cached copy is still current; a 304 avoids re-downloading the payload.
+    if cache_entry is not None:
+        if cache_entry.get("etag"):
+            headers.setdefault("If-None-Match", cache_entry["etag"])
+        if cache_entry.get("last_modified"):
+            headers.setdefault("If-Modified-Since", cache_entry["last_modified"])
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -290,6 +317,19 @@ def request(
             _set_failure_reason("network error")
             return None
 
+        # Not Modified: our cached copy is still current. Refresh its freshness
+        # and serve it without re-parsing a payload we never received.
+        if response.status_code == 304 and cache_entry is not None:
+            _cache_put(
+                verb,
+                url,
+                parse,
+                cache_entry["data"],
+                cache_entry.get("etag"),
+                cache_entry.get("last_modified"),
+            )
+            return cache_entry["data"]
+
         if response.status_code == 200:
             if parse == "response":
                 return response
@@ -302,7 +342,15 @@ def request(
                 _set_failure_reason("invalid data")
                 return None
             if ttl > 0:
-                _cache_put(verb, url, parse, data)
+                headers_obj = getattr(response, "headers", None) or {}
+                _cache_put(
+                    verb,
+                    url,
+                    parse,
+                    data,
+                    headers_obj.get("ETag"),
+                    headers_obj.get("Last-Modified"),
+                )
             return data
 
         print(
