@@ -36,15 +36,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Framework adapters in integrations/ work with a lazy/optional import, so the
-# base install stays dependency-light (just requests). Install an extra to pull
-# the framework an adapter targets, e.g. pip install carbon-aware-dispatcher[lightning]
-lightning = ["lightning>=2"]
-transformers = ["transformers>=4"]
-airflow = ["apache-airflow>=3.0.6"]
-prefect = ["prefect>=2"]
-dagster = ["dagster>=1"]
-ray = ["ray>=2"]
+# Only dev tooling is declared. The framework adapters in integrations/ use a
+# lazy/optional import and run against whatever the user already has installed
+# (Airflow, Ray, Dagster, Prefect, Lightning, Transformers); you don't install
+# this package to GET those frameworks, you add a carbon gate to your existing
+# ones. So we don't declare them as extras, keeping the base install tiny and
+# avoiding locking/tracking their heavy dependency trees.
 dev = [
     "pytest>=7",
     "pytest-cov",
