@@ -20,6 +20,7 @@ Commands:
   curve           print the hour-of-day carbon curve from historical data
   export-curves   export accumulated curves to share (community data commons)
   merge-curves    pool many exported curve files into one shared community curve
+  sample-curves   sample live zones into a growing curve file (for seeding)
   validate-curves check contributed curve files before they enter the pool
   worth-it        say honestly whether scheduling helps this zone (flat grids don't)
   sla             report Green SLA compliance (share of runs that ran clean)
@@ -1068,6 +1069,57 @@ def cmd_merge_curves(args):
     return EXIT_GREEN
 
 
+def cmd_sample_curves(args):
+    """Sample live intensity for zones and fold it into a growing curve file.
+
+    Run on a schedule to accumulate hour-of-day and day-of-week curves for zones
+    with no free historical API — the only way coverage grows beyond GB before
+    external contributors arrive. Each invocation adds one (hour, weekday) sample
+    per readable zone to --output (created if absent). Exit 0 on any sample, 2
+    when no zone could be read.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    import ledger
+
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    measured: list = []
+    check_grid.check_multiple_zones(
+        zones, 10**12, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
+    )
+    if not measured:
+        print("no zones could be sampled", file=sys.stderr)
+        return EXIT_NODATA
+
+    data = {}
+    if args.output and os.path.exists(args.output):
+        try:
+            with open(args.output) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = {}
+
+    now = datetime.now(timezone.utc)
+    for zone, intensity in measured:
+        data = ledger.merge_curve_sample(data, zone, now.hour, intensity)
+        data = ledger.merge_weekday_sample(data, zone, now.weekday(), intensity)
+
+    doc = {"curve": data.get("curve") or {}}
+    if data.get("weekday_curve"):
+        doc["weekday_curve"] = data["weekday_curve"]
+    payload = json.dumps(doc, indent=2)
+    if args.output:
+        with open(args.output, "w") as fh:
+            fh.write(payload + "\n")
+        sampled = ", ".join(f"{z}={i}" for z, i in measured)
+        print(f"Sampled {len(measured)} zone(s) into {args.output}: {sampled}", file=sys.stderr)
+    else:
+        print(payload)
+    return EXIT_GREEN
+
+
 def cmd_validate_curves(args):
     """Validate contributed curve files before they enter the community pool.
 
@@ -1361,6 +1413,13 @@ def build_parser():
         help="Cap each file's per-hour sample weight (0 = no cap) to limit skew",
     )
     mc.set_defaults(func=cmd_merge_curves)
+
+    sc = sub.add_parser("sample-curves", help="Sample live zones into a growing curve file")
+    add_common(sc)
+    sc.add_argument(
+        "--output", default="", help="Curve file to accumulate into (created if absent)"
+    )
+    sc.set_defaults(func=cmd_sample_curves)
 
     vc = sub.add_parser("validate-curves", help="Validate contributed curve files for the pool")
     vc.add_argument("paths", nargs="+", help="Curve files to validate (from export-curves)")

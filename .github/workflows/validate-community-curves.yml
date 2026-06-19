@@ -20,14 +20,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0       # need the base ref to diff changed files
       - uses: astral-sh/setup-uv@v7
 
-      - name: Validate contributed curves
+      - name: Validate the curve files this PR changes
         run: |
-          shopt -s nullglob
-          files=(community-curves/*.json)
+          base="origin/${{ github.base_ref }}"
+          mapfile -t files < <(git diff --name-only --diff-filter=d "$base"...HEAD -- 'community-curves/*.json')
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No curve files to validate."
+            echo "No curve files changed in this PR."
             exit 0
           fi
+          printf 'Validating: %s\n' "${files[@]}"
           uv run cli.py validate-curves "${files[@]}"
