@@ -905,6 +905,47 @@ def classify_tier(intensity, thresholds):
     return "red", f"{intensity:.0f} gCO2eq/kWh: defer heavy work"
 
 
+# A continuous version of the tier dial for carbon-aware autoscaling. The three
+# tiers are a coarse signal; this is the smooth one an autoscaler (KEDA/HPA, a
+# Ray driver, a batch fan-out) multiplies its replica/parallelism count by, so
+# the heaviest compute concentrates in the cleanest hours instead of toggling
+# fully on/off. CarbonScaler-style (Hanafy et al., 2023).
+DEFAULT_SCALE_MIN = 0.25
+DEFAULT_SCALE_MAX = 1.0
+
+
+def compute_carbon_scale(
+    intensity, thresholds, scale_min=DEFAULT_SCALE_MIN, scale_max=DEFAULT_SCALE_MAX
+):
+    """Map carbon intensity to a scale factor in [scale_min, scale_max].
+
+    At or below the green boundary -> scale_max (run everything); at or above the
+    amber boundary -> scale_min (run a floor so work still makes progress);
+    linearly interpolated between. Unknown intensity returns scale_max: fail
+    open, never throttle on missing data.
+    """
+    if intensity is None:
+        return scale_max
+    green, amber = thresholds
+    if intensity <= green:
+        return scale_max
+    if intensity >= amber:
+        return scale_min
+    frac = (intensity - green) / (amber - green)
+    return round(scale_max - frac * (scale_max - scale_min), 3)
+
+
+def _scale_bounds():
+    """Read the autoscale floor/ceiling from env, falling back to sane defaults."""
+    lo = _soft_float("SCALE_MIN")
+    hi = _soft_float("SCALE_MAX")
+    scale_min = lo if lo is not None and lo >= 0 else DEFAULT_SCALE_MIN
+    scale_max = hi if hi is not None and hi > 0 else DEFAULT_SCALE_MAX
+    if scale_max < scale_min:
+        return DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX
+    return scale_min, scale_max
+
+
 # Set once per process when the cumulative ledger is updated, so write_job_summary
 # can append a lifetime row. None when no ledger is configured or the update fails.
 _lifetime_summary = None
@@ -1498,6 +1539,12 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
     if tier != "unknown":
         set_output("carbon_tier", tier)
         set_output("carbon_tier_reason", tier_reason)
+
+    # Continuous autoscaling signal: a factor downstream multiplies its replica
+    # or parallelism count by, concentrating heavy compute in the cleanest hours.
+    scale_min, scale_max = _scale_bounds()
+    scale = compute_carbon_scale(intensity, thresholds, scale_min, scale_max)
+    set_output("carbon_scale", str(scale))
 
     # Provenance: which provider produced this reading, and whether it's a grid
     # measurement or a modeled estimate, so the number's origin is never opaque.

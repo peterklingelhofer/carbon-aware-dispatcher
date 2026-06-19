@@ -2499,6 +2499,41 @@ class TestCarbonTier:
         # Negative intensity should not crash; treated as cleanest (green)
         assert check_grid.classify_tier(-10, (150, 300))[0] == "green"
 
+
+class TestComputeCarbonScale:
+    def test_clean_returns_max(self):
+        assert check_grid.compute_carbon_scale(100, (150, 300)) == 1.0
+
+    def test_dirty_returns_min(self):
+        assert check_grid.compute_carbon_scale(400, (150, 300)) == 0.25
+
+    def test_boundaries_inclusive(self):
+        assert check_grid.compute_carbon_scale(150, (150, 300)) == 1.0
+        assert check_grid.compute_carbon_scale(300, (150, 300)) == 0.25
+
+    def test_linear_interpolation_midpoint(self):
+        # Halfway between 150 and 300 -> halfway between 1.0 and 0.25 = 0.625
+        assert check_grid.compute_carbon_scale(225, (150, 300)) == 0.625
+
+    def test_unknown_fails_open_to_max(self):
+        assert check_grid.compute_carbon_scale(None, (150, 300)) == 1.0
+
+    def test_custom_bounds(self):
+        # Floor of 0.5, ceiling of 2.0; dirty -> floor
+        assert check_grid.compute_carbon_scale(400, (150, 300), 0.5, 2.0) == 0.5
+        assert check_grid.compute_carbon_scale(100, (150, 300), 0.5, 2.0) == 2.0
+
+    def test_scale_bounds_from_env(self):
+        with mock.patch.dict(os.environ, {"SCALE_MIN": "0.1", "SCALE_MAX": "3"}):
+            assert check_grid._scale_bounds() == (0.1, 3.0)
+
+    def test_scale_bounds_rejects_inverted(self):
+        with mock.patch.dict(os.environ, {"SCALE_MIN": "2", "SCALE_MAX": "1"}):
+            assert check_grid._scale_bounds() == (
+                check_grid.DEFAULT_SCALE_MIN,
+                check_grid.DEFAULT_SCALE_MAX,
+            )
+
     def test_summary_sets_tier_output(self):
         with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
             out_path = f.name

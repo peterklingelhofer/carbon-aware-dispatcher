@@ -334,6 +334,31 @@ why). Use it to drive matrix includes, conditional steps, or job-level `if:`.
 See [`examples/adaptive-ci.yml`](examples/adaptive-ci.yml) for a full matrix that
 scales test suites to the tier.
 
+## Carbon-aware autoscaling (the continuous dial)
+
+The three tiers are coarse; `carbon_scale` is the smooth version, a factor in
+`[scale_min, scale_max]` that ramps linearly from `scale_max` at or below the
+green boundary down to `scale_min` at or above the amber boundary. Multiply your
+replica count, batch parallelism, or test-shard count by it so the heaviest
+compute concentrates in the cleanest hours instead of toggling fully on/off
+(CarbonScaler-style). It fails open to `scale_max` when intensity is unknown, so
+missing data never throttles you.
+
+```yaml
+- uses: peterklingelhofer/carbon-aware-dispatcher@v1
+  id: carbon
+  with:
+    tier_thresholds: '150,300'   # ramp endpoints
+    scale_min: '0.25'            # floor: still make progress when dirty
+```
+
+From the CLI (for KEDA/HPA, a Ray driver, or a cron that resizes a fleet):
+
+```bash
+carbon-aware scale --zones GB                      # -> 0.625
+carbon-aware scale --zones GB --max-replicas 16    # -> 10  (ceil(0.625 x 16))
+```
+
 ## Green SLA
 
 Commit to a carbon target and prove it. Set `green_sla_target` to the percent of
@@ -861,6 +886,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `grid_clean` | `true` if a zone was clean enough, `false` otherwise. |
 | `carbon_intensity` | Intensity in gCO2eq/kWh, or `unknown` on error. |
 | `carbon_tier` | Adaptive-CI dial: `green` / `amber` / `red` (plus `carbon_tier_reason`). |
+| `carbon_scale` | Continuous autoscaling factor in `[scale_min, scale_max]`; multiply your replica/parallelism count by it. See [Carbon-aware autoscaling](#carbon-aware-autoscaling-the-continuous-dial). |
 | `budget_used_pct` / `budget_remaining_grams` / `budget_exceeded` / `budget_state` | Monthly carbon budget status (needs `monthly_budget_grams` + `ledger`). |
 | `selected_cost_usd_hr` | Representative price of the selected zone when `cost_weight` > 0. |
 | `grid_zone` | Selected zone. |
