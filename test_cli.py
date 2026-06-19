@@ -116,6 +116,50 @@ class TestWait:
         assert "TIMEOUT" in capsys.readouterr().out
 
 
+class TestSplit:
+    @staticmethod
+    def _measured(pairs):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.extend(pairs)
+            return (None, None, None, [])
+
+        return fake
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_water_fills_cleanest_first(self, cmz, capsys):
+        cmz.side_effect = self._measured([("GB", 200), ("FR", 50)])
+        rc = cli.main(
+            ["split", "--zones", "GB,FR", "--shards", "6", "--capacity", '{"FR":4}', "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        alloc = {a["zone"]: a["shards"] for a in out["allocation"]}
+        assert alloc == {"FR": 4, "GB": 2} and out["unplaced"] == 0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_reports_saving_vs_even_split(self, cmz, capsys):
+        cmz.side_effect = self._measured([("FR", 50), ("GB", 250)])
+        rc = cli.main(["split", "--zones", "FR,GB", "--shards", "4", "--energy-kwh", "1", "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["emitted_grams"] == 200.0  # all 4 to FR
+        assert out["even_split_grams"] == 600.0
+        assert out["saved_grams"] == 400.0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_data_exit_2(self, cmz, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["split", "--zones", "GB", "--shards", "4"])
+        assert rc == cli.EXIT_NODATA
+
+    def test_bad_capacity_is_usage_error(self, capsys):
+        rc = cli.main(["split", "--zones", "GB", "--shards", "4", "--capacity", "not-json"])
+        assert rc == cli.EXIT_USAGE
+
+
 class TestWaitOptimalStopping:
     @mock.patch("cli.time.sleep")
     @mock.patch("cli.check_grid.queue_find_optimal_window")
