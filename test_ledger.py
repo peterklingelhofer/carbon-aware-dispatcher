@@ -209,6 +209,48 @@ class TestMergeCurves:
         assert ledger.merge_curves([doc]) == {"curve": {"FR": {}}}
 
 
+class TestWeekdayCurve:
+    def test_merge_and_profile(self):
+        data = ledger.empty_ledger()
+        for wd in range(3):
+            data = ledger.merge_weekday_sample(data, "FR", wd, 100 + wd)
+        # below min_days
+        assert ledger.weekday_profile(data, "FR", min_days=4) == {}
+        prof = ledger.weekday_profile(data, "FR", min_days=3)
+        assert prof == {0: 100.0, 1: 101.0, 2: 102.0}
+
+    def test_merge_sample_is_noop_on_missing(self):
+        d = ledger.empty_ledger()
+        assert ledger.merge_weekday_sample(d, None, 1, 100) == d
+        assert ledger.merge_weekday_sample(d, "FR", None, 100) == d
+
+    def test_merge_entry_preserves_weekday_curve(self):
+        data = ledger.merge_weekday_sample(ledger.empty_ledger(), "FR", 2, 90)
+        folded = ledger.merge_entry(data, 100, "2026-06-14")
+        assert folded["weekday_curve"]["FR"]["2"] == {"sum": 90.0, "n": 1}
+
+    def test_assemble_records_weekday(self):
+        # 2026-06-15 is a Monday (weekday 0)
+        data = ledger._assemble(ledger.empty_ledger(), 0, "2026-06-15", 0, "FR", 120, 12, 1.0)
+        assert data["weekday_curve"]["FR"]["0"] == {"sum": 120.0, "n": 1}
+
+    def test_merge_curves_pools_weekday(self):
+        a = {
+            "curve": {"FR": {str(h): {"sum": 100.0, "n": 1} for h in range(6)}},
+            "weekday_curve": {"FR": {"0": {"sum": 100.0, "n": 1}}},
+        }
+        b = {
+            "curve": {"FR": {str(h): {"sum": 50.0, "n": 1} for h in range(6)}},
+            "weekday_curve": {"FR": {"0": {"sum": 50.0, "n": 1}}},
+        }
+        merged = ledger.merge_curves([a, b])
+        assert merged["weekday_curve"]["FR"]["0"] == {"sum": 150.0, "n": 2}
+
+    def test_merge_curves_omits_weekday_when_absent(self):
+        a = {"curve": {"FR": {str(h): {"sum": 100.0, "n": 1} for h in range(6)}}}
+        assert "weekday_curve" not in ledger.merge_curves([a])
+
+
 class TestValidateCurveDoc:
     def _good(self, zone="FR", base=100):
         data = ledger.empty_ledger()
@@ -252,6 +294,22 @@ class TestValidateCurveDoc:
     def test_min_hours_zero_disables_sparsity_check(self):
         doc = {"curve": {"FR": {"3": {"sum": 100.0, "n": 1}}}}
         assert ledger.validate_curve_doc(doc, min_hours=0) == []
+
+    def test_valid_weekday_curve_passes(self):
+        doc = self._good()
+        doc["weekday_curve"] = {"FR": {"0": {"sum": 100.0, "n": 1}}}
+        assert ledger.validate_curve_doc(doc) == []
+
+    def test_rejects_weekday_out_of_range(self):
+        doc = self._good()
+        doc["weekday_curve"] = {"FR": {"9": {"sum": 100.0, "n": 1}}}
+        problems = ledger.validate_curve_doc(doc)
+        assert any("weekday 9 out of range" in p for p in problems)
+
+    def test_rejects_non_object_weekday_curve(self):
+        doc = self._good()
+        doc["weekday_curve"] = "nope"
+        assert any("weekday_curve: not an object" in p for p in ledger.validate_curve_doc(doc))
 
 
 class TestFormatAndBadge:

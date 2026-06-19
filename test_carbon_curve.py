@@ -126,8 +126,29 @@ class TestWeekday:
         assert carbon_curve.cleanest_weekday({0: 200, 5: 80, 6: 90}) == (5, 80)
         assert carbon_curve.cleanest_weekday({}) == (None, None)
 
-    def test_build_weekday_non_gb_empty(self):
+    def test_build_weekday_non_gb_empty(self, monkeypatch):
+        monkeypatch.delenv("LEDGER", raising=False)
+        monkeypatch.delenv("COMMUNITY_CURVE", raising=False)
         assert carbon_curve.build_weekday_profile("FR") == {}
+
+    def test_build_weekday_uses_community_fallback(self, monkeypatch, tmp_path):
+        import json
+
+        import ledger
+
+        monkeypatch.delenv("LEDGER", raising=False)
+        data = ledger.empty_ledger()
+        for wd in range(4):
+            data = ledger.merge_weekday_sample(data, "JP", wd, 400 + wd)
+        path = tmp_path / "community.json"
+        path.write_text(json.dumps({"curve": {}, "weekday_curve": data["weekday_curve"]}))
+        monkeypatch.setenv("COMMUNITY_CURVE", str(path))
+        prof = carbon_curve.build_weekday_profile("JP")
+        assert prof == {0: 400.0, 1: 401.0, 2: 402.0, 3: 403.0}
+
+    def test_community_weekday_none_without_env(self, monkeypatch):
+        monkeypatch.delenv("COMMUNITY_CURVE", raising=False)
+        assert carbon_curve.community_weekday_profile("FR") == {}
 
     @mock.patch("carbon_curve.base.request")
     def test_build_weekday_gb(self, req):
