@@ -1,0 +1,33 @@
+# Validate community curve contributions
+#
+# Gate on PRs that touch the community-curves pool: every contributed file must
+# be well-formed (valid shape, hours in 0-23, positive counts, plausible
+# intensities, not a sparse dump) before it can be merged and pooled. This keeps
+# bad or skewing data out of the shared COMMUNITY_CURVE the whole community uses.
+
+name: Validate community curves
+
+on:
+  pull_request:
+    paths:
+      - 'community-curves/*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Validate contributed curves
+        run: |
+          shopt -s nullglob
+          files=(community-curves/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No curve files to validate."
+            exit 0
+          fi
+          uv run cli.py validate-curves "${files[@]}"

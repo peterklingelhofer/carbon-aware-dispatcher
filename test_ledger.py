@@ -191,6 +191,51 @@ class TestMergeCurves:
         assert ledger.merge_curves([{}, {"curve": {}}]) == {"curve": {}}
 
 
+class TestValidateCurveDoc:
+    def _good(self, zone="FR", base=100):
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, zone, hour, base + hour)
+        return {"curve": data["curve"]}
+
+    def test_valid_doc_has_no_problems(self):
+        assert ledger.validate_curve_doc(self._good()) == []
+
+    def test_rejects_non_object(self):
+        assert ledger.validate_curve_doc([1, 2]) == ["not a JSON object"]
+
+    def test_rejects_missing_curve(self):
+        assert ledger.validate_curve_doc({}) == ["missing or empty 'curve'"]
+
+    def test_rejects_hour_out_of_range(self):
+        doc = self._good()
+        doc["curve"]["FR"]["27"] = {"sum": 100.0, "n": 1}
+        assert any("out of range" in p for p in ledger.validate_curve_doc(doc))
+
+    def test_rejects_bad_count(self):
+        doc = self._good()
+        doc["curve"]["FR"]["3"] = {"sum": 100.0, "n": 0}
+        assert any("bad count" in p for p in ledger.validate_curve_doc(doc))
+
+    def test_rejects_implausible_intensity(self):
+        doc = self._good()
+        doc["curve"]["FR"]["3"] = {"sum": 99999.0, "n": 1}
+        assert any("implausible" in p for p in ledger.validate_curve_doc(doc))
+
+    def test_allows_dirty_but_real_grid(self):
+        # a coal-heavy grid near 900 gCO2/kWh is real, not implausible
+        doc = self._good(base=895)
+        assert ledger.validate_curve_doc(doc) == []
+
+    def test_rejects_sparse_dump(self):
+        doc = {"curve": {"FR": {"3": {"sum": 100.0, "n": 1}}}}
+        assert any("too sparse" in p for p in ledger.validate_curve_doc(doc))
+
+    def test_min_hours_zero_disables_sparsity_check(self):
+        doc = {"curve": {"FR": {"3": {"sum": 100.0, "n": 1}}}}
+        assert ledger.validate_curve_doc(doc, min_hours=0) == []
+
+
 class TestFormatAndBadge:
     def test_format_grams(self):
         assert ledger.format_total(850) == "850 g"

@@ -17,10 +17,20 @@ could measure alone — coverage compounds with adoption.
    is.) The file holds only per-zone, per-hour aggregates (`sum`/`count`) — no
    timestamps, repo names, or anything identifying.
 
-2. Open a pull request adding that file. On merge, the
+2. Open a pull request adding that file. A
+   [validation check](../.github/workflows/validate-community-curves.yml) runs on
+   the PR — it rejects malformed files, hours outside 0-23, non-positive counts,
+   implausible intensities (above 2000 gCO2/kWh), and sparse single-sample dumps,
+   so bad data never reaches the pool. You can run it yourself first:
+
+   ```bash
+   carbon-aware validate-curves community-curves/<your-handle>.json
+   ```
+
+3. On merge, the
    [`publish-community-curve`](../.github/workflows/publish-community-curve.yml)
-   workflow merges every file here into a single pooled `community-curve.json`
-   at the repo root and commits it.
+   workflow re-validates, merges every file here into a single pooled
+   `community-curve.json` at the repo root, and commits it.
 
 ## Use the pool
 
