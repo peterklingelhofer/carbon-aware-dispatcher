@@ -359,6 +359,20 @@ carbon-aware scale --zones GB                      # -> 0.625
 carbon-aware scale --zones GB --max-replicas 16    # -> 10  (ceil(0.625 x 16))
 ```
 
+### Splitting divisible work across regions
+
+For divisible batch or inference, the cleanest single region isn't enough if it
+can't hold the whole load. `split` water-fills N shards into the cleanest
+reachable zones first, respecting optional per-zone capacity. This is the
+emissions-optimal allocation for linear per-shard cost:
+
+```bash
+# Place 100 shards, cleanest-first, capped per region; show the saving vs even
+carbon-aware split --zones CISO,GB,FR --shards 100 \
+  --capacity '{"FR":40,"GB":40,"CISO":40}' --energy-kwh 0.5
+#  -> FR: 40  GB: 40  CISO: 20   emits ~X g vs ~Y g even split (saves ~Z g)
+```
+
 ## Green SLA
 
 Commit to a carbon target and prove it. Set `green_sla_target` to the percent of

@@ -7,6 +7,8 @@ where the real energy lives: a nightly training run or data pipeline dwarfs CI.
 
 Commands:
   check           exit 0 if the grid is green now; compose as `carbon-aware check && ./job.sh`
+  scale           print a carbon-aware autoscale factor (or replica count) for the grid now
+  split           emissions-optimal split of N divisible shards across the cleanest regions
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   marginal        WattTime marginal-emissions signal (the real avoided-emissions metric)
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
@@ -142,6 +144,69 @@ def cmd_scale(args):
     else:
         print(replicas if replicas is not None else factor)
     return EXIT_NODATA if result["status"] == "error" else EXIT_GREEN
+
+
+def _parse_capacity(raw):
+    """Parse a JSON zone->max-shards capacity map, or None when unset."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return {str(k): int(v) for k, v in data.items()}
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("--capacity must be a JSON object of zone -> max shards") from exc
+
+
+def cmd_split(args):
+    """Emissions-optimal split of N divisible shards across regions (water-filling).
+
+    For divisible batch/inference: fills the cleanest reachable zones first (up to
+    optional per-zone --capacity), since per-shard emissions are linear in
+    intensity. With --energy-kwh it also reports the emissions and the saving vs
+    an even split. Exit 0 if any zone was placed, 2 if no zone could be read.
+    """
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    capacities = _parse_capacity(args.capacity)  # may raise ValueError -> EXIT_USAGE
+    measured = []
+    with contextlib.redirect_stdout(sys.stderr):
+        check_grid.check_multiple_zones(
+            zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
+        )
+    if not measured:
+        if args.json:
+            print(json.dumps({"status": "error"}))
+        else:
+            print("NO DATA: could not read any zone", file=sys.stderr)
+        return EXIT_NODATA
+
+    allocation, unplaced = check_grid.allocate_shards(measured, args.shards, capacities)
+    result = {
+        "status": "ok",
+        "shards": int(args.shards),
+        "unplaced": unplaced,
+        "allocation": [{"zone": z, "shards": n, "intensity": i} for z, n, i in allocation],
+    }
+    if args.energy_kwh:
+        emitted = check_grid.allocation_emissions(allocation, args.energy_kwh)
+        even = check_grid.even_split_emissions(measured, args.shards, args.energy_kwh)
+        result["emitted_grams"] = emitted
+        result["even_split_grams"] = even
+        result["saved_grams"] = round(max(0.0, even - emitted), 1)
+
+    if args.json:
+        print(json.dumps(result))
+    else:
+        for z, n, i in allocation:
+            print(f"  {z}: {n} shards ({i} gCO2eq/kWh)")
+        if unplaced:
+            print(f"  unplaced: {unplaced} shards (insufficient capacity)")
+        if args.energy_kwh:
+            print(
+                f"  emits ~{result['emitted_grams']} g vs ~{result['even_split_grams']} g "
+                f"even split (saves ~{result['saved_grams']} g)"
+            )
+    return EXIT_GREEN
 
 
 def cmd_marginal(args):
@@ -1435,6 +1500,27 @@ def build_parser():
         help="Print integer replicas (ceil(factor x N), >=1) instead of the factor",
     )
     scl.set_defaults(func=cmd_scale)
+
+    spl = sub.add_parser(
+        "split", help="Emissions-optimal split of N divisible shards across regions"
+    )
+    add_common(spl)
+    spl.add_argument(
+        "--shards", type=int, required=True, help="Number of divisible work units to place"
+    )
+    spl.add_argument(
+        "--capacity",
+        default="",
+        help='Optional JSON zone -> max shards, e.g. \'{"CISO":4,"GB":2}\' '
+        "(zones omitted are unbounded; 0 excludes one)",
+    )
+    spl.add_argument(
+        "--energy-kwh",
+        type=float,
+        default=None,
+        help="Per-shard energy (kWh) to report emissions and saving vs an even split",
+    )
+    spl.set_defaults(func=cmd_split)
 
     w = sub.add_parser("wait-for-green", help="Block until green or a deadline")
     add_common(w)

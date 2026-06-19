@@ -870,6 +870,53 @@ def worth_waiting(
     return saved > idle, round(saved, 1), round(idle, 1)
 
 
+def allocate_shards(zone_intensities, shards, capacities=None):
+    """Emissions-optimal split of N divisible shards across zones (water-filling).
+
+    For divisible load (batch inference, embarrassingly-parallel jobs) the
+    per-shard emissions are linear in a zone's intensity, so the minimal-emissions
+    allocation is to fill the cleanest zone first, then the next, up to each
+    zone's capacity: the greedy fractional-knapsack / transportation optimum.
+
+    zone_intensities: iterable of (zone, intensity); zones with None intensity are
+    dropped. capacities: optional dict zone -> max shards (zones absent from the
+    map are unbounded; pass 0 to exclude one). Returns
+    (allocation, unplaced) where allocation is a list of (zone, shards, intensity)
+    cleanest-first and unplaced is any shards that capacity could not absorb.
+    """
+    rows = [(z, i) for z, i in zone_intensities if i is not None]
+    shards = int(shards)
+    if not rows or shards <= 0:
+        return [], max(0, shards)
+    rows.sort(key=lambda r: r[1])  # cleanest first
+    remaining = shards
+    out = []
+    for zone, intensity in rows:
+        if remaining <= 0:
+            break
+        cap = remaining if capacities is None else int(capacities.get(zone, remaining))
+        take = max(0, min(remaining, cap))
+        if take > 0:
+            out.append((zone, take, intensity))
+            remaining -= take
+    return out, remaining
+
+
+def allocation_emissions(allocation, energy_per_shard_kwh):
+    """gCO2 for an allocation: sum of shards x per-shard energy x zone intensity."""
+    return round(sum(n * energy_per_shard_kwh * i for _, n, i in allocation), 1)
+
+
+def even_split_emissions(zone_intensities, shards, energy_per_shard_kwh):
+    """gCO2 from spreading shards evenly across all candidates: the naive baseline."""
+    rows = [i for _, i in zone_intensities if i is not None]
+    shards = int(shards)
+    if not rows or shards <= 0:
+        return 0.0
+    per = shards / len(rows)
+    return round(sum(per * energy_per_shard_kwh * i for i in rows), 1)
+
+
 def carbon_equivalents(grams):
     """Translate grams of CO2 into relatable real-world equivalents.
 
