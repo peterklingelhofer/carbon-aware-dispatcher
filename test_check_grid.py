@@ -2525,6 +2525,48 @@ class TestWorthWaiting:
         assert check_grid.worth_waiting(300, 50, 1.0, 0)[0] is False
 
 
+class TestAllocateShards:
+    def test_all_to_cleanest_when_unbounded(self):
+        alloc, unplaced = check_grid.allocate_shards([("GB", 200), ("FR", 50)], 10)
+        assert alloc == [("FR", 10, 50)]
+        assert unplaced == 0
+
+    def test_fills_cleanest_first_with_capacity(self):
+        alloc, unplaced = check_grid.allocate_shards(
+            [("GB", 200), ("FR", 50), ("DE", 400)], 10, {"FR": 4, "GB": 3, "DE": 10}
+        )
+        # FR (cleanest) takes its 4, GB next takes 3, DE takes the last 3
+        assert alloc == [("FR", 4, 50), ("GB", 3, 200), ("DE", 3, 400)]
+        assert unplaced == 0
+
+    def test_reports_unplaced_when_capacity_short(self):
+        alloc, unplaced = check_grid.allocate_shards([("FR", 50)], 10, {"FR": 4})
+        assert alloc == [("FR", 4, 50)]
+        assert unplaced == 6
+
+    def test_zero_capacity_excludes_zone(self):
+        alloc, _ = check_grid.allocate_shards([("FR", 50), ("GB", 200)], 5, {"FR": 0})
+        assert alloc == [("GB", 5, 200)]
+
+    def test_drops_none_intensity(self):
+        alloc, _ = check_grid.allocate_shards([("GB", None), ("FR", 50)], 3)
+        assert alloc == [("FR", 3, 50)]
+
+    def test_emissions_and_even_split(self):
+        alloc, _ = check_grid.allocate_shards([("FR", 50), ("GB", 250)], 4, {"FR": 2, "GB": 2})
+        # 2 shards FR @ 1 kWh @ 50 + 2 @ 250 = 100 + 500 = 600
+        assert check_grid.allocation_emissions(alloc, 1.0) == 600.0
+        # even split: 2 @ 50 + 2 @ 250 = 600 (same here, both capacity-limited)
+        assert check_grid.even_split_emissions([("FR", 50), ("GB", 250)], 4, 1.0) == 600.0
+
+    def test_optimal_beats_even_split(self):
+        zones = [("FR", 50), ("GB", 250)]
+        alloc, _ = check_grid.allocate_shards(zones, 4)  # all to FR
+        opt = check_grid.allocation_emissions(alloc, 1.0)  # 4*50 = 200
+        even = check_grid.even_split_emissions(zones, 4, 1.0)  # 2*50 + 2*250 = 600
+        assert opt < even
+
+
 class TestComputeCarbonScale:
     def test_clean_returns_max(self):
         assert check_grid.compute_carbon_scale(100, (150, 300)) == 1.0
