@@ -114,6 +114,39 @@ class TestIsWorthShifting:
         assert carbon_curve.is_worth_shifting({0: 100, 1: 102}, min_spread_pct=1.0) is True
 
 
+class TestProfileStats:
+    def test_stats_mean_count_var(self):
+        stats = carbon_curve.profile_stats_from_samples([(0, 10), (0, 20), (1, 100)])
+        assert stats[0] == {"mean": 15.0, "count": 2, "var": 50.0}
+        assert stats[1] == {"mean": 100.0, "count": 1, "var": 0.0}
+
+    def test_median_robust_to_spike(self):
+        med = carbon_curve.median_profile_from_samples([(0, 50), (0, 52), (0, 9000)])
+        assert med[0] == 52.0  # the spike doesn't move the median
+
+    def test_anova_separates_signal_from_noise(self):
+        tight = carbon_curve.profile_stats_from_samples(
+            [(0, 49), (0, 51), (0, 50), (1, 199), (1, 201), (1, 200)]
+        )
+        noisy = carbon_curve.profile_stats_from_samples(
+            [(0, -150), (0, 250), (0, 50), (1, 0), (1, 400), (1, 200)]
+        )
+        assert carbon_curve.is_significant(tight) is True
+        assert carbon_curve.is_significant(noisy) is False
+
+    def test_anova_needs_two_groups(self):
+        assert carbon_curve.anova_f(carbon_curve.profile_stats_from_samples([(0, 50)])) is None
+
+    def test_confidence_band_widens_with_noise(self):
+        stats = carbon_curve.profile_stats_from_samples([(0, 100), (0, 100), (1, 50), (1, 150)])
+        band = carbon_curve.confidence_band(stats)
+        assert band[0]["lo"] == band[0]["hi"] == 100.0  # zero variance -> no width
+        assert band[1]["hi"] - band[1]["lo"] > 0  # spread hour -> a real band
+
+    def test_build_profile_samples_none_for_non_gb(self):
+        assert carbon_curve.build_profile_samples("FR") is None
+
+
 class TestWeekday:
     def test_profile_needs_min_days(self):
         samples = [(0, 100), (0, 120), (1, 90)]  # only 2 distinct days
