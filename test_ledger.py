@@ -190,6 +190,24 @@ class TestMergeCurves:
         assert ledger.merge_curves([]) == {"curve": {}}
         assert ledger.merge_curves([{}, {"curve": {}}]) == {"curve": {}}
 
+    def test_cap_n_limits_one_files_weight(self):
+        heavy = {"curve": {"FR": {"3": {"sum": 10000.0, "n": 100}}}}  # mean 100, n 100
+        light = {"curve": {"FR": {"3": {"sum": 100.0, "n": 2}}}}  # mean 50, n 2
+        # without a cap the heavy file dominates: (10000+100)/(102) ~= 99
+        uncapped = ledger.merge_curves([heavy, light])["curve"]["FR"]["3"]
+        assert round(uncapped["sum"] / uncapped["n"]) == 99
+        # capped to 10 samples the heavy file contributes mean*10 = 1000/n10
+        capped = ledger.merge_curves([heavy, light], cap_n=10)["curve"]["FR"]["3"]
+        assert capped["n"] == 12 and round(capped["sum"] / capped["n"]) == 92
+
+    def test_cap_n_leaves_small_files_untouched(self):
+        light = {"curve": {"FR": {"3": {"sum": 100.0, "n": 2}}}}
+        assert ledger.merge_curves([light], cap_n=10)["curve"]["FR"]["3"] == {"sum": 100.0, "n": 2}
+
+    def test_skips_nonpositive_counts(self):
+        doc = {"curve": {"FR": {"3": {"sum": 100.0, "n": 0}}}}
+        assert ledger.merge_curves([doc]) == {"curve": {"FR": {}}}
+
 
 class TestValidateCurveDoc:
     def _good(self, zone="FR", base=100):

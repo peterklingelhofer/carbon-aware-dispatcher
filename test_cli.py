@@ -540,6 +540,14 @@ class TestMergeCurves:
         assert rc == cli.EXIT_GREEN
         assert "FR" in json.loads(dest.read_text())["curve"]
 
+    def test_cap_n_clamps_weight(self, capsys, tmp_path):
+        heavy = tmp_path / "heavy.json"
+        heavy.write_text(json.dumps({"curve": {"FR": {"3": {"sum": 10000.0, "n": 100}}}}))
+        rc = cli.main(["merge-curves", str(heavy), "--cap-n", "10"])
+        assert rc == cli.EXIT_GREEN
+        cell = json.loads(capsys.readouterr().out)["curve"]["FR"]["3"]
+        assert cell["n"] == 10 and cell["sum"] == 1000.0
+
     def test_errors_when_no_readable_files(self, tmp_path):
         rc = cli.main(["merge-curves", str(tmp_path / "missing.json")])
         assert rc == cli.EXIT_NODATA

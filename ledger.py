@@ -106,22 +106,34 @@ def merge_curve_sample(data, zone, hour, intensity):
     return out
 
 
-def merge_curves(docs):
+def merge_curves(docs, cap_n=None):
     """Pool several curve documents into one by summing each hour's sum/n.
 
     Each doc is shaped like a ledger ({"curve": {zone: {hour: {sum, n}}}}); the
     running sum/count form means pooling across contributors is just addition, so
     the merged mean is the true volume-weighted average. Powers the community
     data commons: many users' exported curves merge into one shared profile.
+
+    cap_n limits how much any single document can weigh on an hour: a cell with
+    more than cap_n samples is scaled down to cap_n samples while preserving its
+    mean, so the pool reflects breadth across contributors rather than one
+    high-volume repo dominating a zone.
     """
     merged = {}
     for doc in docs:
         for zone, cells in (doc.get("curve") or {}).items():
             zone_curve = merged.setdefault(zone, {})
             for hour, cell in cells.items():
+                n = int(cell.get("n", 0))
+                if n <= 0:
+                    continue
+                s = float(cell.get("sum", 0))
+                if cap_n and n > cap_n:
+                    s = s * cap_n / n  # keep the mean, cap the weight
+                    n = cap_n
                 acc = zone_curve.setdefault(str(hour), {"sum": 0.0, "n": 0})
-                acc["sum"] = round(acc["sum"] + float(cell.get("sum", 0)), 1)
-                acc["n"] += int(cell.get("n", 0))
+                acc["sum"] = round(acc["sum"] + s, 1)
+                acc["n"] += n
     return {"curve": merged}
 
 
