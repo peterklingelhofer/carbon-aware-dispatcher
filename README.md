@@ -737,6 +737,9 @@ carbon-aware advise --zones GB --dir .github/workflows --energy-kwh 5
 carbon-aware curve --zones GB
 
 # Gut-check whether scheduling is even worth it here (flat grids: no)
+# Where raw history exists (GB), this runs a one-way ANOVA F-test, so a curve
+# that only looks bumpy from a few noisy samples is called out as not worth it.
+# `curve` adds a median cleanest hour and a 95% confidence band per hour.
 carbon-aware worth-it --zones GB    # exit 0 worth it, 1 not, 2 can't assess
 ```
 

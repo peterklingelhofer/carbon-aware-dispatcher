@@ -1338,25 +1338,40 @@ def cmd_curve(args):
 
     hour, intensity = carbon_curve.cleanest_hour(profile)
     spread = carbon_curve.spread_pct(profile)
+
+    # Where raw samples exist, add a median view and a confidence band so
+    # an under-sampled or spike-skewed hour is visible rather than taken at face value.
+    samples = carbon_curve.build_profile_samples(first)
+    band = median = robust_hour = None
+    if samples:
+        stats = carbon_curve.profile_stats_from_samples(samples)
+        band = carbon_curve.confidence_band(stats)
+        median = carbon_curve.median_profile_from_samples(samples)
+        robust_hour, _ = carbon_curve.cleanest_hour(median)
+
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "zone": first,
-                    "cleanest_hour": hour,
-                    "cleanest_intensity": intensity,
-                    "spread_pct": spread,
-                    "profile": profile,
-                }
-            )
-        )
+        payload = {
+            "status": "ok",
+            "zone": first,
+            "cleanest_hour": hour,
+            "cleanest_intensity": intensity,
+            "spread_pct": spread,
+            "profile": profile,
+        }
+        if band is not None:
+            payload["confidence_band"] = band
+            payload["median_profile"] = median
+            payload["robust_cleanest_hour"] = robust_hour
+        print(json.dumps(payload))
     else:
         print(f"Hour-of-day carbon curve for {first} (gCO2eq/kWh, UTC):")
         for h in sorted(profile):
             mark = "  <- cleanest" if h == hour else ""
-            print(f"  {h:02d}:00  {profile[h]:.0f}{mark}")
+            ci = f"  +/-{round((band[h]['hi'] - band[h]['lo']) / 2):.0f}" if band else ""
+            print(f"  {h:02d}:00  {profile[h]:.0f}{ci}{mark}")
         print(f"Cleanest hour: {hour:02d}:00 UTC ({intensity:.0f}); spread {spread:.0f}%")
+        if robust_hour is not None and robust_hour != hour:
+            print(f"Median cleanest hour: {robust_hour:02d}:00 UTC")
     return EXIT_GREEN
 
 
@@ -1385,6 +1400,20 @@ def cmd_worth_it(args):
     worth = spread >= args.min_spread
     best = carbon_curve.best_case_savings_grams(profile, _energy_kwh(args))
     annual_kg = best * 365 / 1000
+
+    # Where raw samples exist (GB today), upgrade the spread heuristic with a
+    # statistical test: only call the pattern worth shifting if the hour-of-day
+    # variation is significant beyond the noise of a few samples.
+    f_stat = None
+    significant = None
+    samples = carbon_curve.build_profile_samples(first)
+    if samples:
+        stats = carbon_curve.profile_stats_from_samples(samples)
+        result = carbon_curve.anova_f(stats)
+        f_stat = round(result[0], 2) if result else None
+        significant = carbon_curve.is_significant(stats)
+        worth = worth and significant
+
     if args.json:
         print(
             json.dumps(
@@ -1393,23 +1422,27 @@ def cmd_worth_it(args):
                     "zone": first,
                     "spread_pct": spread,
                     "min_spread": args.min_spread,
+                    "significant": significant,
+                    "anova_f": f_stat,
                     "cleanest_hour": hour,
                     "best_case_savings_g_per_run": best,
                     "best_case_savings_kg_per_year": round(annual_kg, 2),
                 }
             )
         )
-    elif worth:
-        print(
-            f"Worth shifting: {first} varies {spread:.0f}% across the day "
-            f"(cleanest {hour:02d}:00 UTC). Up to ~{best:.0f} g/run "
-            f"(~{annual_kg:.1f} kg/yr daily). Use `suggest-cron`."
-        )
     else:
-        print(
-            f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread, "
-            f"~{best:.0f} g/run best case). Scheduling saves little; skip the complexity."
-        )
+        sig_note = "" if significant is None else f", pattern {'real' if significant else 'noise'}"
+        if worth:
+            print(
+                f"Worth shifting: {first} varies {spread:.0f}% across the day{sig_note} "
+                f"(cleanest {hour:02d}:00 UTC). Up to ~{best:.0f} g/run "
+                f"(~{annual_kg:.1f} kg/yr daily). Use `suggest-cron`."
+            )
+        else:
+            print(
+                f"Not worth shifting: {first} is fairly flat ({spread:.0f}% spread{sig_note}, "
+                f"~{best:.0f} g/run best case). Scheduling saves little; skip the complexity."
+            )
     return EXIT_GREEN if worth else EXIT_DIRTY
 
 
