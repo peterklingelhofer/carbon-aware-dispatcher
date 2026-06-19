@@ -1,10 +1,13 @@
 # Self-sample the community curve commons
 #
 # Only GB has a free hourly history API, so other zones' curves have to be built
-# by sampling their live providers over time. This runs every few hours, folds a
-# fresh (hour-of-day, day-of-week) sample for a set of free-provider zones into a
-# seed file, and commits it. Coverage grows on its own before external
-# contributors arrive; the publish workflow then pools it into community-curve.json.
+# by sampling their live providers over time. This runs every few hours and folds
+# a fresh (hour-of-day, day-of-week) sample for a set of free-provider zones into
+# seed-self.json.
+#
+# To keep main's history clean, the accumulating data lives on the orphan
+# `community-data` branch (no shared history with main), written via a worktree.
+# The publish workflow pools it with the human contributions on main.
 
 name: Sample community curves
 
@@ -14,33 +17,46 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # to commit the growing seed
+  contents: write          # to push to the community-data branch
 
 concurrency:
-  group: sample-community-curves
+  group: community-data     # serialize with publish: both write community-data
   cancel-in-progress: false
 
 jobs:
   sample:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5    # main, for the code
       - uses: astral-sh/setup-uv@v7
+
+      - name: Check out the community-data branch into a worktree
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin community-data || true
+          if git worktree add -B community-data ../data origin/community-data 2>/dev/null; then
+            echo "Tracking existing community-data branch."
+          else
+            echo "Creating orphan community-data branch."
+            git worktree add --detach ../data
+            git -C ../data checkout --orphan community-data
+            git -C ../data rm -rf . >/dev/null 2>&1 || true
+          fi
 
       - name: Sample free-provider zones
         run: |
           uv run cli.py sample-curves \
             --zones "FR,IE,DK-DK1,DK-DK2,DE,ES,NL,AT,BE,CH,IT,PL,AR" \
-            --output community-curves/seed-self.json
+            --output ../data/seed-self.json
 
-      - name: Commit the updated seed if it changed
+      - name: Commit and push if changed
+        working-directory: ../data
         run: |
-          if git diff --quiet -- community-curves/seed-self.json; then
+          git add seed-self.json
+          if git diff --cached --quiet; then
             echo "No new samples."
-            exit 0
+          else
+            git commit -m "chore: accumulate community curve samples"
+            git push origin community-data
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add community-curves/seed-self.json
-          git commit -m "chore: accumulate community curve samples"
-          git push
