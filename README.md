@@ -673,6 +673,10 @@ carbon-aware check --zones auto:green --max-carbon 200 && ./train.sh
 # Or block until a green window opens (up to 6h), then run
 carbon-aware wait-for-green --zones GB,CISO --max-carbon 200 --max-wait 6h && ./train.sh
 
+# Add --energy-kwh for optimal stopping: it runs now instead of blocking when
+# idling for the cleaner forecast window would emit more carbon than it saves
+carbon-aware wait-for-green --zones GB --max-wait 6h --energy-kwh 0.2 && ./job.sh
+
 # Plan ahead: print the cleanest upcoming window from forecasts
 carbon-aware best-window --zones GB --hours 24 --json
 

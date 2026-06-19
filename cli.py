@@ -196,6 +196,62 @@ def cmd_marginal(args):
     return EXIT_GREEN if clean else EXIT_DIRTY
 
 
+def _run_now_instead_of_waiting(args, now_result, deadline, energy_kwh):
+    """Optimal-stopping guard for wait-for-green.
+
+    Returns an exit code if the forecast says the grid won't improve enough to
+    justify the idle carbon of blocking (so run now), or None to keep waiting.
+    Only invoked when the caller supplied --energy-kwh, since the idle-vs-saved
+    trade-off is meaningless without the job's energy.
+    """
+    from datetime import datetime, timezone
+
+    i_now = now_result.get("intensity")
+    if i_now is None:
+        return None
+    zones = check_grid.parse_zones_input(args.zones)
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        zone, when, i_future = check_grid.queue_find_optimal_window(
+            zones,
+            args.max_carbon,
+            max(1.0, deadline / 3600.0),
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
+    if zone is None or when is None or i_future is None:
+        return None  # no forecast -> fall back to plain blocking
+    try:
+        ft = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        hours_until = (ft - datetime.now(timezone.utc)).total_seconds() / 3600.0
+    except (ValueError, TypeError):
+        return None
+    should_wait, saved, idle = check_grid.worth_waiting(i_now, i_future, hours_until, energy_kwh)
+    if should_wait:
+        return None
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "run_now",
+                    "zone": now_result.get("zone"),
+                    "intensity": i_now,
+                    "forecast_intensity": i_future,
+                    "saved_grams": saved,
+                    "idle_grams": idle,
+                }
+            )
+        )
+    else:
+        print(
+            f"RUN NOW: waiting ~{hours_until:.1f}h for {zone} (~{i_future} gCO2eq/kWh) would "
+            f"save ~{saved} g, but idling until then costs ~{idle} g, so running now is cleaner."
+        )
+    return EXIT_GREEN
+
+
 def cmd_wait(args):
     deadline = parse_duration(args.max_wait)
     poll = parse_duration(args.poll)
@@ -206,11 +262,20 @@ def cmd_wait(args):
         "`carbon-aware suggest-cron` to shift the schedule instead.",
         file=sys.stderr,
     )
+
+    result = evaluate(args)
+    if result["status"] == "green":
+        return _report(args, result)
+
+    # Optimal-stopping guard: only block if a cleaner forecast window saves more
+    # carbon than idling until it costs (needs the job's energy to weigh).
+    if getattr(args, "energy_kwh", None) is not None:
+        verdict = _run_now_instead_of_waiting(args, result, deadline, _energy_kwh(args))
+        if verdict is not None:
+            return verdict
+
     waited = 0
     while True:
-        result = evaluate(args)
-        if result["status"] == "green":
-            return _report(args, result)
         if waited >= deadline:
             if not args.json:
                 print(f"TIMEOUT: no green window within {args.max_wait}")
@@ -225,6 +290,9 @@ def cmd_wait(args):
         )
         time.sleep(sleep_for)
         waited += sleep_for
+        result = evaluate(args)
+        if result["status"] == "green":
+            return _report(args, result)
 
 
 def _energy_kwh(args):
@@ -1372,6 +1440,13 @@ def build_parser():
     add_common(w)
     w.add_argument("--max-wait", default="6h", help="Give up after this long. Default: 6h")
     w.add_argument("--poll", default="15m", help="How often to recheck. Default: 15m")
+    w.add_argument(
+        "--energy-kwh",
+        type=float,
+        default=None,
+        help="Job energy (kWh). Enables optimal stopping: run now if idling for a "
+        "cleaner forecast window would emit more than it saves",
+    )
     w.set_defaults(func=cmd_wait)
 
     b = sub.add_parser("best-window", help="Print the cleanest upcoming forecast window")
