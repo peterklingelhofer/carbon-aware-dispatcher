@@ -772,6 +772,12 @@ for nothing.
 Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
 stderr; stdout carries only the result (add `--json` for machine output).
 
+Grid feeds only refresh every 5-30 min, so composed runs can reuse a recent
+reading instead of re-fetching: pass `--cache-ttl 300` (or set
+`CARBON_CACHE_TTL=300`) to cache reads for 5 minutes on the host. The container
+and GitHub Action enable a 5-minute cache by default (set `0` to disable). It
+caches only the public reading, never the token-bearing URL.
+
 For a container (no Python needed), pull the published image or build locally:
 
 ```bash

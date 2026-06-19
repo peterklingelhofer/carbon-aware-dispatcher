@@ -14,6 +14,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Reuse grid readings for 5 min by default: a composed gate (check && run, or
+# repeated CronJob pods sharing a mounted cache) avoids re-fetching. Set to 0 to
+# disable.
+ENV CARBON_CACHE_TTL=300
+
 # Only the runtime dependency; the engine itself is pure-Python
 RUN pip install --no-cache-dir "requests>=2.32,<3"
 

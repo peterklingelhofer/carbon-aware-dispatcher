@@ -1,5 +1,9 @@
 """Shared utilities for all providers."""
 
+import hashlib
+import json
+import os
+import tempfile
 import threading
 import time
 from typing import Any, Optional, Protocol
@@ -162,6 +166,63 @@ def last_failure_reason():
     return getattr(_failure_state, "reason", None)
 
 
+# Short-lived disk cache for GET/JSON reads. Grid feeds only refresh every
+# 5-30 min, so a job that composes several calls (or back-to-back CLI runs on the
+# same host) can reuse a recent reading instead of re-fetching, saving energy on
+# both ends, including the free grid-operator APIs we depend on. Opt-in via
+# CARBON_CACHE_TTL (seconds; 0/unset disables), so direct library/test callers are
+# unaffected; the container and action turn it on by default. Cache stores only
+# the parsed public reading, never the request URL (which may carry a token); the
+# filename is a hash of method+url+parse, so different tokens stay isolated.
+
+
+def _cache_ttl() -> int:
+    try:
+        return int(os.environ.get("CARBON_CACHE_TTL", "0"))
+    except ValueError:
+        return 0
+
+
+def _cache_dir() -> str:
+    return os.environ.get("CARBON_CACHE_DIR") or os.path.join(
+        tempfile.gettempdir(), "carbon-aware-cache"
+    )
+
+
+def _cache_path(method: str, url: str, parse: str) -> str:
+    key = hashlib.sha256(f"{method}\0{url}\0{parse}".encode()).hexdigest()
+    return os.path.join(_cache_dir(), key + ".json")
+
+
+def _cache_get(method: str, url: str, parse: str, ttl: int) -> Any:
+    """Return a fresh cached reading, or None on miss/expiry/error."""
+    if ttl <= 0 or method != "GET" or parse != "json":
+        return None
+    try:
+        with open(_cache_path(method, url, parse)) as fh:
+            entry = json.load(fh)
+        if time.time() - entry["ts"] <= ttl:
+            return entry["data"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return None
+
+
+def _cache_put(method: str, url: str, parse: str, data: Any) -> None:
+    """Best-effort write; cache failures must never break a request."""
+    if method != "GET" or parse != "json":
+        return
+    path = _cache_path(method, url, parse)
+    try:
+        os.makedirs(_cache_dir(), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"ts": time.time(), "data": data}, fh)
+        os.replace(tmp, path)  # atomic, so concurrent writers can't tear a file
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def _retry_after_seconds(response):
     """Return a capped sleep time from a 429 Retry-After header, or None.
 
@@ -203,14 +264,18 @@ def request(
     # Identify ourselves unless the caller already set a UA
     headers.setdefault("User-Agent", USER_AGENT)
     # Reset the per-call failure reason; set on any failure path below so the
-    # dispatcher can report *why* a zone was skipped (see LAST_FAILURE_REASON)
+    # dispatcher can report *why* a zone was skipped (see _failure_state)
     _set_failure_reason(None)
+
+    verb = method.upper()
+    ttl = _cache_ttl()
+    cached = _cache_get(verb, url, parse, ttl)
+    if cached is not None:
+        return cached
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            # Dispatch to the verb-specific helper so the mockable seam stays
-            # requests.get / requests.post, matching the rest of the codebase
-            verb = method.upper()
+            # Dispatch to the verb-specific helper on the shared pooled session
             if verb == "POST":
                 response = _SESSION.post(url, headers=headers, json=json_body, timeout=timeout)
             elif verb == "PATCH":
@@ -231,11 +296,14 @@ def request(
             if parse == "text":
                 return response.text
             try:
-                return response.json()
+                data = response.json()
             except (ValueError, requests.exceptions.JSONDecodeError):
                 print(f"::warning::Invalid JSON response: {response.text[:200]}")
                 _set_failure_reason("invalid data")
                 return None
+            if ttl > 0:
+                _cache_put(verb, url, parse, data)
+            return data
 
         print(
             f"::warning::API returned {response.status_code} "
