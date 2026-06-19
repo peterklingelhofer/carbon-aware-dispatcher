@@ -125,6 +125,58 @@ def merge_curves(docs):
     return {"curve": merged}
 
 
+MAX_PLAUSIBLE_INTENSITY = 2000.0
+
+
+def validate_curve_doc(doc, max_intensity=MAX_PLAUSIBLE_INTENSITY, min_hours=6):
+    """Check a contributed curve doc, returning a list of problems ([] = valid).
+
+    Guards the community pool against malformed or skewing input before it is
+    merged: structural shape, hour keys in 0-23, positive integer counts, numeric
+    sums, per-hour means within a plausible grid range, and at least one zone with
+    enough distinct hours to be a real contribution rather than a sparse dump.
+    """
+    if not isinstance(doc, dict):
+        return ["not a JSON object"]
+    curve = doc.get("curve")
+    if not isinstance(curve, dict) or not curve:
+        return ["missing or empty 'curve'"]
+
+    problems = []
+    for zone, cells in curve.items():
+        if not isinstance(cells, dict) or not cells:
+            problems.append(f"{zone}: no hour cells")
+            continue
+        for hour, cell in cells.items():
+            try:
+                h = int(hour)
+            except (TypeError, ValueError):
+                problems.append(f"{zone}: non-integer hour {hour!r}")
+                continue
+            if not 0 <= h <= 23:
+                problems.append(f"{zone}: hour {h} out of range")
+            if not isinstance(cell, dict):
+                problems.append(f"{zone} hour {h}: cell is not an object")
+                continue
+            n = cell.get("n")
+            s = cell.get("sum")
+            if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+                problems.append(f"{zone} hour {h}: bad count {n!r}")
+                continue
+            if isinstance(s, bool) or not isinstance(s, (int, float)):
+                problems.append(f"{zone} hour {h}: bad sum {s!r}")
+                continue
+            mean = s / n
+            if mean < 0 or mean > max_intensity:
+                problems.append(f"{zone} hour {h}: implausible mean {mean:.0f} gCO2/kWh")
+
+    if min_hours and not problems:
+        usable = any(len(curve_profile(doc, z, min_hours)) for z in curve)
+        if not usable:
+            problems.append(f"no zone has >= {min_hours} sampled hours (too sparse to contribute)")
+    return problems
+
+
 def curve_mean(data, zone, min_hours=6):
     """Mean intensity across the zone's accumulated curve, or 0 if too sparse."""
     profile = curve_profile(data, zone, min_hours)
