@@ -753,7 +753,18 @@ docker build -t carbon-aware . && docker run --rm carbon-aware check --zones GB
 ```
 
 Ready-to-copy schedulers: a [Kubernetes CronJob](examples/standalone/k8s-cronjob.yaml)
-(carbon-gated via an initContainer) and a [cron/systemd wrapper](examples/standalone/cron-wrapper.sh).
+(carbon-gated via an initContainer), a [cron/systemd wrapper](examples/standalone/cron-wrapper.sh),
+and a [Slurm submit wrapper](examples/standalone/slurm-carbon-submit.sh) for HPC jobs.
+
+For distributed training/batch on **Ray**, gate the driver before submitting work:
+
+```python
+from integrations.ray_carbon import run_when_clean
+
+run_when_clean(run_batch, zones="auto:green", max_carbon=200)  # waits, then submits
+```
+
+See [`examples/standalone/ray_carbon_job.py`](examples/standalone/ray_carbon_job.py).
 
 ## Example workflows
 
