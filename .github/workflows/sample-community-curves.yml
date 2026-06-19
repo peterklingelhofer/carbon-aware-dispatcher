@@ -1,0 +1,46 @@
+# Self-sample the community curve commons
+#
+# Only GB has a free hourly history API, so other zones' curves have to be built
+# by sampling their live providers over time. This runs every few hours, folds a
+# fresh (hour-of-day, day-of-week) sample for a set of free-provider zones into a
+# seed file, and commits it. Coverage grows on its own before external
+# contributors arrive; the publish workflow then pools it into community-curve.json.
+
+name: Sample community curves
+
+on:
+  schedule:
+    - cron: '7 */3 * * *'   # every 3 hours, offset off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: write          # to commit the growing seed
+
+concurrency:
+  group: sample-community-curves
+  cancel-in-progress: false
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Sample free-provider zones
+        run: |
+          uv run cli.py sample-curves \
+            --zones "FR,IE,DK-DK1,DK-DK2,DE,ES,NL,AT,BE,CH,IT,PL,AR" \
+            --output community-curves/seed-self.json
+
+      - name: Commit the updated seed if it changed
+        run: |
+          if git diff --quiet -- community-curves/seed-self.json; then
+            echo "No new samples."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add community-curves/seed-self.json
+          git commit -m "chore: accumulate community curve samples"
+          git push

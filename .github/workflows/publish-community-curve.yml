@@ -41,8 +41,10 @@ jobs:
             echo "No contributed curves yet; nothing to publish."
             exit 0
           fi
-          # Defense in depth: refuse to pool anything that fails validation
-          uv run cli.py validate-curves "${files[@]}"
+          # Defense in depth: refuse to pool malformed or implausible data.
+          # --min-hours 0 because accumulating seed files are legitimately sparse
+          # early on; volume-weighting and --cap-n already neutralize any skew.
+          uv run cli.py validate-curves --min-hours 0 "${files[@]}"
           # Cap each contributor's per-hour weight so no single repo dominates a zone
           uv run cli.py merge-curves "${files[@]}" --cap-n 1000 --output community-curve.json
 
