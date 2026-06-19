@@ -571,6 +571,17 @@ def pipeline():
 
 See [`examples/standalone/prefect_carbon_flow.py`](examples/standalone/prefect_carbon_flow.py).
 
+## Carbon-aware Dagster
+
+Gate a Dagster op with `carbon_gate`, or only launch runs when clean with a
+sensor on `grid_is_clean`:
+
+```python
+from integrations.dagster_carbon import carbon_gate, grid_is_clean
+```
+
+See [`examples/standalone/dagster_carbon_job.py`](examples/standalone/dagster_carbon_job.py).
+
 ## Carbon-aware KEDA
 
 Pair event-driven autoscaling with clean-energy timing: a KEDA `ScaledJob`
