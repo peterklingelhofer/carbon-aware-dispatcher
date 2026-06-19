@@ -844,7 +844,10 @@ Grid feeds only refresh every 5-30 min, so composed runs can reuse a recent
 reading instead of re-fetching: pass `--cache-ttl 300` (or set
 `CARBON_CACHE_TTL=300`) to cache reads for 5 minutes on the host. The container
 and GitHub Action enable a 5-minute cache by default (set `0` to disable). It
-caches only the public reading, never the token-bearing URL.
+caches only the public reading, never the token-bearing URL. When a cached entry
+expires, it revalidates with `If-None-Match` / `If-Modified-Since`, so a provider
+that supports ETags answers with a tiny `304 Not Modified` instead of resending
+the whole payload, saving bandwidth and energy on both ends.
 
 For a container (no Python needed), pull the published image or build locally:
 
