@@ -1052,7 +1052,7 @@ def cmd_merge_curves(args):
     if not docs:
         print("merge-curves needs at least one readable curve file", file=sys.stderr)
         return EXIT_NODATA
-    merged = ledger.merge_curves(docs)
+    merged = ledger.merge_curves(docs, cap_n=args.cap_n or None)
     zones = len(merged.get("curve") or {})
     payload = json.dumps(merged, indent=2)
     if args.output:
@@ -1350,6 +1350,12 @@ def build_parser():
     mc = sub.add_parser("merge-curves", help="Pool exported curve files into one community curve")
     mc.add_argument("paths", nargs="+", help="Curve files to merge (from export-curves)")
     mc.add_argument("--output", default="", help="Write to this file instead of stdout")
+    mc.add_argument(
+        "--cap-n",
+        type=int,
+        default=0,
+        help="Cap each file's per-hour sample weight (0 = no cap) to limit skew",
+    )
     mc.set_defaults(func=cmd_merge_curves)
 
     vc = sub.add_parser("validate-curves", help="Validate contributed curve files for the pool")

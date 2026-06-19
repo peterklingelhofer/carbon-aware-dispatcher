@@ -43,7 +43,8 @@ jobs:
           fi
           # Defense in depth: refuse to pool anything that fails validation
           uv run cli.py validate-curves "${files[@]}"
-          uv run cli.py merge-curves "${files[@]}" --output community-curve.json
+          # Cap each contributor's per-hour weight so no single repo dominates a zone
+          uv run cli.py merge-curves "${files[@]}" --cap-n 1000 --output community-curve.json
 
       - name: Commit the pool if it changed
         run: |
