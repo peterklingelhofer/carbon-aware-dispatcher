@@ -754,6 +754,11 @@ carbon-aware score --zones GB --badge-file carbon-posture.json
 carbon-aware advise --zones GB --dir .github/workflows --energy-kwh 5
 #  -> 1. [shift] ...  2. [throttle] ...  with kg/yr each
 
+# Grade our own forecasts over time by running this on a schedule. It resolves
+# past predictions against the actual readings and reports the bias to subtract
+carbon-aware forecast-accuracy --zones GB --store .carbon/forecast-log.json
+#  -> n=42, MAE 18.4, bias +6.1 gCO2eq/kWh. Subtract 6.1 from forecasts
+
 # Inspect the hour-of-day curve the recommendation is based on
 carbon-aware curve --zones GB
 
