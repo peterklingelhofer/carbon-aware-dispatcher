@@ -111,6 +111,39 @@ def cmd_check(args):
     return _report(args, evaluate(args))
 
 
+def cmd_scale(args):
+    """Print a carbon-aware autoscale factor in [scale_min, scale_max].
+
+    The continuous companion to the gate: an autoscaler (KEDA/HPA, a Ray driver,
+    a batch fan-out) multiplies its replica or parallelism count by this, so heavy
+    compute concentrates in clean hours instead of toggling fully on/off. With
+    --max-replicas N it prints the integer replica count (>=1) instead. It is a
+    signal for scaling: exit 0 normally, 2 only when no zone could be read.
+    """
+    result = evaluate(args)
+    intensity = result.get("intensity")  # None on read error -> fail open
+    thresholds = check_grid.parse_tier_thresholds(args.tier_thresholds)
+    factor = check_grid.compute_carbon_scale(intensity, thresholds, args.scale_min, args.scale_max)
+    replicas = None
+    if args.max_replicas is not None:
+        import math
+
+        replicas = max(1, math.ceil(factor * args.max_replicas))
+    if args.json:
+        out = {
+            "status": result["status"],
+            "zone": result.get("zone"),
+            "intensity": intensity,
+            "scale": factor,
+        }
+        if replicas is not None:
+            out["replicas"] = replicas
+        print(json.dumps(out))
+    else:
+        print(replicas if replicas is not None else factor)
+    return EXIT_NODATA if result["status"] == "error" else EXIT_GREEN
+
+
 def cmd_marginal(args):
     """Report the WattTime marginal-emissions signal for timing decisions.
 
@@ -1307,6 +1340,33 @@ def build_parser():
     c = sub.add_parser("check", help="Exit 0 if the grid is green now")
     add_common(c)
     c.set_defaults(func=cmd_check)
+
+    scl = sub.add_parser("scale", help="Print a carbon-aware autoscale factor (or replica count)")
+    add_common(scl)
+    scl.add_argument(
+        "--scale-min",
+        type=float,
+        default=check_grid.DEFAULT_SCALE_MIN,
+        help="Floor factor when the grid is dirty. Default: 0.25",
+    )
+    scl.add_argument(
+        "--scale-max",
+        type=float,
+        default=check_grid.DEFAULT_SCALE_MAX,
+        help="Ceiling factor when the grid is clean. Default: 1.0",
+    )
+    scl.add_argument(
+        "--tier-thresholds",
+        default="",
+        help="green,amber gCO2eq/kWh boundaries for the ramp. Default: 150,300",
+    )
+    scl.add_argument(
+        "--max-replicas",
+        type=int,
+        default=None,
+        help="Print integer replicas (ceil(factor x N), >=1) instead of the factor",
+    )
+    scl.set_defaults(func=cmd_scale)
 
     w = sub.add_parser("wait-for-green", help="Block until green or a deadline")
     add_common(w)
