@@ -553,6 +553,44 @@ class TestMergeCurves:
         assert rc == cli.EXIT_NODATA
 
 
+class TestSampleCurves:
+    def _collect(self, pairs):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            if collect is not None:
+                collect.extend(pairs)
+            return (None, None, None, [])
+
+        return fake
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}, {"zone": "ES"}])
+    def test_samples_into_new_file(self, tmp_path):
+        dest = tmp_path / "seed.json"
+        with mock.patch(
+            "cli.check_grid.check_multiple_zones", self._collect([("DE", 400), ("ES", 200)])
+        ):
+            rc = cli.main(["sample-curves", "--zones", "DE,ES", "--output", str(dest)])
+        assert rc == cli.EXIT_GREEN
+        doc = json.loads(dest.read_text())
+        assert "DE" in doc["curve"] and "ES" in doc["curve"]
+        assert "weekday_curve" in doc
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}])
+    def test_accumulates_into_existing_file(self, tmp_path):
+        dest = tmp_path / "seed.json"
+        with mock.patch("cli.check_grid.check_multiple_zones", self._collect([("DE", 400)])):
+            cli.main(["sample-curves", "--zones", "DE", "--output", str(dest)])
+            cli.main(["sample-curves", "--zones", "DE", "--output", str(dest)])
+        # two samples folded into the same hour cell
+        de = json.loads(dest.read_text())["curve"]["DE"]
+        total_n = sum(cell["n"] for cell in de.values())
+        assert total_n == 2
+
+    @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}])
+    def test_no_data(self, tmp_path):
+        with mock.patch("cli.check_grid.check_multiple_zones", self._collect([])):
+            assert cli.main(["sample-curves", "--zones", "DE"]) == cli.EXIT_NODATA
+
+
 class TestValidateCurves:
     def _curve_file(self, tmp_path, name, zone="FR", base=100):
         import ledger
