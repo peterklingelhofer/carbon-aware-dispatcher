@@ -510,6 +510,29 @@ The core Python script runs on any CI platform. Templates in [`ci-templates/`](c
 
 Set `GRID_ZONE`, `MAX_CARBON`, and optional API tokens as environment variables.
 
+## Integrations
+
+CI is a small load. The real carbon wins are large, deferrable workloads — ML
+training, batch inference, ETL, HPC jobs. The same engine plugs into the tools
+that orchestrate them, so a long run lands on clean energy with no manual timing.
+Each adapter uses a lazy/optional import (the base install stays dependency-light);
+install the matching extra to pull the framework, e.g.
+`pip install carbon-aware-dispatcher[lightning]`.
+
+| Framework | Import | Extra | Example |
+|---|---|---|---|
+| PyTorch Lightning | `integrations.lightning_carbon.CarbonAwareCallback` | `[lightning]` | [lightning_carbon_training.py](examples/standalone/lightning_carbon_training.py) |
+| Hugging Face Trainer | `integrations.huggingface_carbon.CarbonAwareTrainerCallback` | `[transformers]` | [huggingface_carbon_training.py](examples/standalone/huggingface_carbon_training.py) |
+| Airflow | `integrations.airflow_carbon.CarbonAwareSensor` | `[airflow]` | [airflow_carbon_dag.py](examples/standalone/airflow_carbon_dag.py) |
+| Prefect | `integrations.prefect_carbon.carbon_gate` | `[prefect]` | [prefect_carbon_flow.py](examples/standalone/prefect_carbon_flow.py) |
+| Dagster | `integrations.dagster_carbon.carbon_gate` | `[dagster]` | [dagster_carbon_job.py](examples/standalone/dagster_carbon_job.py) |
+| Ray | `integrations.ray_carbon.run_when_clean` | `[ray]` | [ray_carbon_job.py](examples/standalone/ray_carbon_job.py) |
+| Inference routing | `integrations.inference_router.cleanest_endpoint` | — | [inference_routing.py](examples/standalone/inference_routing.py) |
+| KEDA (k8s) | `wait-for-green` initContainer | — | [keda-scaledjob.yaml](examples/standalone/keda-scaledjob.yaml) |
+| Slurm (HPC) | `wait-for-green` submit wrapper | — | [slurm-carbon-submit.sh](examples/standalone/slurm-carbon-submit.sh) |
+
+Sections below cover each in more detail.
+
 ## Carbon-aware ML training (PyTorch Lightning)
 
 A training run lasts hours or days, so shifting it onto clean-grid windows saves
