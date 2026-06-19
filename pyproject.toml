@@ -36,6 +36,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Framework adapters in integrations/ work with a lazy/optional import, so the
+# base install stays dependency-light (just requests). Install an extra to pull
+# the framework an adapter targets, e.g. pip install carbon-aware-dispatcher[lightning]
+lightning = ["lightning>=2"]
+transformers = ["transformers>=4"]
+airflow = ["apache-airflow>=2"]
+prefect = ["prefect>=2"]
+dagster = ["dagster>=1"]
+ray = ["ray>=2"]
 dev = [
     "pytest>=7",
     "pytest-cov",
