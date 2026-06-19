@@ -11,7 +11,9 @@ it waits instead of holding it for hours.
 from datetime import datetime
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+
+# Airflow 3 moved the standard operators into the providers.standard package
+from airflow.providers.standard.operators.python import PythonOperator
 
 from integrations.airflow_carbon import CarbonAwareSensor
 
