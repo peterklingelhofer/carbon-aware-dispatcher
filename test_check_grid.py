@@ -2500,6 +2500,31 @@ class TestCarbonTier:
         assert check_grid.classify_tier(-10, (150, 300))[0] == "green"
 
 
+class TestWorthWaiting:
+    def test_waits_when_savings_beat_idle(self):
+        # 1 kWh job, grid drops 300 -> 50 in 1h. Saved = 250 g; idle = 0.05*1*300
+        # = 15 g. Worth waiting.
+        should, saved, idle = check_grid.worth_waiting(300, 50, 1.0, 1.0)
+        assert should is True
+        assert saved == 250.0
+        assert idle == 15.0
+
+    def test_runs_now_when_idle_dominates(self):
+        # Tiny improvement (300 -> 290) but a 20h wait on a small job: idle wins.
+        should, saved, idle = check_grid.worth_waiting(300, 290, 20.0, 0.1)
+        assert should is False
+
+    def test_future_dirtier_never_waits(self):
+        should, saved, _ = check_grid.worth_waiting(100, 200, 1.0, 5.0)
+        assert should is False
+        assert saved == 0.0
+
+    def test_missing_inputs_fail_to_run_now(self):
+        assert check_grid.worth_waiting(None, 50, 1.0, 1.0)[0] is False
+        assert check_grid.worth_waiting(300, 50, 0, 1.0)[0] is False
+        assert check_grid.worth_waiting(300, 50, 1.0, 0)[0] is False
+
+
 class TestComputeCarbonScale:
     def test_clean_returns_max(self):
         assert check_grid.compute_carbon_scale(100, (150, 300)) == 1.0

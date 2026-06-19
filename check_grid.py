@@ -840,6 +840,36 @@ def estimate_emissions(intensity, job_minutes=None):
     return round(operational + _embodied_grams(), 1)
 
 
+def worth_waiting(
+    intensity_now, intensity_future, hours_until, energy_kwh, idle_kw=CI_JOB_POWER_KW
+):
+    """Optimal-stopping test: does blocking for a cleaner window beat running now?
+
+    Blocking with wait-for-green keeps the machine powered on, so waiting only
+    pays off when the carbon saved by running on the cleaner future grid exceeds
+    the carbon burned idling until then:
+
+        saved = max(0, I_now - I_future) * energy_kwh
+        idle  = idle_kw * hours_until * I_now   # idle energy, valued at today's grid
+
+    Using I_now to value the idle period is deliberately conservative (the grid
+    is usually cleaning up on the way to the window). Returns
+    (should_wait, saved_grams, idle_grams), failing toward running now when any
+    input is missing or non-positive.
+    """
+    if (
+        intensity_now is None
+        or intensity_future is None
+        or hours_until is None
+        or hours_until <= 0
+        or energy_kwh <= 0
+    ):
+        return False, 0.0, 0.0
+    saved = max(0.0, (intensity_now - intensity_future) * energy_kwh)
+    idle = max(0.0, idle_kw * hours_until * intensity_now)
+    return saved > idle, round(saved, 1), round(idle, 1)
+
+
 def carbon_equivalents(grams):
     """Translate grams of CO2 into relatable real-world equivalents.
 

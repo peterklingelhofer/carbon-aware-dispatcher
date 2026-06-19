@@ -116,6 +116,50 @@ class TestWait:
         assert "TIMEOUT" in capsys.readouterr().out
 
 
+class TestWaitOptimalStopping:
+    @mock.patch("cli.time.sleep")
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.evaluate")
+    def test_runs_now_when_waiting_not_worth_it(self, ev, qf, sleep, capsys):
+        # Dirty now (300), but the cleanest forecast window is only slightly
+        # cleaner and ~20h out, so idling that long emits more than it saves.
+        ev.return_value = {"status": "dirty", "zone": "GB", "intensity": 300}
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=20)).strftime("%Y-%m-%dT%H:%MZ")
+        qf.return_value = ("GB", future, 280)
+        rc = cli.main(
+            ["wait-for-green", "--zones", "GB", "--max-wait", "24h", "--energy-kwh", "1", "--json"]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "run_now"
+        sleep.assert_not_called()
+
+    @mock.patch("cli.time.sleep")
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.evaluate")
+    def test_waits_when_worth_it(self, ev, qf, sleep, capsys):
+        # Big drop (300 -> 50) soon (1h): waiting clearly pays, so it blocks and
+        # then catches the green window.
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%MZ")
+        qf.return_value = ("GB", future, 50)
+        ev.side_effect = [
+            {"status": "dirty", "zone": "GB", "intensity": 300},
+            {"status": "green", "zone": "GB", "intensity": 50},
+        ]
+        rc = cli.main(
+            ["wait-for-green", "--zones", "GB", "--max-wait", "6h", "--poll", "1m"]
+            + ["--energy-kwh", "5"]
+        )
+        assert rc == cli.EXIT_GREEN
+        sleep.assert_called_once()
+
+
 class TestBestWindow:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.queue_find_optimal_window")
