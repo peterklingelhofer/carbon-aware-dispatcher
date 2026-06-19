@@ -163,35 +163,53 @@ def cleanest_weekday(profile):
 
 
 def build_weekday_profile(zone):
-    """Day-of-week profile for a zone, or {} when no free history exists.
+    """Day-of-week profile for a zone, or {} when none is available.
 
-    GB has a free historical feed; other zones return {} for now (the hour-of-day
-    curve already accumulates per zone; weekday accumulation can follow).
+    Prefers GB's free historical feed, then the weekday curve accumulated in the
+    local ledger over past runs (any zone), then a shared community curve. Lets
+    schedulers capture weekend-vs-weekday shifts beyond GB as coverage grows.
     """
     if zone in ("GB", "GB-national"):
-        return weekday_profile_from_samples(uk_weekday_samples())
-    return {}
+        profile = weekday_profile_from_samples(uk_weekday_samples())
+        if profile:
+            return profile
+    return ledger_weekday_profile(zone) or community_weekday_profile(zone) or {}
 
 
-def ledger_profile(zone):
-    """Build a profile from the curve accumulated in the configured ledger.
-
-    Works for ANY zone once enough hours have been sampled across runs — the way
-    coverage extends beyond GB without paid history. Returns {} when no ledger is
-    configured or too few hours are recorded yet.
-    """
+def _load_ledger_doc():
+    """Load the configured ledger document, or None when none is configured."""
     import os
 
     import ledger
 
     backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
     if not backend or not location:
-        return {}
+        return None
     if backend == "file":
-        data = ledger._load_file(location)
-    else:
-        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
-    return ledger.curve_profile(data, zone)
+        return ledger._load_file(location)
+    data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
+    return data
+
+
+def ledger_profile(zone):
+    """Build an hour-of-day profile from the curve accumulated in the ledger.
+
+    Works for ANY zone once enough hours have been sampled across runs — the way
+    coverage extends beyond GB without paid history. Returns {} when no ledger is
+    configured or too few hours are recorded yet.
+    """
+    import ledger
+
+    data = _load_ledger_doc()
+    return ledger.curve_profile(data, zone) if data is not None else {}
+
+
+def ledger_weekday_profile(zone):
+    """Build a day-of-week profile from the weekday curve accumulated in the ledger."""
+    import ledger
+
+    data = _load_ledger_doc()
+    return ledger.weekday_profile(data, zone) if data is not None else {}
 
 
 def _load_community_curve(src):
@@ -230,6 +248,26 @@ def community_profile(zone):
     import ledger
 
     return ledger.curve_profile(data, zone)
+
+
+def community_weekday_profile(zone):
+    """Day-of-week profile from the shared community curve, or {} when unavailable.
+
+    Same COMMUNITY_CURVE source as community_profile; reads the pool's
+    weekday_curve so zones with no free weekday history still gain a
+    weekend-vs-weekday profile as the commons grows.
+    """
+    import os
+
+    src = os.environ.get("COMMUNITY_CURVE", "")
+    if not src:
+        return {}
+    data = _load_community_curve(src)
+    if not data:
+        return {}
+    import ledger
+
+    return ledger.weekday_profile(data, zone)
 
 
 def build_profile(zone, days=7):
