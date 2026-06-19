@@ -22,7 +22,7 @@ ENV CARBON_CACHE_TTL=300
 # Only the runtime dependency; the engine itself is pure-Python
 RUN pip install --no-cache-dir "requests>=2.32,<3"
 
-COPY check_grid.py cli.py ledger.py notify.py digest.py pr_comment.py marginal.py ./
+COPY check_grid.py cli.py ledger.py notify.py digest.py pr_comment.py marginal.py forecast_log.py ./
 COPY providers ./providers
 
 ENTRYPOINT ["python", "/app/cli.py"]

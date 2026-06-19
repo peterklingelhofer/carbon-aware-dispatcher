@@ -13,6 +13,7 @@ Commands:
   marginal        WattTime marginal-emissions signal (the real avoided-emissions metric)
   marginal-estimate  free marginal estimate from EIA fuel-mix history (no WattTime needed)
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
+  forecast-accuracy  grade our own past forecasts vs reality and report the bias
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
   plan            combined when+where: the cleanest (region, hour) across zones
@@ -303,6 +304,100 @@ def cmd_marginal_estimate(args):
             "  Marginal = emissions of the generator that responds to added load, "
             "the metric for real avoided emissions. Free estimate; trust scales with r2."
         )
+    return EXIT_GREEN
+
+
+def cmd_forecast_accuracy(args):
+    """Grade our own green-window forecasts over time (self-calibration).
+
+    Run on a schedule: each call resolves past predictions whose target time has
+    arrived against the live reading, records the current forecast for later
+    grading, and reports mean error, bias, and a suggested bias correction.
+    Persists to --store. Exit 0 (a report), 2 when the zone can't be read.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    import forecast_log
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    tok = _tokens(args)
+
+    doc = forecast_log.empty_log()
+    if args.store and os.path.exists(args.store):
+        try:
+            with open(args.store) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            doc = forecast_log.empty_log()
+
+    now = datetime.now(timezone.utc)
+    measured: list = []
+    with contextlib.redirect_stdout(sys.stderr):
+        check_grid.check_multiple_zones(
+            [{"zone": first, "runner_label": None}],
+            args.max_carbon,
+            tok["eia"],
+            tok["emaps"],
+            tok["entsoe"],
+            collect=measured,
+        )
+    actual = measured[0][1] if measured else None
+    if actual is None:
+        if args.json:
+            print(json.dumps({"status": "no_data", "zone": first}))
+        else:
+            print(f"No reading for {first}", file=sys.stderr)
+        return EXIT_NODATA
+
+    doc, resolved = forecast_log.resolve_due(doc, now, actual, zone=first, window_min=args.window)
+
+    with contextlib.redirect_stdout(sys.stderr):
+        fz, when, fi = check_grid.queue_find_optimal_window(
+            zones,
+            args.max_carbon,
+            args.hours,
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
+    if when and when != "none_in_forecast" and fi is not None:
+        doc = forecast_log.record_prediction(
+            doc, fz or first, when, fi, now.strftime("%Y-%m-%dT%H:%MZ")
+        )
+
+    if args.store:
+        try:
+            with open(args.store, "w") as fh:
+                json.dump(doc, fh, indent=2)
+        except OSError as exc:
+            print(f"::warning::could not write {args.store}: {exc}", file=sys.stderr)
+
+    report = forecast_log.accuracy_report(doc)
+    correction = forecast_log.bias_correction(doc)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "zone": first,
+                    "resolved_now": resolved,
+                    "suggested_bias_correction": correction,
+                    **report,
+                }
+            )
+        )
+    elif report["n"]:
+        print(
+            f"Forecast accuracy for {first}: n={report['n']}, MAE {report['mae']}, "
+            f"bias {report['bias']} gCO2eq/kWh (resolved {resolved} this run)."
+        )
+        if correction is not None:
+            print(f"  Suggested bias correction: subtract {correction} gCO2eq/kWh from forecasts.")
+    else:
+        print(f"Forecast accuracy for {first}: nothing resolved yet (recorded one for next time).")
     return EXIT_GREEN
 
 
@@ -1691,6 +1786,22 @@ def build_parser():
     )
     add_common(me)
     me.set_defaults(func=cmd_marginal_estimate)
+
+    fa = sub.add_parser("forecast-accuracy", help="Grade our own green-window forecasts over time")
+    add_common(fa)
+    fa.add_argument(
+        "--store",
+        default="forecast-log.json",
+        help="JSON file to persist predictions. Default: forecast-log.json",
+    )
+    fa.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
+    fa.add_argument(
+        "--window",
+        type=int,
+        default=90,
+        help="Minutes after a predicted time to resolve it against the actual. Default: 90",
+    )
+    fa.set_defaults(func=cmd_forecast_accuracy)
 
     sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
     add_common(sla)

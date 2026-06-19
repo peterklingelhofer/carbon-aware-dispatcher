@@ -160,6 +160,52 @@ class TestSplit:
         assert rc == cli.EXIT_USAGE
 
 
+class TestForecastAccuracy:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_resolves_seeded_prediction(self, cmz, qf, tmp_path, capsys):
+        def fake(zones, max_carbon, *a, collect=None, **k):
+            collect.append(("GB", 100))  # actual reading now
+            return (None, None, None, [])
+
+        cmz.side_effect = fake
+        qf.return_value = ("GB", "2026-09-01T03:00Z", 150)  # a fresh forecast to log
+
+        from datetime import datetime, timedelta, timezone
+
+        store = tmp_path / "log.json"
+        target = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%MZ")
+        store.write_text(
+            json.dumps(
+                {
+                    "predictions": [
+                        {
+                            "zone": "GB",
+                            "predicted_at": target,
+                            "predicted_intensity": 130,
+                            "made_at": "x",
+                            "actual": None,
+                            "error": None,
+                        }
+                    ]
+                }
+            )
+        )
+        rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(store), "--json"])
+        out = json.loads(capsys.readouterr().out)
+        assert rc == cli.EXIT_GREEN
+        assert out["resolved_now"] == 1
+        assert out["n"] == 1 and out["bias"] == 30.0  # predicted 130 vs actual 100
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_no_reading_exit_2(self, cmz, tmp_path, capsys):
+        cmz.return_value = (None, None, None, [("GB", "network error")])
+        rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(tmp_path / "l.json")])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestMarginalEstimate:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("providers.eia.fuel_mix_series")
