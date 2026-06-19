@@ -28,9 +28,15 @@ class CarbonProvider(Protocol):
 
 
 # Defaults
-DEFAULT_TIMEOUT = 30
+# 10s is ample for these small JSON grid endpoints; the old 30s meant a single
+# hung host could stall a check for ~90s (3 attempts) of pure runner-on time
+DEFAULT_TIMEOUT = 10
 MAX_RETRIES = 2
 RETRY_DELAY = 5
+
+# Upper bound on pooled connections. Sized to cover a fanned-out multi-zone run
+# (see MAX_ZONE_WORKERS) hitting several providers at once
+MAX_POOL = 16
 
 # A descriptive User-Agent. Some public grid APIs (notably AEMO) reject or
 # silently empty the default python-requests UA, which breaks them on shared
@@ -38,6 +44,26 @@ RETRY_DELAY = 5
 USER_AGENT = (
     "carbon-aware-dispatcher/1.1 (+https://github.com/peterklingelhofer/carbon-aware-dispatcher)"
 )
+
+
+def _build_session():
+    """A shared session for connection pooling and keep-alive.
+
+    Reusing TCP+TLS connections across a multi-zone run (and repeated calls to
+    the same provider) avoids a fresh handshake per request, the single most
+    CPU-expensive part of this otherwise I/O-bound process. We do our own
+    retries in request(), so the adapter retries zero times itself.
+    """
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=MAX_POOL, pool_maxsize=MAX_POOL, max_retries=0
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
 
 # Canonical lifecycle emission factors in gCO2eq/kWh by generic fuel name.
 # IPCC AR5 (2014) lifecycle medians. This is the single source of truth: every
@@ -186,11 +212,11 @@ def request(
             # requests.get / requests.post, matching the rest of the codebase
             verb = method.upper()
             if verb == "POST":
-                response = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+                response = _SESSION.post(url, headers=headers, json=json_body, timeout=timeout)
             elif verb == "PATCH":
-                response = requests.patch(url, headers=headers, json=json_body, timeout=timeout)
+                response = _SESSION.patch(url, headers=headers, json=json_body, timeout=timeout)
             else:
-                response = requests.get(url, headers=headers, timeout=timeout)
+                response = _SESSION.get(url, headers=headers, timeout=timeout)
         except requests.RequestException as exc:
             print(f"::warning::Network error (attempt {attempt + 1}): {exc}")
             if attempt < MAX_RETRIES:
