@@ -50,6 +50,7 @@ from providers import (
     eskom,
     grid_india,
     gridstatus,
+    nearest_clean_zones,
     ons_brazil,
     open_meteo,
     rte,
@@ -677,12 +678,26 @@ def expand_auto_zones(zones_str):
     # auto:escape-coal:ZONE escapes from a specific dirty zone
     if normalized.startswith("auto:escape-coal:"):
         dirty_zone = zones_str.strip().split(":", 2)[2].strip()
+        # Curated mappings win: they encode latency/region preferences beyond raw
+        # distance for the well-known dirty grids.
         alternatives = ESCAPE_COAL_MAPPINGS.get(dirty_zone)
         if alternatives:
             zones = [{"zone": z, "runner_label": None} for z in alternatives]
             return sort_auto_green_by_time(zones, utc_hour)
-        # Unknown dirty zone: use default escape zones
-        print(f"::warning::No escape mapping for '{dirty_zone}', using default clean zones")
+        # Without a curated mapping, compute the nearest clean grids from coordinates,
+        # so any locatable zone gets a sensible escape route without hand-curation.
+        dynamic = nearest_clean_zones(dirty_zone)
+        if dynamic:
+            print(
+                f"auto:escape-coal:{dirty_zone}: routing to nearest clean grids "
+                f"{', '.join(z['zone'] for z in dynamic)}"
+            )
+            return sort_auto_green_by_time(dynamic, utc_hour)
+        # Location unknown too; use default escape zones
+        print(
+            f"::warning::No escape mapping or location for '{dirty_zone}', "
+            "using default clean zones"
+        )
         return sort_auto_green_by_time(list(AUTO_ESCAPE_COAL_ZONES), utc_hour)
 
     return None

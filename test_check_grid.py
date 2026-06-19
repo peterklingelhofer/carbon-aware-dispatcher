@@ -3764,6 +3764,46 @@ class TestAutoEscapeCoalPreset:
         for dirty, alternatives in ESCAPE_COAL_MAPPINGS.items():
             assert len(alternatives) > 0, f"No alternatives for {dirty}"
 
+    def test_escape_coal_dynamic_for_uncurated_zone(self):
+        # Vietnam has no curated mapping but has coordinates, so it routes to a
+        # short list of the nearest clean grids (5), not the full default set.
+        result = check_grid.expand_auto_zones("auto:escape-coal:VN")
+        assert result is not None and len(result) == 5
+        pool = {z["zone"] for z in AUTO_ESCAPE_COAL_ZONES}
+        assert {z["zone"] for z in result} <= pool
+
+    def test_escape_coal_unlocatable_zone_uses_default(self):
+        result = check_grid.expand_auto_zones("auto:escape-coal:ZZ-NOWHERE")
+        assert result is not None
+        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
+
+
+class TestNearestCleanZones:
+    def test_returns_nearest_first(self):
+        from providers import _haversine_km, _zone_latlon, nearest_clean_zones
+
+        result = nearest_clean_zones("VN")  # Hanoi
+        assert len(result) == 5
+        origin = _zone_latlon("VN")
+        dists = [_haversine_km(origin, _zone_latlon(z["zone"])) for z in result]
+        assert dists == sorted(dists)  # nearest-first ordering
+
+    def test_respects_n(self):
+        from providers import nearest_clean_zones
+
+        assert len(nearest_clean_zones("PL", n=3)) == 3
+
+    def test_none_for_unlocatable(self):
+        from providers import nearest_clean_zones
+
+        assert nearest_clean_zones("ZZ-NOWHERE") is None
+
+    def test_haversine_known_distance(self):
+        from providers import _haversine_km
+
+        # London (51.5, -0.13) to Paris (48.85, 2.35) is ~340 km
+        assert 320 < _haversine_km((51.5, -0.13), (48.85, 2.35)) < 360
+
 
 class TestParseZonesAutoPresets:
     def test_parse_auto_cleanest(self):

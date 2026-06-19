@@ -282,6 +282,11 @@ Route jobs from a coal-dependent region to the nearest clean alternative:
     max_carbon_intensity: '150'
 ```
 
+Well-known dirty grids use curated routes (tuned for latency/region). Any other
+zone with known coordinates is routed automatically to its geographically
+nearest clean grids; no hand-curated mapping needed, so coverage extends to any
+locatable origin (e.g. `auto:escape-coal:VN`).
+
 ## Smart wait & queue strategy
 
 ### Wait for a green window
