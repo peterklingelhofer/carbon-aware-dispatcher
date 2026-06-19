@@ -11,6 +11,7 @@ Commands:
   split           emissions-optimal split of N divisible shards across the cleanest regions
   wait-for-green  block until green (or a deadline), then exit 0 so the next command runs
   marginal        WattTime marginal-emissions signal (the real avoided-emissions metric)
+  marginal-estimate  free marginal estimate from EIA fuel-mix history (no WattTime needed)
   best-window     print the cleanest upcoming window from forecasts (for schedulers)
   suggest-cron    recommend a cron at the cleanest hour/window (--duration-hours for batch)
   suggest-region  recommend the cleanest region among candidates, with savings
@@ -259,6 +260,50 @@ def cmd_marginal(args):
             f"(threshold {args.max_percentile}; lower = cleaner margin)"
         )
     return EXIT_GREEN if clean else EXIT_DIRTY
+
+
+def cmd_marginal_estimate(args):
+    """Free marginal-emissions estimate from a fuel-mix time series (no WattTime).
+
+    Marginal intensity (the emissions of the generator that responds to YOUR
+    added load) is what reflects real avoided emissions, but live marginal data
+    is free only for CAISO_NORTH. Here we estimate it for any EIA (US) zone by
+    regressing the change in emissions on the change in generation across recent
+    hours; r_squared says how much of the move the load change explains, i.e. how
+    much to trust it. Exit 0 with an estimate, 2 when there isn't enough signal.
+    """
+    import marginal as marginal_mod
+    from providers import eia
+
+    zones = check_grid.parse_zones_input(args.zones)
+    first = zones[0]["zone"] if zones else args.zones
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        series = eia.fuel_mix_series(first, tok["eia"])
+    est = marginal_mod.estimate_marginal(series) if series else None
+    if not est:
+        if args.json:
+            print(json.dumps({"status": "unavailable", "zone": first}))
+        else:
+            print(
+                f"Can't estimate marginal for {first}: needs an EIA (US) zone with "
+                "recent fuel-mix history.",
+                file=sys.stderr,
+            )
+        return EXIT_NODATA
+
+    if args.json:
+        print(json.dumps({"status": "ok", "zone": first, **est}))
+    else:
+        print(
+            f"Estimated marginal for {first}: ~{est['marginal']} gCO2eq/kWh "
+            f"(average ~{est['average']}; fit r2={est['r_squared']}, n={est['n']} intervals)."
+        )
+        print(
+            "  Marginal = emissions of the generator that responds to added load, "
+            "the metric for real avoided emissions. Free estimate; trust scales with r2."
+        )
+    return EXIT_GREEN
 
 
 def _run_now_instead_of_waiting(args, now_result, deadline, energy_kwh):
@@ -1639,6 +1684,13 @@ def build_parser():
     mg.add_argument("--username", default="", help="WattTime username (or WATTTIME_USERNAME)")
     mg.add_argument("--password", default="", help="WattTime password (or WATTTIME_PASSWORD)")
     mg.set_defaults(func=cmd_marginal)
+
+    me = sub.add_parser(
+        "marginal-estimate",
+        help="Free marginal-emissions estimate from EIA (US) fuel-mix history",
+    )
+    add_common(me)
+    me.set_defaults(func=cmd_marginal_estimate)
 
     sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
     add_common(sla)

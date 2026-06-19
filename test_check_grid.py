@@ -582,6 +582,31 @@ class TestEiaFuelMixToIntensity:
         assert eia._fuel_mix_to_intensity(data) == 820
 
 
+class TestEiaFuelMixSeries:
+    @mock.patch("providers.eia.api_request")
+    def test_series_totals_oldest_first(self, mock_api):
+        # Two periods (API returns newest first); series should be oldest-first
+        # with (generation, generation-weighted co2) per period.
+        mock_api.return_value = {
+            "response": {
+                "data": [
+                    {"period": "2026-03-09T07", "fueltype": "NG", "value": 100},
+                    {"period": "2026-03-09T07", "fueltype": "WND", "value": 100},
+                    {"period": "2026-03-09T06", "fueltype": "NG", "value": 50},
+                    {"period": "2026-03-09T06", "fueltype": "WND", "value": 100},
+                ]
+            }
+        }
+        series = eia.fuel_mix_series("CISO")
+        # Oldest (06): gen 150, co2 50*490 + 100*12 = 25700
+        # Newest (07): gen 200, co2 100*490 + 100*12 = 50200
+        assert series == [(150.0, 25700.0), (200.0, 50200.0)]
+
+    @mock.patch("providers.eia.api_request", return_value=None)
+    def test_empty_on_no_data(self, _mock_api):
+        assert eia.fuel_mix_series("CISO") == []
+
+
 class TestEiaCheckCarbonIntensity:
     @mock.patch("providers.eia.api_request")
     def test_green_grid(self, mock_api):

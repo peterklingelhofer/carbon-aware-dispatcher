@@ -160,6 +160,27 @@ class TestSplit:
         assert rc == cli.EXIT_USAGE
 
 
+class TestMarginalEstimate:
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("providers.eia.fuel_mix_series")
+    def test_estimates_from_series(self, series, capsys):
+        series.return_value = [
+            (100.0, 100 * 24),
+            (130.0, 100 * 24 + 30 * 490),
+            (190.0, 100 * 24 + 90 * 490),
+        ]
+        rc = cli.main(["marginal-estimate", "--zones", "CISO", "--json"])
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["marginal"] == 490 and out["r_squared"] == 1.0
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("providers.eia.fuel_mix_series", return_value=[])
+    def test_no_series_exit_2(self, _series, capsys):
+        rc = cli.main(["marginal-estimate", "--zones", "GB"])
+        assert rc == cli.EXIT_NODATA
+
+
 class TestWaitOptimalStopping:
     @mock.patch("cli.time.sleep")
     @mock.patch("cli.check_grid.queue_find_optimal_window")
