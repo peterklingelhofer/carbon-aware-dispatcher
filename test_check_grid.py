@@ -2047,6 +2047,7 @@ class TestOpenMeteoEstimateIntensity:
 class TestOpenMeteoCheckCarbonIntensity:
     @mock.patch("providers.base._SESSION.get")
     def test_green_zone(self, mock_get):
+        # A clean grid (France ~56 prior) reads clean even modulated by weather
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {
@@ -2056,12 +2057,13 @@ class TestOpenMeteoCheckCarbonIntensity:
                 }
             },
         )
-        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
+        is_green, intensity = open_meteo.check_carbon_intensity("FR", 300)
         assert is_green is True
-        assert intensity == round(550 * 0.60 * 0.75)
+        assert intensity == round(56 * 0.60 * 0.75)
 
     @mock.patch("providers.base._SESSION.get")
     def test_dirty_zone(self, mock_get):
+        # A coal grid (South Africa ~700 prior) sits at its prior when calm/dark
         mock_get.return_value = mock.Mock(
             status_code=200,
             json=lambda: {
@@ -2073,7 +2075,20 @@ class TestOpenMeteoCheckCarbonIntensity:
         )
         is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
         assert is_green is False
-        assert intensity == 550
+        assert intensity == 700
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_clean_zone_not_misread_as_dirty(self, mock_get):
+        # Regression: before per-zone priors, nuclear France read ~550 at night
+        # (≈7x too high) and would be wrongly skipped as dirty. Now it tracks
+        # its ~56 prior even with zero sun and no wind.
+        mock_get.return_value = mock.Mock(
+            status_code=200,
+            json=lambda: {"current": {"global_tilted_irradiance": 0, "wind_speed_10m": 0}},
+        )
+        is_green, intensity = open_meteo.check_carbon_intensity("FR", 100)
+        assert is_green is True
+        assert intensity == 56
 
     def test_unknown_zone_no_coords(self):
         is_green, intensity = open_meteo.check_carbon_intensity("XX-NONE", 300)
@@ -2122,7 +2137,9 @@ class TestOpenMeteoForecast:
                 }
             },
         )
-        dt, intensity = open_meteo.get_forecast("ZA", 300)
+        # ZA prior ~700: the dark 06:00 hour stays dirty, midday sun+wind
+        # (700*0.45=315) crosses a 350 threshold, so the green window is 12:00
+        dt, intensity = open_meteo.get_forecast("ZA", 350)
         assert dt is not None
         assert "12:00" in dt
 
