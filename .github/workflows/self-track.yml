@@ -19,8 +19,17 @@ name: Self CO2 Tracking
 
 on:
   schedule:
-    - cron: '17 * * * *'   # hourly, offset to avoid the top-of-hour rush
+    - cron: '17 * * * *'   # hourly: samples every hour-of-day so the curve fills
+  # Run the live integration smoke test only when the engine/action changes.
+  # test.yml already covers doc- and test-only PRs, so they skip the runner and
+  # the grid API calls
   pull_request:
+    paths:
+      - 'action.yml'
+      - 'check_grid.py'
+      - 'cli.py'
+      - 'providers/**'
+      - '.github/workflows/self-track.yml'
   workflow_dispatch:
 
 permissions:

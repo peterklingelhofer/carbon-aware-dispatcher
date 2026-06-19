@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carbon-aware-dispatcher"
-version = "1.9.0"
+version = "1.9.1"
 description = "Run CI/CD only when the energy grid is clean. Free, zero-config carbon-aware scheduling for US, UK and more"
 readme = "README.md"
 license = "MIT"
@@ -71,6 +71,8 @@ only-include = [
     "pr_comment.py",
     "carbon_curve.py",
     "suggest_pr.py",
+    "marginal.py",
+    "forecast_log.py",
     "providers",
     "integrations",
 ]
@@ -85,6 +87,8 @@ only-include = [
 "pr_comment.py" = "pr_comment.py"
 "carbon_curve.py" = "carbon_curve.py"
 "suggest_pr.py" = "suggest_pr.py"
+"marginal.py" = "marginal.py"
+"forecast_log.py" = "forecast_log.py"
 "providers" = "providers"
 "integrations" = "integrations"
 
