@@ -1,5 +1,6 @@
 """Shared utilities for all providers."""
 
+import threading
 import time
 from typing import Any, Optional, Protocol
 
@@ -120,19 +121,19 @@ MAX_RETRY_AFTER = 60
 
 # Category of the most recent request() failure, so the dispatcher can report
 # *why* a zone was skipped (auth failed / rate limited / network error / ...)
-# rather than a flat "API error". Safe as module state because the dispatcher
-# checks zones sequentially, one request() at a time
-LAST_FAILURE_REASON = None
+# rather than a flat "API error". Stored thread-locally so concurrent zone
+# checks (the dispatcher fans them out across a thread pool) never clobber each
+# other's reason; each worker reads back the reason its own request() set
+_failure_state = threading.local()
 
 
 def _set_failure_reason(reason):
-    global LAST_FAILURE_REASON
-    LAST_FAILURE_REASON = reason
+    _failure_state.reason = reason
 
 
 def last_failure_reason():
-    """Return the category of the most recent request() failure, or None."""
-    return LAST_FAILURE_REASON
+    """Return the category of the most recent request() failure on this thread, or None."""
+    return getattr(_failure_state, "reason", None)
 
 
 def _retry_after_seconds(response):

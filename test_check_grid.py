@@ -242,9 +242,14 @@ class TestFailureReason:
     def test_dispatcher_surfaces_reason(self, mock_check):
         from providers import base
 
-        # check_carbon_intensity returns (None, None); base recorded a reason
-        mock_check.return_value = (None, None)
-        base._set_failure_reason("auth failed")
+        # check_carbon_intensity returns (None, None) and records the reason in
+        # the same thread it ran on, exactly as the real request() does; the
+        # dispatcher then reads it back thread-locally.
+        def _fail(*_a, **_k):
+            base._set_failure_reason("auth failed")
+            return (None, None)
+
+        mock_check.side_effect = _fail
         _zone, _i, _label, skipped = check_grid.check_multiple_zones(
             [{"zone": "CISO", "runner_label": None}], 250
         )
@@ -1033,11 +1038,10 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_picks_greenest(self, _mock_detect, mock_check):
-        mock_check.side_effect = [
-            (True, 200),  # zone A
-            (True, 50),  # zone B (best)
-            (False, 400),  # zone C
-        ]
+        # Map by zone: zones are checked concurrently, so the
+        # nth call is not guaranteed to be the nth zone.
+        by_zone = {"CISO": (True, 200), "NYIS": (True, 50), "ERCO": (False, 400)}
+        mock_check.side_effect = lambda zone, *a, **k: by_zone[zone]
         zones = [
             {"zone": "CISO", "runner_label": "label-a"},
             {"zone": "NYIS", "runner_label": "label-b"},
@@ -1052,7 +1056,7 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_dirty(self, _mock_detect, mock_check):
-        mock_check.side_effect = [(False, 400), (False, 500)]
+        mock_check.return_value = (False, 400)
         zones = [{"zone": "ERCO"}, {"zone": "PJM"}]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None
@@ -1060,7 +1064,7 @@ class TestCheckMultipleZones:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_errors(self, _mock_detect, mock_check):
-        mock_check.side_effect = [(None, None), (None, None)]
+        mock_check.return_value = (None, None)
         zones = [{"zone": "CISO"}, {"zone": "ERCO"}]
         zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
         assert zone is None

@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import requests
@@ -445,13 +446,22 @@ def rank_by_cost_carbon(candidates, cost_weight):
     return zone, intensity, label
 
 
+# Upper bound on concurrent zone checks. Each check is network-bound (the GIL is
+# released across the blocking HTTP call), so threads overlap the I/O wait and a
+# multi-zone run finishes in roughly one zone's latency instead of the sum. The
+# cap keeps us from opening a flood of sockets or hammering one provider at once.
+MAX_ZONE_WORKERS = 8
+
+
 def check_multiple_zones(
     zones_config, max_carbon, eia_api_key="", emaps_api_key="", entsoe_token="", collect=None
 ):
     """Check carbon intensity for multiple zones, return the best green option.
 
-    Checks free-provider zones first (to avoid exhausting paid API rate limits),
-    then token-requiring zones. Falls back to Open-Meteo for zones without tokens.
+    Zone checks run concurrently across a small thread pool, so wall-clock time
+    (and therefore runner-on energy) tracks the slowest single zone rather than
+    the sum of all of them. Results are reduced in input order, so the chosen
+    zone, the skipped list, and the collected comparison stay deterministic.
 
     Returns (best_zone, best_intensity, best_runner_label, skipped) where
     skipped is a list of (zone, reason) for zones that could not be checked.
@@ -466,9 +476,9 @@ def check_multiple_zones(
     skipped = []
     green_candidates = []
 
-    # Sort: free providers first, then token-requiring ones.
-    # This avoids exhausting Electricity Maps rate limits (50 req/hr)
-    # when free providers could have answered the question.
+    # Sort: free providers first, then token-requiring ones. With concurrent
+    # checks the call count is unchanged (every zone is measured either way), but
+    # the order keeps logs and the deterministic reduction stable.
     from providers.open_meteo import ZONE_COORDINATES
 
     def _provider_cost(entry):
@@ -495,7 +505,13 @@ def check_multiple_zones(
 
     sorted_zones = sorted(zones_config, key=_provider_cost)
 
-    for entry in sorted_zones:
+    def _check_one(entry):
+        """Resolve the provider and measure one zone, in its own thread.
+
+        Captures the failure reason inside this thread (base records it
+        thread-locally), so a concurrent run still reports *why* each zone was
+        skipped instead of a flat "API error".
+        """
         zone = entry["zone"]
         label = entry.get("runner_label")
         provider = detect_provider(zone, entsoe_token)
@@ -506,27 +522,53 @@ def check_multiple_zones(
                 provider = PROVIDER_OPEN_METEO
                 print(f"  Zone {zone}: no electricity_maps_token, using Open-Meteo estimate")
             else:
-                reason = "no electricity_maps_token"
-                skipped.append((zone, reason))
-                continue
+                return {"zone": zone, "label": label, "skip": "no electricity_maps_token"}
 
-        is_green, intensity = check_carbon_intensity(
-            zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
-        )
+        try:
+            is_green, intensity = check_carbon_intensity(
+                zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
+            )
+        except Exception as exc:  # one zone's failure must not sink the rest
+            print(f"::warning::Zone {zone} check raised: {exc}")
+            return {"zone": zone, "label": label, "skip": "API error"}
+
+        skip = None
         if is_green is None:
             # Surface why it failed (auth failed / rate limited / network error /
             # ...) instead of a flat "API error", so users can act on it
-            skipped.append((zone, last_failure_reason() or "API error"))
-        elif intensity is not None:
-            # Record every measured zone (green or not) for the comparison panel
-            if collect is not None:
-                collect.append((zone, intensity))
-            if is_green:
-                green_candidates.append((zone, intensity, label))
-                if best_intensity is None or intensity < best_intensity:
-                    best_zone = zone
-                    best_intensity = intensity
-                    best_label = label
+            skip = last_failure_reason() or "API error"
+        return {
+            "zone": zone,
+            "label": label,
+            "is_green": is_green,
+            "intensity": intensity,
+            "skip": skip,
+        }
+
+    workers = min(MAX_ZONE_WORKERS, len(sorted_zones)) or 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_check_one, sorted_zones))
+    else:
+        results = [_check_one(entry) for entry in sorted_zones]
+
+    # Reduce in input order so the chosen zone, skipped, and collect are stable
+    for res in results:
+        if res["skip"] is not None:
+            skipped.append((res["zone"], res["skip"]))
+            continue
+        intensity = res["intensity"]
+        if intensity is None:
+            continue
+        # Record every measured zone (green or not) for the comparison panel
+        if collect is not None:
+            collect.append((res["zone"], intensity))
+        if res["is_green"]:
+            green_candidates.append((res["zone"], intensity, res["label"]))
+            if best_intensity is None or intensity < best_intensity:
+                best_zone = res["zone"]
+                best_intensity = intensity
+                best_label = res["label"]
 
     # When cost weighting is on, re-rank the green zones by a cost+carbon blend
     cost_weight = _cost_weight()
