@@ -20,6 +20,7 @@ Commands:
   curve           print the hour-of-day carbon curve from historical data
   export-curves   export accumulated curves to share (community data commons)
   merge-curves    pool many exported curve files into one shared community curve
+  validate-curves check contributed curve files before they enter the pool
   worth-it        say whether scheduling helps this zone (flat grids don't)
   sla             report Green SLA compliance (share of runs that ran clean)
   report          emit a Software Carbon Intensity (SCI) report as JSON
@@ -1063,6 +1064,40 @@ def cmd_merge_curves(args):
     return EXIT_GREEN
 
 
+def cmd_validate_curves(args):
+    """Validate contributed curve files before they enter the community pool.
+
+    Checks each file's structure, hour ranges, counts/sums, plausible intensities,
+    and that it is a real (non-sparse) contribution. Exit 0 when all pass, 1 when
+    any file is unreadable or invalid. Wire this into a PR check on the
+    community-curves directory so bad data never reaches the merged pool.
+    """
+    import ledger
+
+    bad = 0
+    for path in args.paths:
+        try:
+            with open(path) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as exc:
+            print(f"{path}: unreadable ({exc})", file=sys.stderr)
+            bad += 1
+            continue
+        problems = ledger.validate_curve_doc(
+            doc, max_intensity=args.max_intensity, min_hours=args.min_hours
+        )
+        if problems:
+            bad += 1
+            for problem in problems:
+                print(f"{path}: {problem}", file=sys.stderr)
+        else:
+            print(f"{path}: ok", file=sys.stderr)
+    if bad:
+        print(f"{bad} file(s) failed validation", file=sys.stderr)
+        return EXIT_DIRTY
+    return EXIT_GREEN
+
+
 def cmd_curve(args):
     """Print the hour-of-day carbon curve from historical data (where free)."""
     import carbon_curve
@@ -1182,6 +1217,8 @@ def cmd_best_window(args):
 
 
 def build_parser():
+    import ledger
+
     p = argparse.ArgumentParser(prog="carbon-aware", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -1314,6 +1351,22 @@ def build_parser():
     mc.add_argument("paths", nargs="+", help="Curve files to merge (from export-curves)")
     mc.add_argument("--output", default="", help="Write to this file instead of stdout")
     mc.set_defaults(func=cmd_merge_curves)
+
+    vc = sub.add_parser("validate-curves", help="Validate contributed curve files for the pool")
+    vc.add_argument("paths", nargs="+", help="Curve files to validate (from export-curves)")
+    vc.add_argument(
+        "--max-intensity",
+        type=float,
+        default=ledger.MAX_PLAUSIBLE_INTENSITY,
+        help="Reject per-hour means above this (gCO2/kWh)",
+    )
+    vc.add_argument(
+        "--min-hours",
+        type=int,
+        default=6,
+        help="Require a zone with at least this many sampled hours (0 to disable)",
+    )
+    vc.set_defaults(func=cmd_validate_curves)
 
     wi = sub.add_parser("worth-it", help="Is carbon-aware scheduling worth it for this zone?")
     add_common(wi)

@@ -545,6 +545,36 @@ class TestMergeCurves:
         assert rc == cli.EXIT_NODATA
 
 
+class TestValidateCurves:
+    def _curve_file(self, tmp_path, name, zone="FR", base=100):
+        import ledger
+
+        data = ledger.empty_ledger()
+        for hour in range(6):
+            data = ledger.merge_curve_sample(data, zone, hour, base + hour)
+        p = tmp_path / name
+        p.write_text(json.dumps({"curve": data["curve"]}))
+        return str(p)
+
+    def test_valid_file_passes(self, tmp_path):
+        good = self._curve_file(tmp_path, "good.json")
+        assert cli.main(["validate-curves", good]) == cli.EXIT_GREEN
+
+    def test_invalid_file_fails(self, tmp_path):
+        p = tmp_path / "bad.json"
+        p.write_text(json.dumps({"curve": {"FR": {"3": {"sum": 99999.0, "n": 1}}}}))
+        assert cli.main(["validate-curves", str(p)]) == cli.EXIT_DIRTY
+
+    def test_unreadable_file_fails(self, tmp_path):
+        assert cli.main(["validate-curves", str(tmp_path / "missing.json")]) == cli.EXIT_DIRTY
+
+    def test_mixed_batch_fails_if_any_bad(self, tmp_path):
+        good = self._curve_file(tmp_path, "good.json")
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        assert cli.main(["validate-curves", good, str(bad)]) == cli.EXIT_DIRTY
+
+
 class TestCurve:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)

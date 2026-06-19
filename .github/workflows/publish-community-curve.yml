@@ -41,6 +41,8 @@ jobs:
             echo "No contributed curves yet; nothing to publish."
             exit 0
           fi
+          # Defense in depth: refuse to pool anything that fails validation
+          uv run cli.py validate-curves "${files[@]}"
           uv run cli.py merge-curves "${files[@]}" --output community-curve.json
 
       - name: Commit the pool if it changed
