@@ -10,7 +10,7 @@ Note: Returns XML, which we parse manually (no lxml dependency).
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, green_result, request
 
 ENTSOE_API_BASE = "https://web-api.tp.entsoe.eu/api"
 
@@ -332,10 +332,7 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
     if intensity is None:
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 # Variable renewables ENTSO-E publishes a day-ahead forecast for:

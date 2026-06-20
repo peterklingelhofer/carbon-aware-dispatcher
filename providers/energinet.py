@@ -9,7 +9,7 @@ Zones: DK-DK1, DK-DK2 (DK1 / DK2 also accepted).
 import json
 from urllib.parse import quote
 
-from providers.base import compute_trend, request
+from providers.base import compute_trend, green_result, request
 
 API = "https://api.energidataservice.dk/dataset/CO2Emis"
 ENERGINET_ZONES = {"DK-DK1", "DK-DK2", "DK1", "DK2"}
@@ -34,11 +34,7 @@ def check_carbon_intensity(zone, max_carbon):
     if value is None:
         print(f"::warning::No Energinet CO2 intensity for zone {zone}")
         return None, None
-    intensity = round(float(value))
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, round(float(value)), max_carbon)
 
 
 def get_forecast(zone, max_carbon):

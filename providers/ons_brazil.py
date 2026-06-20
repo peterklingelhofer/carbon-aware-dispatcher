@@ -10,7 +10,7 @@ Data source: https://integra.ons.org.br/
 
 from datetime import datetime, timedelta, timezone
 
-from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
+from providers.base import FUEL_FACTORS, green_result, mix_to_intensity, request
 
 # ONS real-time energy balance API
 ONS_API = "https://integra.ons.org.br/api/energiaagora/GetBalancoEnergetico/null"
@@ -79,36 +79,6 @@ def _parse_energy_balance(data, region_key):
     return result if result else None
 
 
-def _calculate_intensity(generation):
-    """Calculate carbon intensity from generation mix.
-
-    Returns intensity in gCO2eq/kWh, or None.
-    """
-    total_gen = 0
-    weighted_emissions = 0
-
-    for source, gen_mw in generation.items():
-        # Match source name to emission factor
-        factor = None
-        for fuel_key, fuel_factor in BRAZIL_EMISSION_FACTORS.items():
-            if fuel_key in source:
-                factor = fuel_factor
-                break
-        if factor is None:
-            print(
-                f"::warning::Unknown fuel type '{source}', using fallback "
-                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
-            )
-            factor = DEFAULT_FUEL_FACTOR
-        total_gen += gen_mw
-        weighted_emissions += gen_mw * factor
-
-    if total_gen <= 0:
-        return None
-
-    return round(weighted_emissions / total_gen)
-
-
 def check_carbon_intensity(zone, max_carbon):
     """Check carbon intensity for a Brazilian grid region.
 
@@ -138,14 +108,11 @@ def check_carbon_intensity(zone, max_carbon):
         )
         return None, None
 
-    intensity = _calculate_intensity(generation)
+    intensity = mix_to_intensity(generation, BRAZIL_EMISSION_FACTORS, substring=True)
     if intensity is None:
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_history_trend(zone):

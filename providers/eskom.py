@@ -7,13 +7,10 @@ South Africa's grid is heavily coal-dependent (~80-85% coal).
 Data source: https://www.eskom.co.za/dataportal/
 """
 
-from providers.base import FUEL_FACTORS, request
+from providers.base import FUEL_FACTORS, flatten_mix, green_result, mix_to_intensity, request
 
 # Eskom supply/demand data endpoint
 ESKOM_API = "https://www.eskom.co.za/dataportal/wp-content/uploads/2023/generation.json"
-
-# Alternative: EskomSePush status endpoint (no key needed for basic status)
-ESKOM_STATUS_API = "https://loadshedding.eskom.co.za/LoadShedding/GetStatus"
 
 # Eskom zone identifiers
 ESKOM_ZONES = {"ZA"}
@@ -58,67 +55,26 @@ def _fetch_generation_data():
 
 
 def _estimate_intensity(data):
-    """Calculate carbon intensity from Eskom generation data.
+    """Carbon intensity from Eskom generation data, falling back to a fixed estimate.
 
-    If API data is available, use it. Otherwise estimate from known
-    grid characteristics.
-
-    Returns intensity in gCO2eq/kWh.
+    Keys here are arbitrary JSON fields, so unknown ones
+    are skipped rather than counted at a fallback factor. When the feed yields no
+    usable fuel, estimate from the known coal-dominated grid mix.
     """
     if data is not None:
-        total_gen = 0
-        weighted_emissions = 0
+        intensity = mix_to_intensity(
+            flatten_mix(data),
+            SA_EMISSION_FACTORS,
+            SA_STORAGE_FUELS,
+            substring=True,
+            on_unknown="skip",
+        )
+        if intensity is not None:
+            return intensity
 
-        if isinstance(data, dict):
-            items = data.items()
-        elif isinstance(data, list) and data:
-            items = []
-            for entry in data:
-                if isinstance(entry, dict):
-                    for key, val in entry.items():
-                        items.append((key, val))
-        else:
-            items = []
-
-        for key, value in items:
-            key_lower = key.lower().strip() if isinstance(key, str) else ""
-            gen_mw = 0
-            if isinstance(value, (int, float)):
-                gen_mw = value
-            elif isinstance(value, str):
-                try:
-                    gen_mw = float(value)
-                except (ValueError, TypeError):
-                    continue
-
-            if gen_mw <= 0:
-                continue
-
-            # Storage discharge is not zero-carbon, so exclude it from the mix
-            if any(s in key_lower for s in SA_STORAGE_FUELS):
-                continue
-
-            # keys here are arbitrary JSON fields, so
-            # only count keys that map to a known fuel and skip the rest rather
-            # than counting non-fuel fields at a fallback factor
-            factor = None
-            for fuel_key, fuel_factor in SA_EMISSION_FACTORS.items():
-                if fuel_key in key_lower:
-                    factor = fuel_factor
-                    break
-            if factor is None:
-                continue
-            total_gen += gen_mw
-            weighted_emissions += gen_mw * factor
-
-        if total_gen > 0:
-            return round(weighted_emissions / total_gen)
-
-    # Estimation from known grid characteristics
     # SA: ~85% coal, ~5% nuclear, ~10% renewables (the latter two ~0 carbon)
     coal_pct = 1.0 - SA_NUCLEAR_PCT - SA_RENEWABLE_PCT
-    estimated = round(coal_pct * FUEL_FACTORS["coal"])
-    return estimated
+    return round(coal_pct * FUEL_FACTORS["coal"])
 
 
 def check_carbon_intensity(zone, max_carbon):
@@ -145,10 +101,7 @@ def check_carbon_intensity(zone, max_carbon):
             "  Note: Using estimated intensity for SA grid (API unavailable, using known grid mix)"
         )
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_history_trend(zone):
