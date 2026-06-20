@@ -264,8 +264,9 @@ def print_results(
 
     # Zero-config suggestion
     print("\n  Quick Start (zero config):")
-    print("    grid_zone: 'auto:cleanest'   # Tests 17 zones across 8 free providers")
-    print("    grid_zone: 'auto:green'      # 15 curated green-energy zones")
+    n_clean, n_green = len(AUTO_CLEANEST_ZONES), len(AUTO_GREEN_ZONES)
+    print(f"    grid_zone: 'auto:cleanest'   # Tests {n_clean} zones across free providers")
+    print(f"    grid_zone: 'auto:green'      # {n_green} curated green-energy zones")
 
     # Example workflow snippet
     zones_str = ",".join(r["zone"] for r in results if r["status"] == "ok")

@@ -95,47 +95,58 @@ def merge_entry(data, saved_grams, date_str, emitted_grams=0, is_green=None):
     return result
 
 
+def _merge_sample(data, field, zone, key, intensity):
+    """Fold one (key, intensity) reading into a per-zone sum/count curve (pure).
+
+    field is "curve" (hour of day) or "weekday_curve" (Mon=0..Sun=6). Storing a
+    running sum/count keeps the store tiny however many runs accumulate. No-op
+    when zone/key/intensity are missing
+    """
+    if zone is None or key is None or intensity is None:
+        return data
+    out = dict(data)
+    curve = {z: dict(cells) for z, cells in (data.get(field) or {}).items()}
+    zone_curve = dict(curve.get(zone, {}))
+    cell = dict(zone_curve.get(str(key), {"sum": 0.0, "n": 0}))
+    cell["sum"] = round(float(cell.get("sum", 0)) + float(intensity), 1)
+    cell["n"] = int(cell.get("n", 0)) + 1
+    zone_curve[str(key)] = cell
+    curve[zone] = zone_curve
+    out[field] = curve
+    return out
+
+
+def _cell_profile(data, field, zone, min_cells):
+    """Mean intensity per cell from a sum/count curve, or {} below min_cells.
+
+    field is "curve" or "weekday_curve". Below min_cells distinct samples the
+    profile is withheld so a repo that only runs at one time gets no misleading curve
+    """
+    cells = (data.get(field) or {}).get(zone) or {}
+    profile = {}
+    for key, cell in cells.items():
+        n = int(cell.get("n", 0))
+        if n > 0:
+            profile[int(key)] = round(float(cell.get("sum", 0)) / n, 1)
+    return profile if len(profile) >= min_cells else {}
+
+
 def merge_curve_sample(data, zone, hour, intensity):
     """Fold one (hour, intensity) reading into the per-zone hour-of-day curve.
 
-    Pure: returns a new dict. Stores a running sum/count per hour so the store
-    stays tiny (24 cells per zone) however many runs accumulate. Builds an
-    hour-of-day profile for any zone over time, including zones with no free
-    historical APIs. No-op when zone/hour/intensity are missing.
+    Builds an hour-of-day profile for any zone over time (24 cells per zone), not
+    just those with free historical APIs.
     """
-    if zone is None or hour is None or intensity is None:
-        return data
-    out = dict(data)
-    curve = {z: dict(cells) for z, cells in (data.get("curve") or {}).items()}
-    zone_curve = dict(curve.get(zone, {}))
-    cell = dict(zone_curve.get(str(hour), {"sum": 0.0, "n": 0}))
-    cell["sum"] = round(float(cell.get("sum", 0)) + float(intensity), 1)
-    cell["n"] = int(cell.get("n", 0)) + 1
-    zone_curve[str(hour)] = cell
-    curve[zone] = zone_curve
-    out["curve"] = curve
-    return out
+    return _merge_sample(data, "curve", zone, hour, intensity)
 
 
 def merge_weekday_sample(data, zone, weekday, intensity):
     """Fold one (weekday, intensity) reading into the per-zone day-of-week curve.
 
-    Mirror of merge_curve_sample for weekday (Mon=0..Sun=6), so the pool can
-    capture weekend-vs-weekday shifts as a second scheduling axis. Pure, tiny
-    (7 cells per zone). No-op when zone/weekday/intensity are missing.
+    The day-of-week axis (Mon=0..Sun=6, 7 cells per zone) captures
+    weekend-vs-weekday shifts as a second scheduling axis.
     """
-    if zone is None or weekday is None or intensity is None:
-        return data
-    out = dict(data)
-    wc = {z: dict(cells) for z, cells in (data.get("weekday_curve") or {}).items()}
-    zone_wc = dict(wc.get(zone, {}))
-    cell = dict(zone_wc.get(str(weekday), {"sum": 0.0, "n": 0}))
-    cell["sum"] = round(float(cell.get("sum", 0)) + float(intensity), 1)
-    cell["n"] = int(cell.get("n", 0)) + 1
-    zone_wc[str(weekday)] = cell
-    wc[zone] = zone_wc
-    out["weekday_curve"] = wc
-    return out
+    return _merge_sample(data, "weekday_curve", zone, weekday, intensity)
 
 
 def weekday_profile(data, zone, min_days=3):
@@ -144,13 +155,7 @@ def weekday_profile(data, zone, min_days=3):
     Returns {} until at least min_days distinct weekdays have been sampled, so a
     repo that only ever runs on one day doesn't get a misleading curve.
     """
-    zone_wc = (data.get("weekday_curve") or {}).get(zone) or {}
-    profile = {}
-    for key, cell in zone_wc.items():
-        n = int(cell.get("n", 0))
-        if n > 0:
-            profile[int(key)] = round(float(cell.get("sum", 0)) / n, 1)
-    return profile if len(profile) >= min_days else {}
+    return _cell_profile(data, "weekday_curve", zone, min_days)
 
 
 def _fold_cells(into, cells, cap_n):
@@ -271,13 +276,7 @@ def curve_profile(data, zone, min_hours=6):
     Returns {} until at least min_hours distinct hours have been sampled, so a
     repo that only ever runs at one time of day doesn't get a misleading curve.
     """
-    zone_curve = (data.get("curve") or {}).get(zone) or {}
-    profile = {}
-    for key, cell in zone_curve.items():
-        n = int(cell.get("n", 0))
-        if n > 0:
-            profile[int(key)] = round(float(cell.get("sum", 0)) / n, 1)
-    return profile if len(profile) >= min_hours else {}
+    return _cell_profile(data, "curve", zone, min_hours)
 
 
 def month_to_date_emitted(data, month_prefix):
@@ -348,7 +347,7 @@ def write_status_badge(gist_id, token, zone, intensity, tier):
     resp = base.request(
         f"{GIST_API}/{gist_id}",
         method="PATCH",
-        headers=_gist_headers(token),
+        headers=base.github_headers(token),
         json_body=body,
         parse="json",
     )
@@ -393,13 +392,9 @@ def _save_file(path, data):
         json.dump(data, f, indent=2)
 
 
-def _gist_headers(token):
-    return base.github_headers(token)
-
-
 def _gist_read(gist_id, token):
     """Return (ledger_data, owner_login). Falls back to an empty ledger."""
-    resp = base.request(f"{GIST_API}/{gist_id}", headers=_gist_headers(token), parse="json")
+    resp = base.request(f"{GIST_API}/{gist_id}", headers=base.github_headers(token), parse="json")
     if not resp:
         return empty_ledger(), None
     owner = (resp.get("owner") or {}).get("login")
@@ -422,7 +417,7 @@ def _gist_write(gist_id, token, data):
     return base.request(
         f"{GIST_API}/{gist_id}",
         method="PATCH",
-        headers=_gist_headers(token),
+        headers=base.github_headers(token),
         json_body=body,
         parse="json",
     )
@@ -432,6 +427,7 @@ def _summary(data, badge_url, month=None):
     totals = data.get("totals") or {}
     grams = float(totals.get("co2_saved_grams", 0))
     runs = int(totals.get("runs", 0))
+    green_mtd, runs_mtd = sla_window(data, month) if month else (0, 0)
     return {
         "total_grams": grams,
         "total_runs": runs,
@@ -440,8 +436,8 @@ def _summary(data, badge_url, month=None):
         "emitted_total": float(totals.get("co2_emitted_grams", 0)),
         "emitted_mtd": month_to_date_emitted(data, month) if month else 0,
         "avoided_total": float(totals.get("co2_avoided_grams", 0)),
-        "green_mtd": sla_window(data, month)[0] if month else 0,
-        "runs_mtd": sla_window(data, month)[1] if month else 0,
+        "green_mtd": green_mtd,
+        "runs_mtd": runs_mtd,
     }
 
 

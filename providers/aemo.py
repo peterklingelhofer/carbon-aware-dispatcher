@@ -4,7 +4,7 @@ Covers the five National Electricity Market (NEM) regions of eastern
 Australia. Data from AEMO's public visualisations API.
 """
 
-from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
+from providers.base import FUEL_FACTORS, green_result, mix_to_intensity, request
 
 # AEMO NEM region codes
 AEMO_REGIONS = {
@@ -56,55 +56,28 @@ def _fetch_fuel_data():
     return None
 
 
-def _fuel_mix_to_intensity(fuel_data, region_code):
-    """Calculate carbon intensity from AEMO fuel mix data for a region.
+def _region_fuel_mix(fuel_data, region_code):
+    """Sum one region's rows into a {fuel: MW} mix.
 
     Each live row looks like {"STATE": "NSW1", "FUEL_TYPE": "Black coal",
     "SUPPLY": 1234.5}. Older rows used REGIONID/FUELTYPE/GEN_MW, both are
-    accepted. Returns intensity in gCO2eq/kWh, or None if no usable data.
+    accepted. Non-dict rows and other regions are skipped.
     """
-    if not fuel_data:
-        return None
-
-    total_gen = 0
-    weighted_emissions = 0
-
-    for entry in fuel_data:
-        # The live AEMO feed can include non-dict rows, skip anything we
-        # cannot read as a record
+    mix: dict = {}
+    for entry in fuel_data or []:
         if not isinstance(entry, dict):
             continue
-
-        entry_region = entry.get("STATE") or entry.get("REGIONID", "")
-        if entry_region != region_code:
+        if (entry.get("STATE") or entry.get("REGIONID", "")) != region_code:
             continue
-
         fuel_type = entry.get("FUEL_TYPE") or entry.get("FUELTYPE", "")
         supply = entry.get("SUPPLY")
         if supply is None:
             supply = entry.get("GEN_MW", 0)
         if supply is None or supply <= 0:
             continue
-
         key = fuel_type.strip().lower()
-        # Storage discharge is not zero-carbon, so exclude it from the mix
-        if key in AEMO_STORAGE_FUELS:
-            continue
-        if key in AEMO_EMISSION_FACTORS:
-            factor = AEMO_EMISSION_FACTORS[key]
-        else:
-            print(
-                f"::warning::Unknown fuel type '{fuel_type}', using fallback "
-                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
-            )
-            factor = DEFAULT_FUEL_FACTOR
-        total_gen += supply
-        weighted_emissions += supply * factor
-
-    if total_gen <= 0:
-        return None
-
-    return round(weighted_emissions / total_gen)
+        mix[key] = mix.get(key, 0.0) + supply
+    return mix
 
 
 def check_carbon_intensity(zone, max_carbon):
@@ -124,15 +97,13 @@ def check_carbon_intensity(zone, max_carbon):
     if fuel_data is None:
         return None, None
 
-    intensity = _fuel_mix_to_intensity(fuel_data, region_code)
+    mix = _region_fuel_mix(fuel_data, region_code)
+    intensity = mix_to_intensity(mix, AEMO_EMISSION_FACTORS, AEMO_STORAGE_FUELS)
     if intensity is None:
         print(f"::warning::No generation data for region {region_code}")
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_forecast(zone, max_carbon):

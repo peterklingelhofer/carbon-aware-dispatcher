@@ -8,6 +8,7 @@ from providers.base import (
     EIA_STORAGE_FUELS,
     api_request,
     compute_trend,
+    green_result,
 )
 
 EIA_API_BASE = "https://api.eia.gov/v2"
@@ -87,8 +88,6 @@ def fuel_mix_series(zone, eia_api_key="", length=100):
     regress emission change on generation change across hours. Returns [] when no
     history is available.
     """
-    from collections import OrderedDict
-
     rows = _fuel_mix_rows(zone, eia_api_key, length)
     if not rows:
         return []
@@ -141,10 +140,7 @@ def check_carbon_intensity(zone, max_carbon, eia_api_key=""):
         print(f"::warning::Could not calculate carbon intensity for zone {zone}")
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_history_trend(zone, eia_api_key=""):
