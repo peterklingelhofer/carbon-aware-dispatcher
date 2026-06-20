@@ -11,7 +11,7 @@ path when no token is configured.
 
 from datetime import datetime, timezone
 
-from providers.base import compute_trend, request
+from providers.base import compute_trend, green_result, request
 
 API = "https://api.energy-charts.info/co2eq"
 
@@ -61,11 +61,7 @@ def check_carbon_intensity(zone, max_carbon):
     if value is None:
         print(f"::warning::No Energy-Charts CO2 intensity for zone {zone}")
         return None, None
-    intensity = round(float(value))
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, round(float(value)), max_carbon)
 
 
 def get_forecast(zone, max_carbon):
