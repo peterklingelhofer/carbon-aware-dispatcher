@@ -25,7 +25,7 @@ _MEASURE_CEILING = 100_000
 
 def _zone_intensities(zones, tokens):
     """Measure each unique zone once; return {zone: intensity}."""
-    unique = sorted({z for z in zones})
+    unique = sorted(set(zones))
     measured = []
     check_grid.check_multiple_zones(
         [{"zone": z} for z in unique],

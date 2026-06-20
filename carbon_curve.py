@@ -18,18 +18,26 @@ UK_API_BASE = "https://api.carbonintensity.org.uk"
 MAX_HISTORY_DAYS = 14
 
 
+def _bucket_samples(samples):
+    """Group (key, intensity) pairs into {key: [intensities]}, dropping None.
+
+    key is whatever the caller bins on (hour of day or weekday)
+    """
+    buckets = {}
+    for key, intensity in samples:
+        if intensity is None:
+            continue
+        buckets.setdefault(key, []).append(float(intensity))
+    return buckets
+
+
 def profile_from_samples(samples):
     """Average intensity by hour of day (pure).
 
     samples: iterable of (hour:int, intensity). Returns {hour: mean_intensity}
     for the hours present, ignoring None intensities.
     """
-    buckets = {}
-    for hour, intensity in samples:
-        if intensity is None:
-            continue
-        buckets.setdefault(hour, []).append(float(intensity))
-    return {h: round(sum(v) / len(v), 1) for h, v in buckets.items()}
+    return {h: round(sum(v) / len(v), 1) for h, v in _bucket_samples(samples).items()}
 
 
 def profile_stats_from_samples(samples):
@@ -39,13 +47,8 @@ def profile_stats_from_samples(samples):
     an hour with a single sample gets variance 0.0. Feeds the ANOVA significance
     test and the confidence band, which a bare {hour: mean} profile can't support.
     """
-    buckets = {}
-    for hour, intensity in samples:
-        if intensity is None:
-            continue
-        buckets.setdefault(hour, []).append(float(intensity))
     stats = {}
-    for hour, vals in buckets.items():
+    for hour, vals in _bucket_samples(samples).items():
         n = len(vals)
         mean = sum(vals) / n
         var = sum((v - mean) ** 2 for v in vals) / (n - 1) if n > 1 else 0.0
@@ -59,13 +62,8 @@ def median_profile_from_samples(samples):
     A single bad reading (a grid data glitch) can drag an hour's mean around;
     the median ignores it, so the cleanest-hour pick is more trustworthy.
     """
-    buckets = {}
-    for hour, intensity in samples:
-        if intensity is None:
-            continue
-        buckets.setdefault(hour, []).append(float(intensity))
     out = {}
-    for hour, vals in buckets.items():
+    for hour, vals in _bucket_samples(samples).items():
         vals.sort()
         n = len(vals)
         mid = n // 2
@@ -256,12 +254,7 @@ def uk_weekday_samples(days=14):
 
 def weekday_profile_from_samples(samples, min_days=3):
     """Average intensity by weekday (Mon=0..Sun=6). {} until min_days seen."""
-    buckets = {}
-    for weekday, intensity in samples:
-        if intensity is None:
-            continue
-        buckets.setdefault(weekday, []).append(float(intensity))
-    profile = {d: round(sum(v) / len(v), 1) for d, v in buckets.items()}
+    profile = {d: round(sum(v) / len(v), 1) for d, v in _bucket_samples(samples).items()}
     return profile if len(profile) >= min_days else {}
 
 

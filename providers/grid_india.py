@@ -7,7 +7,7 @@ Updates every 5 minutes. No authentication required.
 Data source: https://report.grid-india.in/
 """
 
-from providers.base import FUEL_FACTORS, request
+from providers.base import FUEL_FACTORS, flatten_mix, green_result, mix_to_intensity, request
 
 # Grid India real-time generation overview API
 GRID_INDIA_API = "https://report.grid-india.in/ReportData/Generation"
@@ -50,59 +50,18 @@ def _fetch_generation_data():
 
 
 def _estimate_from_national_mix(data):
-    """Estimate carbon intensity from national generation mix data.
+    """Weighted carbon intensity from Grid India's generation-by-source response.
 
-    Grid India returns generation by source type. We calculate weighted
-    intensity from the fuel mix.
-
-    Returns intensity in gCO2eq/kWh, or None if data is insufficient.
+    The API shape varies (flat object or list of records), so labels are matched
+    as substrings and unrecognized ones are skipped. Returns gCO2eq/kWh, or None
+    if no usable fuel is present.
     """
-    total_gen = 0
-    weighted_emissions = 0
-
-    # Try to extract generation by fuel type from the response
-    # Grid India's API format may vary; we handle common structures
-    if isinstance(data, dict):
-        items = data.items()
-    elif isinstance(data, list):
-        # If it's a list of records, try to use them directly
-        items = []
-        for entry in data:
-            if isinstance(entry, dict):
-                for key, val in entry.items():
-                    items.append((key, val))
-    else:
-        return None
-
-    for key, value in items:
-        key_lower = key.lower().strip() if isinstance(key, str) else ""
-        gen_mw = 0
-        if isinstance(value, (int, float)):
-            gen_mw = value
-        elif isinstance(value, str):
-            try:
-                gen_mw = float(value)
-            except (ValueError, TypeError):
-                continue
-
-        if gen_mw <= 0:
-            continue
-
-        # Match key to emission factor
-        factor = None
-        for fuel_key, fuel_factor in INDIA_EMISSION_FACTORS.items():
-            if fuel_key in key_lower:
-                factor = fuel_factor
-                break
-
-        if factor is not None:
-            total_gen += gen_mw
-            weighted_emissions += gen_mw * factor
-
-    if total_gen <= 0:
-        return None
-
-    return round(weighted_emissions / total_gen)
+    return mix_to_intensity(
+        flatten_mix(data),
+        INDIA_EMISSION_FACTORS,
+        substring=True,
+        on_unknown="skip",
+    )
 
 
 def check_carbon_intensity(zone, max_carbon):
@@ -134,10 +93,7 @@ def check_carbon_intensity(zone, max_carbon):
         )
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_history_trend(zone):

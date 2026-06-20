@@ -10,7 +10,7 @@ Three provinces, three different public feeds:
 import re
 import xml.etree.ElementTree as ET
 
-from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, request
+from providers.base import FUEL_FACTORS, green_result, mix_to_intensity, request
 
 CANADA_ZONES = {"CA-ON", "CA-AB", "CA-QC"}
 
@@ -69,33 +69,6 @@ _AESO_ROW = re.compile(
 
 def _localname(tag):
     return tag.rsplit("}", 1)[-1]
-
-
-def _mix_to_intensity(fuel_mix):
-    """Weighted carbon intensity from a {fuel: MW} dict, or None.
-
-    Storage is excluded; unknown fuels warn then fall back to DEFAULT_FUEL_FACTOR.
-    """
-    total_gen = 0
-    weighted = 0
-    for fuel, mw in fuel_mix.items():
-        if mw is None or mw <= 0:
-            continue
-        if fuel in CANADA_STORAGE_FUELS:
-            continue
-        if fuel in CANADA_EMISSION_FACTORS:
-            factor = CANADA_EMISSION_FACTORS[fuel]
-        else:
-            print(
-                f"::warning::Unknown fuel type '{fuel}', using fallback "
-                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
-            )
-            factor = DEFAULT_FUEL_FACTOR
-        total_gen += mw
-        weighted += mw * factor
-    if total_gen <= 0:
-        return None
-    return round(weighted / total_gen)
 
 
 def _parse_ieso(xml_text):
@@ -169,14 +142,11 @@ def check_carbon_intensity(zone, max_carbon):
         print(f"::warning::No generation data for zone {zone}")
         return None, None
 
-    intensity = _mix_to_intensity(fuel_mix)
+    intensity = mix_to_intensity(fuel_mix, CANADA_EMISSION_FACTORS, CANADA_STORAGE_FUELS)
     if intensity is None:
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_forecast(zone, max_carbon):

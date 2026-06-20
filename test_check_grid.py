@@ -30,6 +30,7 @@ from providers import (
     PROVIDER_UK,
     _time_priority_score,
     aemo,
+    base,
     canada,
     detect_provider,
     eia,
@@ -1115,10 +1116,11 @@ class TestCanonicalFuelFactors:
         assert taiwan.TAIWAN_EMISSION_FACTORS["hydro"] == f["hydro"]
 
     def test_default_factor_is_canonical(self):
-        from providers import aemo, base, entsoe
+        from providers import base, entsoe
 
+        # The unknown-fuel fallback is centralized in base.mix_to_intensity now,
+        # so only base and the providers that still own a fallback expose it
         assert base.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
-        assert aemo.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
         assert entsoe.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
 
     def test_every_provider_value_is_in_canonical_table(self):
@@ -1827,14 +1829,19 @@ class TestAemoDetectProvider:
 
 
 class TestAemoFuelMixToIntensity:
+    @staticmethod
+    def _intensity(data, region):
+        mix = aemo._region_fuel_mix(data, region)
+        return base.mix_to_intensity(mix, aemo.AEMO_EMISSION_FACTORS, aemo.AEMO_STORAGE_FUELS)
+
     def test_all_coal(self):
         data = [{"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 1000}]
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 820
+        assert self._intensity(data, "NSW1") == 820
 
     def test_all_wind(self):
         data = [{"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 500}]
         # IPCC AR5 wind = 12, renewables are no longer treated as zero
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
+        assert self._intensity(data, "NSW1") == 12
 
     def test_mixed(self):
         data = [
@@ -1842,7 +1849,7 @@ class TestAemoFuelMixToIntensity:
             {"REGIONID": "NSW1", "FUELTYPE": "Solar", "GEN_MW": 500},
         ]
         # coal 820, solar 45: (500*820 + 500*45) / 1000 = 432.5 -> 432
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 432
+        assert self._intensity(data, "NSW1") == 432
 
     def test_filters_by_region(self):
         data = [
@@ -1850,10 +1857,10 @@ class TestAemoFuelMixToIntensity:
             {"REGIONID": "QLD1", "FUELTYPE": "Black Coal", "GEN_MW": 1000},
         ]
         # only NSW wind is counted, wind = 12
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
+        assert self._intensity(data, "NSW1") == 12
 
     def test_empty_data(self):
-        assert aemo._fuel_mix_to_intensity([], "NSW1") is None
+        assert self._intensity([], "NSW1") is None
 
     def test_negative_gen_ignored(self):
         data = [
@@ -1861,7 +1868,7 @@ class TestAemoFuelMixToIntensity:
             {"REGIONID": "NSW1", "FUELTYPE": "Battery", "GEN_MW": -50},
         ]
         # wind = 12, battery is storage and excluded anyway
-        assert aemo._fuel_mix_to_intensity(data, "NSW1") == 12
+        assert self._intensity(data, "NSW1") == 12
 
 
 class TestAemoCheckCarbonIntensity:
@@ -3636,12 +3643,12 @@ class TestOnsBrazilProvider:
 
     def test_calculate_intensity_hydro_dominant(self):
         gen = {"hidraulica": 7000, "termica": 1000, "eolica": 1500, "solar": 500}
-        intensity = ons_brazil._calculate_intensity(gen)
+        intensity = base.mix_to_intensity(gen, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True)
         assert intensity is not None
         assert intensity < 200  # Hydro-dominant grid should be clean
 
     def test_calculate_intensity_empty(self):
-        assert ons_brazil._calculate_intensity({}) is None
+        assert base.mix_to_intensity({}, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True) is None
 
     def test_parse_energy_balance_nested(self):
         # Real ONS shape: {region_key: {"geracao": {total, fuel: MW, ...}}}
@@ -4964,7 +4971,10 @@ class TestCanadaProvider:
     def test_storage_excluded(self):
         # battery is storage, excluded from the mix
         mix = {"hydro": 1000, "battery": 5000}
-        assert canada._mix_to_intensity(mix) == 24
+        intensity = base.mix_to_intensity(
+            mix, canada.CANADA_EMISSION_FACTORS, canada.CANADA_STORAGE_FUELS
+        )
+        assert intensity == 24
 
 
 # ---------------------------------------------------------------------------

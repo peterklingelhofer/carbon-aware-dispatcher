@@ -12,7 +12,7 @@ Register at https://portal.electricitymaps.com/. Paid plans (200+ zones) are
 sold per country/year, so they cost far more than a flat API key.
 """
 
-from providers.base import api_request_with_header, compute_trend
+from providers.base import api_request_with_header, compute_trend, green_result
 
 EMAPS_API_BASE = "https://api-access.electricitymaps.com/free-tier"
 
@@ -41,11 +41,7 @@ def check_carbon_intensity(zone, max_carbon, emaps_api_key):
         print(f"::warning::No carbon intensity in response for zone {zone}")
         return None, None
 
-    intensity = round(intensity)
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, round(intensity), max_carbon)
 
 
 def get_forecast(zone, max_carbon, emaps_api_key):

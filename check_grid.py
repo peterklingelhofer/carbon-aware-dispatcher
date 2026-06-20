@@ -181,10 +181,18 @@ _PROVIDER_AUTH_ARGS = {
 }
 
 
-def _get_extra_args(provider, api_keys):
-    """Get extra auth arguments for a provider, if any."""
+def _get_extra_args(provider, eia_api_key="", emaps_api_key="", entsoe_token=""):
+    """Positional auth arguments a provider's functions expect, if any."""
     resolver = _PROVIDER_AUTH_ARGS.get(provider)
-    return resolver(api_keys) if resolver else []
+    if not resolver:
+        return []
+    return resolver(
+        {
+            "eia_api_key": eia_api_key,
+            "emaps_api_key": emaps_api_key,
+            "entsoe_token": entsoe_token,
+        }
+    )
 
 
 # The actual provider that produced each zone's reading (zone -> provider id),
@@ -205,14 +213,7 @@ def check_carbon_intensity(
     if module is None:
         print(f"::warning::Unknown provider '{provider}' for zone '{zone}'")
         return None, None
-    extra = _get_extra_args(
-        provider,
-        {
-            "eia_api_key": eia_api_key,
-            "emaps_api_key": emaps_api_key,
-            "entsoe_token": entsoe_token,
-        },
-    )
+    extra = _get_extra_args(provider, eia_api_key, emaps_api_key, entsoe_token)
     result = module.check_carbon_intensity(zone, max_carbon, *extra)
     actual_provider = provider
 
@@ -288,14 +289,7 @@ def get_forecast(
     module = _PROVIDER_MODULES.get(provider)
     if module is None:
         return None, None
-    extra = _get_extra_args(
-        provider,
-        {
-            "eia_api_key": eia_api_key,
-            "emaps_api_key": emaps_api_key,
-            "entsoe_token": entsoe_token,
-        },
-    )
+    extra = _get_extra_args(provider, eia_api_key, emaps_api_key, entsoe_token)
     result = module.get_forecast(zone, max_carbon, *extra)
     # EIA doesn't have its own forecast; use GridStatus if available
     if provider == PROVIDER_EIA and result == (None, None) and gridstatus_api_key:
@@ -313,14 +307,7 @@ def get_history_trend(zone, provider, eia_api_key="", emaps_api_key="", entsoe_t
     module = _PROVIDER_MODULES.get(provider)
     if module is None:
         return None
-    extra = _get_extra_args(
-        provider,
-        {
-            "eia_api_key": eia_api_key,
-            "emaps_api_key": emaps_api_key,
-            "entsoe_token": entsoe_token,
-        },
-    )
+    extra = _get_extra_args(provider, eia_api_key, emaps_api_key, entsoe_token)
     return module.get_history_trend(zone, *extra)
 
 
@@ -1813,7 +1800,6 @@ def handle_dirty_grid(
     else:
         set_output("carbon_intensity", "unknown")
 
-    # Always try history trend
     trend = get_history_trend(zone, provider, eia_api_key, emaps_api_key, entsoe_token)
     if trend:
         set_output("intensity_trend", trend)

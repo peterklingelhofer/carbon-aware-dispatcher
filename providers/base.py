@@ -437,6 +437,103 @@ def compute_trend(points: list[float]) -> Optional[str]:
     return trend
 
 
+def green_result(zone: str, intensity: int, max_carbon: float) -> IntensityResult:
+    """Standard (is_green, intensity) result plus the canonical one-line report.
+
+    Every provider that resolves an integer intensity ends the same way: compare
+    to the threshold, print the verdict, return the pair. Centralizing that tail
+    keeps the wording identical across providers
+    """
+    is_green = intensity <= max_carbon
+    status = "GREEN" if is_green else "over threshold"
+    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
+    return is_green, intensity
+
+
+def _fuel_matches(fuel: str, names: Any, substring: bool) -> bool:
+    return any(n in fuel for n in names) if substring else fuel in names
+
+
+def _fuel_factor(fuel: str, factors: dict, substring: bool) -> Optional[int]:
+    if not substring:
+        return factors.get(fuel)
+    return next((factor for key, factor in factors.items() if key in fuel), None)
+
+
+def mix_to_intensity(
+    fuel_mix: dict,
+    factors: dict,
+    storage_fuels: Any = frozenset(),
+    substring: bool = False,
+    on_unknown: str = "fallback",
+) -> Optional[int]:
+    """Weighted-average gCO2eq/kWh from a {fuel: MW} mix, or None.
+
+    factors maps a fuel name to its lifecycle factor. storage_fuels are dropped:
+    storage discharge is not zero-carbon and double-counts energy already measured
+    at generation. With substring=False a fuel must match a factors key exactly;
+    with substring=True it need only contain a key, for feeds whose labels are
+    free-form. on_unknown="fallback" counts unknown fuels at DEFAULT_FUEL_FACTOR
+    after a warning; on_unknown="skip" drops them
+    """
+    total_gen = 0.0
+    weighted = 0.0
+    for fuel, mw in fuel_mix.items():
+        if mw is None or mw <= 0:
+            continue
+        if _fuel_matches(fuel, storage_fuels, substring):
+            continue
+        factor = _fuel_factor(fuel, factors, substring)
+        if factor is None:
+            if on_unknown == "skip":
+                continue
+            print(
+                f"::warning::Unknown fuel type '{fuel}', using fallback "
+                f"{DEFAULT_FUEL_FACTOR} gCO2eq/kWh"
+            )
+            factor = DEFAULT_FUEL_FACTOR
+        total_gen += mw
+        weighted += mw * factor
+    if total_gen <= 0:
+        return None
+    return round(weighted / total_gen)
+
+
+def flatten_mix(data: Any) -> dict:
+    """Coerce a free-form generation payload into a {lowercased_label: MW} dict.
+
+    Accepts a flat {label: value} object or a list of such objects (the two
+    shapes these keyless feeds return). Values may be numbers or numeric strings;
+    non-string keys, non-numeric values, and non-positive amounts are dropped.
+    Returns {} when nothing usable is present
+    """
+    if isinstance(data, dict):
+        items = list(data.items())
+    elif isinstance(data, list):
+        items = [(k, v) for entry in data if isinstance(entry, dict) for k, v in entry.items()]
+    else:
+        return {}
+
+    mix: dict = {}
+    for key, value in items:
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, (int, float)):
+            mw = float(value)
+        elif isinstance(value, str):
+            try:
+                mw = float(value)
+            except (ValueError, TypeError):
+                continue
+        else:
+            continue
+        if mw <= 0:
+            continue
+        label = key.lower().strip()
+        mix[label] = mix.get(label, 0.0) + mw
+    return mix
+
+
 def iso_now() -> str:
     """Return current UTC time in ISO 8601 format."""
     from datetime import datetime, timezone

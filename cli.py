@@ -63,14 +63,58 @@ def parse_duration(text):
 
 
 def _tokens(args):
-    import os
-
     return {
         "eia": args.eia_key or os.environ.get("EIA_API_KEY", ""),
         "emaps": args.electricity_maps_token or os.environ.get("ELECTRICITY_MAPS_TOKEN", ""),
         "entsoe": args.entsoe_token or os.environ.get("ENTSOE_TOKEN", ""),
         "gridstatus": args.gridstatus_key or os.environ.get("GRID_STATUS_API_KEY", ""),
     }
+
+
+def first_zone(args):
+    """The first parsed zone, falling back to the raw --zones string."""
+    return (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+
+
+def _workflow_files(directory):
+    """Sorted, de-duplicated *.yml/*.yaml workflow files in a directory."""
+    import glob
+
+    return sorted(set(glob.glob(f"{directory}/*.yml") + glob.glob(f"{directory}/*.yaml")))
+
+
+def _iter_crons(directory):
+    """Yield (path, cron) for every cron expression in the directory's workflows."""
+    import suggest_pr
+
+    for path in _workflow_files(directory):
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in suggest_pr.CRON_RE.finditer(text):
+            yield path, match.group(1)
+
+
+def _require_profile(args, zone, action):
+    """Build the zone's hour-of-day curve, or print a no_curve bail.
+
+    Returns (profile, None) on success, or (None, EXIT_NODATA) when no curve
+    exists. action is the verb phrase for the human message, e.g. "audit"
+    """
+    import carbon_curve
+
+    with contextlib.redirect_stdout(sys.stderr):
+        profile = carbon_curve.build_profile(zone)
+    if not profile:
+        print(
+            json.dumps({"status": "no_curve", "zone": zone})
+            if args.json
+            else f"Can't {action} {zone}: no hour-of-day curve available"
+        )
+        return None, EXIT_NODATA
+    return profile, None
 
 
 def evaluate(args):
@@ -219,8 +263,6 @@ def cmd_marginal(args):
     intensity. Free for CAISO_NORTH. A low percentile means a relatively clean
     margin right now. Exit 0 clean, 1 dirty, 2 no data/credentials.
     """
-    import os
-
     from providers import watttime
 
     user = args.username or os.environ.get("WATTTIME_USERNAME", "")
@@ -315,7 +357,6 @@ def cmd_forecast_accuracy(args):
     grading, and reports mean error, bias, and a suggested bias correction.
     Persists to --store. Exit 0 (a report), 2 when the zone can't be read.
     """
-    import os
     from datetime import datetime, timezone
 
     import forecast_log
@@ -502,8 +543,6 @@ def cmd_wait(args):
 
 def _energy_kwh(args):
     """Resolve the run's energy (kWh) for savings math, honoring --energy-kwh."""
-    import os
-
     value = getattr(args, "energy_kwh", None)
     if value is not None:
         os.environ["JOB_ENERGY_KWH"] = str(value)
@@ -512,8 +551,6 @@ def _energy_kwh(args):
 
 def _apply_sci_env(args):
     """Push the report's energy/SCI knobs into the shared model via env."""
-    import os
-
     for flag, var in (
         ("energy_kwh", "JOB_ENERGY_KWH"),
         ("power_watts", "JOB_POWER_WATTS"),
@@ -797,49 +834,34 @@ def cmd_audit(args):
     saving, sorted by impact, with a repo-wide annual total. Exit 0 if anything is
     actionable, 1 if all schedules are already optimal, 2 if no curve is available.
     """
-    import glob
-
     import carbon_curve
     import suggest_pr
 
-    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
-    with contextlib.redirect_stdout(sys.stderr):
-        profile = carbon_curve.build_profile(zone)
-    if not profile:
-        if args.json:
-            print(json.dumps({"status": "no_curve", "zone": zone}))
-        else:
-            print(f"Can't audit {zone}: no hour-of-day curve available")
-        return EXIT_NODATA
+    zone = first_zone(args)
+    profile, err = _require_profile(args, zone, "audit")
+    if err is not None:
+        return err
 
     clean_hour, _ = carbon_curve.cleanest_hour(profile)
     energy = _energy_kwh(args)
-    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
     findings = []
-    for path in files:
-        try:
-            with open(path) as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        for match in suggest_pr.CRON_RE.finditer(text):
-            cron = match.group(1)
-            fields = cron.split()
-            if len(fields) != 5 or not fields[1].isdigit():
-                continue  # only simple daily crons can be safely shifted
-            cur_hour = int(fields[1])
-            if cur_hour == clean_hour:
-                continue  # already optimal
-            sav = carbon_curve.shift_savings_grams(profile, cur_hour, clean_hour, energy)
-            findings.append(
-                {
-                    "file": path,
-                    "current_cron": cron,
-                    "suggested_cron": suggest_pr.swap_cron_hour(cron, clean_hour),
-                    "savings_g_per_run": sav,
-                    "savings_kg_per_year": round(sav * 365 / 1000, 1),
-                }
-            )
+    for path, cron in _iter_crons(args.dir):
+        fields = cron.split()
+        if len(fields) != 5 or not fields[1].isdigit():
+            continue  # only simple daily crons can be safely shifted
+        cur_hour = int(fields[1])
+        if cur_hour == clean_hour:
+            continue  # already optimal
+        sav = carbon_curve.shift_savings_grams(profile, cur_hour, clean_hour, energy)
+        findings.append(
+            {
+                "file": path,
+                "current_cron": cron,
+                "suggested_cron": suggest_pr.swap_cron_hour(cron, clean_hour),
+                "savings_g_per_run": sav,
+                "savings_kg_per_year": round(sav * 365 / 1000, 1),
+            }
+        )
 
     findings.sort(key=lambda f: f["savings_g_per_run"], reverse=True)
     total_annual = round(sum(f["savings_kg_per_year"] for f in findings), 1)
@@ -875,12 +897,10 @@ def cmd_schedule_cost(args):
     from how often it fires x per-run emissions, so the jobs worth running less
     often (or adding concurrency cancellation to) stand out. Exit 0 always.
     """
-    import glob
-
     import carbon_curve
     import suggest_pr
 
-    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
+    zone = first_zone(args)
     with contextlib.redirect_stdout(sys.stderr):
         profile = carbon_curve.build_profile(zone)
     intensity = carbon_curve.mean_intensity(profile) if profile else None
@@ -898,21 +918,13 @@ def cmd_schedule_cost(args):
 
     _energy_kwh(args)  # sets JOB_ENERGY_KWH from --energy-kwh for estimate_emissions
     per_run = check_grid.estimate_emissions(intensity)
-    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
     items = []
-    for path in files:
-        try:
-            with open(path) as fh:
-                text = fh.read()
-        except OSError:
+    for path, cron in _iter_crons(args.dir):
+        rpd = suggest_pr.runs_per_day(cron)
+        if rpd <= 0:
             continue
-        for match in suggest_pr.CRON_RE.finditer(text):
-            cron = match.group(1)
-            rpd = suggest_pr.runs_per_day(cron)
-            if rpd <= 0:
-                continue
-            annual_kg = round(rpd * 365 * per_run / 1000, 1)
-            items.append({"file": path, "cron": cron, "runs_per_day": rpd, "annual_kg": annual_kg})
+        annual_kg = round(rpd * 365 * per_run / 1000, 1)
+        items.append({"file": path, "cron": cron, "runs_per_day": rpd, "annual_kg": annual_kg})
 
     items.sort(key=lambda i: i["annual_kg"], reverse=True)
     total = round(sum(i["annual_kg"] for i in items), 1)
@@ -952,21 +964,13 @@ def cmd_advise(args):
     runs one command and knows exactly what to do, instead of choosing among a
     dozen. Exit 0 with actions, 1 if nothing worth doing, 2 if no curve.
     """
-    import glob
-
     import carbon_curve
     import suggest_pr
 
-    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
-    with contextlib.redirect_stdout(sys.stderr):
-        profile = carbon_curve.build_profile(zone)
-    if not profile:
-        print(
-            json.dumps({"status": "no_curve", "zone": zone})
-            if args.json
-            else f"Can't advise on {zone}: no hour-of-day curve available"
-        )
-        return EXIT_NODATA
+    zone = first_zone(args)
+    profile, err = _require_profile(args, zone, "advise on")
+    if err is not None:
+        return err
 
     worth = carbon_curve.is_worth_shifting(profile)
     spread = carbon_curve.spread_pct(profile)
@@ -978,42 +982,36 @@ def cmd_advise(args):
     actions = []
     heaviest = None
     total_current = total_avoidable = 0.0
-    for path in sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml"))):
-        try:
-            text = open(path).read()
-        except OSError:
+    for path, cron in _iter_crons(args.dir):
+        rpd = suggest_pr.runs_per_day(cron)
+        if rpd <= 0:
             continue
-        for match in suggest_pr.CRON_RE.finditer(text):
-            cron = match.group(1)
-            rpd = suggest_pr.runs_per_day(cron)
-            if rpd <= 0:
-                continue
-            fields = cron.split()
-            cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
-            cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
-            runs_year = rpd * 365
-            cur_kg = round(check_grid.estimate_emissions(cur_int) * runs_year / 1000, 1)
-            total_current += cur_kg
-            if heaviest is None or cur_kg > heaviest["annual_kg"]:
-                heaviest = {"file": path, "cron": cron, "annual_kg": cur_kg, "runs_per_day": rpd}
-            if worth and cur_hour is not None:
-                save = round(
-                    max(0.0, (check_grid.estimate_emissions(cur_int) - per_run_clean))
-                    * runs_year
-                    / 1000,
-                    1,
+        fields = cron.split()
+        cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
+        cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
+        runs_year = rpd * 365
+        cur_kg = round(check_grid.estimate_emissions(cur_int) * runs_year / 1000, 1)
+        total_current += cur_kg
+        if heaviest is None or cur_kg > heaviest["annual_kg"]:
+            heaviest = {"file": path, "cron": cron, "annual_kg": cur_kg, "runs_per_day": rpd}
+        if worth and cur_hour is not None:
+            save = round(
+                max(0.0, (check_grid.estimate_emissions(cur_int) - per_run_clean))
+                * runs_year
+                / 1000,
+                1,
+            )
+            if save > 0:
+                new_cron = suggest_pr.swap_cron_hour(cron, clean_hour)
+                actions.append(
+                    {
+                        "type": "shift",
+                        "file": path,
+                        "detail": f"`{cron}` to `{new_cron}`",
+                        "annual_kg": save,
+                    }
                 )
-                if save > 0:
-                    new_cron = suggest_pr.swap_cron_hour(cron, clean_hour)
-                    actions.append(
-                        {
-                            "type": "shift",
-                            "file": path,
-                            "detail": f"`{cron}` to `{new_cron}`",
-                            "annual_kg": save,
-                        }
-                    )
-                    total_avoidable += save
+                total_avoidable += save
 
     # The heaviest job is a use-less candidate even when shifting won't help
     if heaviest and heaviest["runs_per_day"] >= 12 and heaviest["annual_kg"] > 0:
@@ -1081,49 +1079,33 @@ def cmd_score(args):
     honest: an all-flat-or-optimal repo scores A, one leaving big savings unclaimed
     scores low. Writes a shields.io badge JSON with --badge-file.
     """
-    import glob
-
     import carbon_curve
     import suggest_pr
 
-    zone = (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
-    with contextlib.redirect_stdout(sys.stderr):
-        profile = carbon_curve.build_profile(zone)
-    if not profile:
-        print(
-            json.dumps({"status": "no_curve", "zone": zone})
-            if args.json
-            else f"Can't score {zone}: no hour-of-day curve available"
-        )
-        return EXIT_NODATA
+    zone = first_zone(args)
+    profile, err = _require_profile(args, zone, "score")
+    if err is not None:
+        return err
 
     clean_hour, clean_int = carbon_curve.cleanest_hour(profile)
     mean = carbon_curve.mean_intensity(profile)
     _energy_kwh(args)
     per_run_clean = check_grid.estimate_emissions(clean_int)
-    files = sorted(set(glob.glob(f"{args.dir}/*.yml") + glob.glob(f"{args.dir}/*.yaml")))
     current_kg = avoidable_kg = 0.0
     schedules = 0
-    for path in files:
-        try:
-            with open(path) as fh:
-                text = fh.read()
-        except OSError:
+    for _path, cron in _iter_crons(args.dir):
+        rpd = suggest_pr.runs_per_day(cron)
+        if rpd <= 0:
             continue
-        for match in suggest_pr.CRON_RE.finditer(text):
-            cron = match.group(1)
-            rpd = suggest_pr.runs_per_day(cron)
-            if rpd <= 0:
-                continue
-            schedules += 1
-            fields = cron.split()
-            cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
-            cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
-            runs_year = rpd * 365
-            per_run_cur = check_grid.estimate_emissions(cur_int)
-            current_kg += per_run_cur * runs_year / 1000
-            if cur_hour is not None:
-                avoidable_kg += max(0.0, per_run_cur - per_run_clean) * runs_year / 1000
+        schedules += 1
+        fields = cron.split()
+        cur_hour = int(fields[1]) if len(fields) == 5 and fields[1].isdigit() else None
+        cur_int = profile.get(cur_hour, mean) if cur_hour is not None else mean
+        runs_year = rpd * 365
+        per_run_cur = check_grid.estimate_emissions(cur_int)
+        current_kg += per_run_cur * runs_year / 1000
+        if cur_hour is not None:
+            avoidable_kg += max(0.0, per_run_cur - per_run_clean) * runs_year / 1000
 
     captured = 1.0 if current_kg <= 0 else max(0.0, 1 - avoidable_kg / current_kg)
     grade, color = _grade(captured)
@@ -1247,8 +1229,6 @@ def cmd_sla(args):
     Commit to a target (e.g. 95% of runs on a clean grid) and prove it over a
     window, with an attestation. Exit 0 compliant/warning, 1 breached, 2 unknown.
     """
-    import os
-
     import ledger
 
     backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
@@ -1312,8 +1292,6 @@ def cmd_export_curves(args):
     API for still gain a diurnal profile as adoption grows. Exit 0 on export,
     2 when there's no ledger or no curve yet.
     """
-    import os
-
     import ledger
 
     backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
@@ -1385,7 +1363,6 @@ def cmd_sample_curves(args):
     per readable zone to --output (created if absent). Exit 0 on any sample, 2
     when no zone could be read.
     """
-    import os
     from datetime import datetime, timezone
 
     import ledger

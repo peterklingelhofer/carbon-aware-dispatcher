@@ -3,7 +3,7 @@
 import json
 
 from providers import UK_REGION_IDS
-from providers.base import api_request, compute_trend, iso_now
+from providers.base import api_request, compute_trend, green_result, iso_now
 
 UK_API_BASE = "https://api.carbonintensity.org.uk"
 
@@ -37,10 +37,7 @@ def check_carbon_intensity(zone, max_carbon):
         print(f"::warning::Unexpected response structure for zone {zone}: {json.dumps(data)[:200]}")
         return None, None
 
-    is_green = intensity <= max_carbon
-    status = "GREEN" if is_green else "over threshold"
-    print(f"  Zone {zone}: {intensity} gCO2eq/kWh ({status}, threshold: {max_carbon})")
-    return is_green, intensity
+    return green_result(zone, intensity, max_carbon)
 
 
 def get_forecast(zone, max_carbon):
