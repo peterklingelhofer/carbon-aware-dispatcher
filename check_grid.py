@@ -67,6 +67,7 @@ from providers.base import (
     DEFAULT_JOB_DURATION_HOURS,
     DEFAULT_TIMEOUT,
     GLOBAL_AVG_INTENSITY,
+    ci_secret_hint,
     last_failure_reason,
 )
 from providers.runners import (
@@ -340,7 +341,8 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
         extra = f" (+{len(needs_emaps) - 5} more)" if len(needs_emaps) > 5 else ""
         print(
             f"::notice::Zones [{zones_str}{extra}] need electricity_maps_token. "
-            f"Get free at https://portal.electricitymaps.com/"
+            f"Get free at https://portal.electricitymaps.com/ "
+            f"and {ci_secret_hint('electricity_maps_token')}."
         )
 
     if needs_entsoe:
@@ -348,7 +350,8 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
         extra = f" (+{len(needs_entsoe) - 5} more)" if len(needs_entsoe) > 5 else ""
         print(
             f"::notice::Zones [{zones_str}{extra}] would use ENTSO-E with entsoe_token. "
-            f"Get free at https://transparency.entsoe.eu/"
+            f"Get free at https://transparency.entsoe.eu/ "
+            f"and {ci_secret_hint('entsoe_token')}."
         )
 
 
