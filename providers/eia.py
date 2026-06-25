@@ -7,6 +7,7 @@ from providers.base import (
     EIA_EMISSION_FACTORS,
     EIA_STORAGE_FUELS,
     api_request,
+    ci_secret_hint,
     compute_trend,
     green_result,
 )
@@ -108,7 +109,8 @@ def check_carbon_intensity(zone, max_carbon, eia_api_key=""):
     if api_key == "DEMO_KEY":
         print(
             "::notice::Using built-in EIA DEMO_KEY (rate limit ~30 req/hr). "
-            "For higher limits, register a free key at https://www.eia.gov/opendata/register.php"
+            "For higher limits, register a free key at https://www.eia.gov/opendata/register.php "
+            f"and {ci_secret_hint('EIA_API_KEY')}."
         )
     url = (
         f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"

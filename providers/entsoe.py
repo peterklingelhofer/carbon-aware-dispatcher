@@ -10,7 +10,7 @@ Note: Returns XML, which we parse manually (no lxml dependency).
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, green_result, request
+from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, ci_secret_hint, green_result, request
 
 ENTSOE_API_BASE = "https://web-api.tp.entsoe.eu/api"
 
@@ -269,10 +269,13 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
     Returns (is_green, intensity) or (None, None) on error.
     """
     if not entsoe_token:
+        reg_url = (
+            "https://transparency.entsoe.eu/ (Login -> Account Settings -> Web API Security Token)"
+        )
         print(
             f"::error::ENTSO-E security token required for zone '{zone}'. "
-            "Register free at https://transparency.entsoe.eu/ -> Login -> "
-            "Account Settings -> Web API Security Token."
+            f"Register free at {reg_url} "
+            f"and {ci_secret_hint('entsoe_token')}."
         )
         return None, None
 
@@ -304,10 +307,13 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
         return None, None
 
     if response.status_code == 401:
+        reg_url = (
+            "https://transparency.entsoe.eu/ (Login -> Account Settings -> Web API Security Token)"
+        )
         print(
-            "::error::ENTSO-E authentication failed. Check your entsoe_token secret. "
-            "Get a free token at https://transparency.entsoe.eu/ -> Account Settings -> "
-            "Web API Security Token."
+            "::error::ENTSO-E authentication failed. "
+            f"{ci_secret_hint('entsoe_token').capitalize()}. "
+            f"Get a free token at {reg_url}."
         )
         return None, None
 

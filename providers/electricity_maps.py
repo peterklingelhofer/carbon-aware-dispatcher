@@ -12,7 +12,7 @@ Register at https://portal.electricitymaps.com/. Paid plans (200+ zones) are
 sold per country/year, so they cost far more than a flat API key.
 """
 
-from providers.base import api_request_with_header, compute_trend, green_result
+from providers.base import api_request_with_header, ci_secret_hint, compute_trend, green_result
 
 EMAPS_API_BASE = "https://api-access.electricitymaps.com/free-tier"
 
@@ -25,8 +25,8 @@ def check_carbon_intensity(zone, max_carbon, emaps_api_key):
     if not emaps_api_key:
         print(
             f"::error::Electricity Maps API token required for zone '{zone}'. "
-            "Get a free token in 30 seconds at https://portal.electricitymaps.com/ "
-            "and set the electricity_maps_token input."
+            "Get a free token at https://portal.electricitymaps.com/ "
+            f"and {ci_secret_hint('electricity_maps_token')}."
         )
         return None, None
 
