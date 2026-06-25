@@ -544,3 +544,22 @@ def iso_now() -> str:
 def github_headers(token: str) -> dict:
     """Standard bearer auth + accept headers for the GitHub REST API."""
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+
+_CI_SECRET_INSTRUCTIONS = {
+    "GITHUB_ACTIONS": "Settings -> Secrets and variables -> Actions",
+    "GITLAB_CI": "Settings -> CI/CD -> Variables",
+    "CIRCLECI": "Project Settings -> Environment Variables",
+    "BITBUCKET_BUILD_NUMBER": "Repository settings -> Pipelines -> Repository variables",
+    "TF_BUILD": "Pipeline -> Edit -> Variables",
+    "TRAVIS": "Repository Settings -> Environment Variables",
+    "JENKINS_URL": "Manage Jenkins -> Credentials (or pipeline environment block)",
+}
+
+
+def ci_secret_hint(secret_name: str) -> str:
+    """Return a platform-specific hint for where to add a CI secret."""
+    for env_var, location in _CI_SECRET_INSTRUCTIONS.items():
+        if os.environ.get(env_var):
+            return f"add it as a secret named {secret_name} ({location})"
+    return f"set {secret_name} as a secret or environment variable in your CI/CD platform"
