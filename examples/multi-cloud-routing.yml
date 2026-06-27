@@ -32,12 +32,32 @@ jobs:
     needs: find-green-region
     if: needs.find-green-region.outputs.clean == 'true'
     runs-on: ubuntu-latest
+    # Set the greenest region for all three clouds via env vars; comment out
+    # the two you don't use.
+    env:
+      AWS_DEFAULT_REGION: ${{ needs.find-green-region.outputs.aws }}
+      CLOUDSDK_COMPUTE_REGION: ${{ needs.find-green-region.outputs.gcp }}
+      AZURE_DEFAULTS_LOCATION: ${{ needs.find-green-region.outputs.azure }}
     steps:
       - uses: actions/checkout@v5
-      - run: |
-          echo "Deploying to greenest region:"
-          echo "  Zone: ${{ needs.find-green-region.outputs.zone }}"
-          echo "  AWS:  ${{ needs.find-green-region.outputs.aws }}"
-          echo "  GCP:  ${{ needs.find-green-region.outputs.gcp }}"
-          echo "  Azure: ${{ needs.find-green-region.outputs.azure }}"
-          echo "  Intensity: ${{ needs.find-green-region.outputs.intensity }} gCO2eq/kWh"
+
+      - name: Show selected region
+        run: |
+          echo "Zone:      ${{ needs.find-green-region.outputs.zone }}"
+          echo "Intensity: ${{ needs.find-green-region.outputs.intensity }} gCO2eq/kWh"
+          echo "AWS:       ${{ needs.find-green-region.outputs.aws }}"
+          echo "GCP:       ${{ needs.find-green-region.outputs.gcp }}"
+          echo "Azure:     ${{ needs.find-green-region.outputs.azure }}"
+
+      # AWS: region comes from AWS_DEFAULT_REGION above
+      - name: Deploy (AWS)
+        run: aws s3 sync ./dist s3://my-bucket/
+        # Or: terraform apply -var="region=${{ needs.find-green-region.outputs.aws }}"
+
+      # GCP: region comes from CLOUDSDK_COMPUTE_REGION above
+      # - name: Deploy (GCP)
+      #   run: gcloud run deploy my-service --image gcr.io/my-project/my-image
+
+      # Azure: region comes from AZURE_DEFAULTS_LOCATION above
+      # - name: Deploy (Azure)
+      #   run: az webapp up --name my-app

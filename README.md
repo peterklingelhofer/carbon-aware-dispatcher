@@ -234,6 +234,29 @@ the deploy-region pattern above.
 
 The `runner_label` output will be a RunsOn-compatible label like `runs-on=12345/runner=2cpu-linux-x64/region=us-west-1`.
 
+### Targeting reliably renewable regions
+
+Standard GitHub-hosted runners (`ubuntu-latest` etc.) run on Azure in a region you can't choose. GitHub's renewable commitment is annual REC matching, settled over a year, so gating and scheduling are your only levers on standard runners. To actually execute on clean electrons consistently, use a runner provider that lets you pick the region.
+
+**Greenest regions by provider:**
+
+| Provider | Region | Grid zone | Why |
+|---|---|---|---|
+| AWS (RunsOn) | `eu-north-1` (Stockholm) | `SE-SE3` | Nordic hydro + wind; AWS 100% renewable committed; cleanest year-round |
+| AWS (RunsOn) | `eu-west-1` (Ireland) | `IE` | Wind-heavy; AWS 100% renewable committed |
+| AWS (RunsOn) | `us-west-2` (Oregon) | `BPAT` | Pacific NW hydro; AWS 100% renewable committed |
+| Azure (GitHub larger runners) | `swedencentral` | `SE-SE3` | Sweden ~95%+ renewable grid |
+| Azure (GitHub larger runners) | `norwayeast` | `NO-NO1` | Norway ~98% hydro |
+
+For RunsOn, pass the grid zone codes above to `grid_zones` so the action picks the cleanest of the candidates and routes the job there:
+
+```yaml
+grid_zones: 'SE-SE3,IE,BPAT'   # Stockholm, Ireland, Oregon: all AWS 100% renewable
+runner_provider: 'runson'
+```
+
+For GitHub larger runners (Teams/Enterprise), create a runner group targeting `swedencentral` or `norwayeast` in your organization settings, then set `runs-on` to that group's label.
+
 ### Cost + carbon routing
 
 Among multiple candidate zones, pick one that's both clean *and* cheap. Set

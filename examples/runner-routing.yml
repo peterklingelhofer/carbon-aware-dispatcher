@@ -1,0 +1,44 @@
+# Carbon-Aware Runner Routing (RunsOn)
+#
+# Picks the cleanest AWS region and runs your build job there using RunsOn
+# (https://runs-on.com): self-hosted runners billed per-minute with region
+# control. The action emits runner_label in RunsOn's label syntax; the build
+# job sets runs-on to that value so GitHub routes the job to the right region.
+#
+# Requires: RunsOn installed in your GitHub org (https://runs-on.com/pricing/)
+# No carbon API keys needed for the US/UK zones listed below.
+#
+# Copy to .github/workflows/carbon-runner-routing.yml
+
+name: Carbon-Aware Runner Routing
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pick-region:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.carbon.outputs.runner_label }}
+      zone: ${{ steps.carbon.outputs.grid_zone }}
+      intensity: ${{ steps.carbon.outputs.carbon_intensity }}
+    steps:
+      - uses: peterklingelhofer/carbon-aware-dispatcher@v1
+        id: carbon
+        with:
+          # Candidate zones: action picks the cleanest, emits the matching runner label
+          grid_zones: 'CISO,ERCO,PJM,GB'
+          runner_provider: 'runson'
+          runner_spec: '2cpu-linux-x64'  # adjust to your workload
+
+  build:
+    needs: pick-region
+    # GitHub resolves this to the greenest region's RunsOn runner at queue time
+    runs-on: ${{ needs.pick-region.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          echo "Running in ${{ needs.pick-region.outputs.zone }} (${{ needs.pick-region.outputs.intensity }} gCO2eq/kWh)"
+          # Your build / test / deploy commands here

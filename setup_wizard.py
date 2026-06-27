@@ -168,7 +168,12 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
 
 
 def print_results(
-    results, eia_api_key="", emaps_api_key="", gridstatus_api_key="", entsoe_token=""
+    results,
+    eia_api_key="",
+    emaps_api_key="",
+    gridstatus_api_key="",
+    entsoe_token="",
+    routing="gate",
 ):
     """Print a formatted summary of test results."""
     print("\n" + "=" * 64)
@@ -278,6 +283,76 @@ def print_results(
             f"    Greenest zone right now: {greenest['zone']} ({greenest['intensity']} gCO2eq/kWh)"
         )
 
+    # Routing-mode workflow snippet
+    ok_zones = [r["zone"] for r in results if r["status"] == "ok"]
+    zones_snippet = ",".join(ok_zones) if ok_zones else "CISO,GB"
+    print(f"\n  Routing mode: {routing}")
+    print("  " + "-" * 60)
+    if routing == "runner":
+        print("    Requires RunsOn (https://runs-on.com) installed in your org.")
+        print("    Greenest AWS regions: eu-north-1 (SE-SE3), eu-west-1 (IE), us-west-2 (BPAT)")
+        print("    AWS commits to 100% renewable for all three: cleanest year-round.\n")
+        green_runner_zones = "SE-SE3,IE,BPAT"
+        print("    jobs:")
+        print("      pick-region:")
+        print("        runs-on: ubuntu-latest")
+        print("        outputs:")
+        print("          runner: ${{ steps.carbon.outputs.runner_label }}")
+        print("        steps:")
+        print("          - uses: peterklingelhofer/carbon-aware-dispatcher@v1")
+        print("            id: carbon")
+        print("            with:")
+        print(f"              grid_zones: '{green_runner_zones}'  # Stockholm, Ireland, Oregon")
+        print("              runner_provider: 'runson'")
+        print("              runner_spec: '2cpu-linux-x64'")
+        print("      build:")
+        print("        needs: pick-region")
+        print("        runs-on: ${{ needs.pick-region.outputs.runner }}")
+        print("        steps:")
+        print("          - uses: actions/checkout@v5")
+        print("          - run: echo 'your build here'")
+    elif routing == "deploy":
+        print("    Set the region env var for your cloud CLI; unused vars are harmless.\n")
+        print("    jobs:")
+        print("      find-region:")
+        print("        runs-on: ubuntu-latest")
+        print("        outputs:")
+        print("          aws:   ${{ steps.carbon.outputs.cloud_region }}")
+        print("          gcp:   ${{ steps.carbon.outputs.gcp_region }}")
+        print("          azure: ${{ steps.carbon.outputs.azure_region }}")
+        print("        steps:")
+        print("          - uses: peterklingelhofer/carbon-aware-dispatcher@v1")
+        print("            id: carbon")
+        print("            with:")
+        print(f"              grid_zones: '{zones_snippet}'")
+        print("      deploy:")
+        print("        needs: find-region")
+        print("        runs-on: ubuntu-latest")
+        print("        env:")
+        print("          AWS_DEFAULT_REGION:      ${{ needs.find-region.outputs.aws }}")
+        print("          CLOUDSDK_COMPUTE_REGION: ${{ needs.find-region.outputs.gcp }}")
+        print("          AZURE_DEFAULTS_LOCATION: ${{ needs.find-region.outputs.azure }}")
+        print("        steps:")
+        print("          - uses: actions/checkout@v5")
+        print("          - run: aws s3 sync ./dist s3://my-bucket/")
+        print("          # - run: gcloud run deploy my-service ...")
+        print("          # - run: az webapp up --name my-app")
+    else:
+        # gate (default)
+        print("    Use --routing=runner or --routing=deploy to see routing snippets.\n")
+        print("    jobs:")
+        print("      build:")
+        print("        runs-on: ubuntu-latest")
+        print("        steps:")
+        print("          - uses: peterklingelhofer/carbon-aware-dispatcher@v1")
+        print("            id: carbon")
+        print("            with:")
+        print(f"              grid_zones: '{zones_snippet}'")
+        print("          - if: steps.carbon.outputs.grid_clean == 'true'")
+        print("            uses: actions/checkout@v5")
+        print("          - if: steps.carbon.outputs.grid_clean == 'true'")
+        print("            run: echo 'your build here'")
+
     print("\n" + "=" * 64)
 
 
@@ -299,6 +374,12 @@ def main():
     )
     parser.add_argument("--gridstatus-api-key", default=os.environ.get("GRID_STATUS_API_KEY", ""))
     parser.add_argument("--entsoe-token", default=os.environ.get("ENTSOE_TOKEN", ""))
+    parser.add_argument(
+        "--routing",
+        choices=["gate", "runner", "deploy"],
+        default="gate",
+        help="Workflow snippet to emit: gate (default), runner (RunsOn), deploy (region env vars)",
+    )
 
     args = parser.parse_args()
 
@@ -332,6 +413,7 @@ def main():
         args.electricity_maps_token,
         args.gridstatus_api_key,
         args.entsoe_token,
+        args.routing,
     )
 
     # Exit code: 1 if any errors

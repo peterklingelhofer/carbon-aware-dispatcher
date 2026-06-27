@@ -36,11 +36,24 @@ jobs:
   deploy:
     needs: route
     runs-on: ubuntu-latest
+    env:
+      # Azure region is used here; swap for cloud_region (AWS) or gcp_region (GCP)
+      # by adding those outputs to the route job above.
+      AZURE_DEFAULTS_LOCATION: ${{ needs.route.outputs.region }}
     steps:
       - uses: actions/checkout@v5
-      - run: |
-          echo "Selected zone:   ${{ needs.route.outputs.zone }}"
-          echo "Azure region:    ${{ needs.route.outputs.region }}"
-          echo "Carbon:          ${{ needs.route.outputs.intensity }} gCO2eq/kWh"
-          echo "Price:           ${{ needs.route.outputs.price }} USD/hr"
-          # Deploy to needs.route.outputs.region here
+
+      - name: Show selected region
+        run: |
+          echo "Zone:    ${{ needs.route.outputs.zone }}"
+          echo "Region:  ${{ needs.route.outputs.region }}"
+          echo "Carbon:  ${{ needs.route.outputs.intensity }} gCO2eq/kWh"
+          echo "Price:   ${{ needs.route.outputs.price }} USD/hr"
+
+      # AZURE_DEFAULTS_LOCATION is already set above, so az commands pick it up automatically
+      - name: Deploy
+        run: az webapp up --name my-app
+        # AWS alternative:  aws s3 sync ./dist s3://my-bucket/
+        #   (add cloud_region to route outputs, set AWS_DEFAULT_REGION instead)
+        # GCP alternative:  gcloud run deploy my-service --image gcr.io/my-project/my-image
+        #   (add gcp_region to route outputs, set CLOUDSDK_COMPUTE_REGION instead)
