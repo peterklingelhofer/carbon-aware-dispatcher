@@ -3102,10 +3102,11 @@ class TestGreenSLA:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
             ledger_path = lf.name
         data = ledger.empty_ledger()
+        seed_date = datetime.now(timezone.utc).strftime("%Y-%m-01")
         for _ in range(green):
-            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=True)
+            data = ledger.merge_entry(data, 0, seed_date, is_green=True)
         for _ in range(dirty):
-            data = ledger.merge_entry(data, 0, "2026-06-17", is_green=False)
+            data = ledger.merge_entry(data, 0, seed_date, is_green=False)
         with open(ledger_path, "w") as f:
             json.dump(data, f)
         out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
