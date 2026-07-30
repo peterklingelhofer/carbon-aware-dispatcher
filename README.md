@@ -10,7 +10,7 @@
   ![CO2 saved](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/peterklingelhofer/GIST_ID/raw/carbon-badge.json)
 -->
 
-Run your CI/CD only when the energy grid is clean. One file, no API keys, no configuration.
+If you're running a job or a CI pipeline, you may as well run it on 100% renewable energy. Carbon-Aware Dispatcher provides observability into which cloud regions emit the least carbon emissions, aggregating grid data from dozens of sources, making what was an opaque decision a clear one.
 
 ```yaml
 # .github/workflows/carbon-aware-build.yml
