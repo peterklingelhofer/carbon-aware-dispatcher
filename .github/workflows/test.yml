@@ -40,4 +40,10 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check .
       - name: Mypy
-        run: uv run mypy check_grid.py providers setup_wizard.py integrations
+        run: uv run mypy check_grid.py citations_generated.py providers setup_wizard.py integrations
+
+      # The citekey Literal and the rendered bibliography are generated from
+      # docs/CITATIONS.csl.json. If they are stale, an unknown citekey stops
+      # being a mypy error, which is the whole point of generating them
+      - name: Citations up to date
+        run: uv run python scripts/generate_citations.py --check

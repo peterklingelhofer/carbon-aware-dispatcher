@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ from providers import (
     nearest_clean_zones,
     ons_brazil,
     open_meteo,
+    provenance,
     rte,
     sort_auto_green_by_time,
     taiwan,
@@ -61,6 +63,7 @@ from providers import (
 )
 from providers.base import (
     CI_JOB_POWER_KW,
+    CI_JOB_POWER_KW_RANGE,
     CO2_GRAMS_PER_KM_DRIVEN,
     CO2_GRAMS_PER_PHONE_CHARGE,
     CO2_GRAMS_PER_TREE_YEAR,
@@ -248,6 +251,49 @@ def data_source_for(zone):
     return provider, confidence
 
 
+# Whether the last reading was converted to a consumption basis by flow tracing,
+# which changes the accounting method and therefore the provenance. Thread-local
+# for the same reason as _failure_state in providers.base: a multi-zone run fans
+# out across a pool and workers must not read each other's basis.
+_traced_state = threading.local()
+
+
+def _mark_traced(zone):
+    """Record that this zone's reading came from flow tracing."""
+    traced = getattr(_traced_state, "zones", None)
+    if traced is None:
+        traced = set()
+        _traced_state.zones = traced
+    traced.add(zone)
+
+
+def _was_traced(zone):
+    return zone in getattr(_traced_state, "zones", ())
+
+
+def set_intensity_outputs(zone, intensity, confidence=None):
+    """Emit an intensity together with the provenance that produced it.
+
+    Every code path that reports an intensity goes through here, so a number can
+    never reach a consumer stripped of the method and citekeys behind it. That
+    is enforced as a contract: tests/test_provenance.py asserts this is the
+    only place in check_grid.py that writes carbon_intensity.
+
+    confidence is the r_squared from the marginal estimator where one applies.
+    Returns the provenance record so callers can put it in the job summary.
+    """
+    set_output("carbon_intensity", "unknown" if intensity is None else str(intensity))
+    provider, _ = data_source_for(zone)
+    record = provenance.provenance(
+        provider, consumption_traced=_was_traced(zone), confidence=confidence
+    )
+    set_output("carbon_method", record["method"])
+    set_output("carbon_citations", ",".join(record["citations"]))
+    set_output("carbon_evidence_tier", record["evidence_tier"])
+    set_output("carbon_factor_table", record["factors"])
+    return record
+
+
 def _apply_consumption_intensity(zone, max_carbon, is_green, intensity, entsoe_token):
     """Replace production intensity with flow-traced consumption intensity.
 
@@ -274,6 +320,7 @@ def _apply_consumption_intensity(zone, max_carbon, is_green, intensity, entsoe_t
         f"  Consumption-based: {cons_rounded} gCO2eq/kWh "
         f"(production was {intensity}, {delta:+d} from imports/exports)"
     )
+    _mark_traced(zone)
     return new_green, cons_rounded
 
 
@@ -773,25 +820,44 @@ def _embodied_grams():
     return e if (e and e > 0) else 0.0
 
 
+def _duration_hours(job_minutes=None):
+    """Run duration in hours: the argument, else JOB_DURATION_MINUTES, else the default."""
+    if job_minutes is not None:
+        return max(0.0, job_minutes / 60.0)
+    mins = _soft_float("JOB_DURATION_MINUTES")
+    return max(0.0, (mins / 60.0) if (mins and mins > 0) else DEFAULT_JOB_DURATION_HOURS)
+
+
 def resolve_energy_kwh(job_minutes=None):
     """Resolve the run's energy use (kWh) from config, most-specific first.
 
     Precedence: JOB_ENERGY_KWH (measured, best) > JOB_POWER_WATTS x duration >
-    the CI default (50 W x 15 min). Duration comes from job_minutes, else
-    JOB_DURATION_MINUTES, else the default. This is what makes co2_emitted_grams
-    real for actual workloads (an 8-hour GPU run is not a 50 W CI job).
+    the CI default (CI_JOB_POWER_KW x 15 min). This is what makes
+    co2_emitted_grams real for actual workloads (an 8-hour GPU run is not a CI
+    job). Callers who want the assumption's error bar want energy_bounds_kwh.
     """
     explicit = _soft_float("JOB_ENERGY_KWH")
     if explicit and explicit > 0:
         return explicit
     watts = _soft_float("JOB_POWER_WATTS")
     power_kw = (watts / 1000.0) if (watts and watts > 0) else CI_JOB_POWER_KW
-    if job_minutes is not None:
-        duration_hours = job_minutes / 60.0
-    else:
-        mins = _soft_float("JOB_DURATION_MINUTES")
-        duration_hours = (mins / 60.0) if (mins and mins > 0) else DEFAULT_JOB_DURATION_HOURS
-    return power_kw * max(0.0, duration_hours)
+    return power_kw * _duration_hours(job_minutes)
+
+
+def energy_bounds_kwh(job_minutes=None):
+    """(low, high) kWh for this run, propagating the CI power assumption's range.
+
+    A caller who set JOB_ENERGY_KWH or JOB_POWER_WATTS has measured the quantity
+    the range exists to bound, so their bounds collapse onto the point estimate.
+    Only the default path, where the power draw is inferred rather than known,
+    carries an error bar. See providers.base.CI_JOB_POWER_KW_RANGE.
+    """
+    point = resolve_energy_kwh(job_minutes)
+    if _soft_float("JOB_ENERGY_KWH") or _soft_float("JOB_POWER_WATTS"):
+        return point, point
+    hours = _duration_hours(job_minutes)
+    low, high = CI_JOB_POWER_KW_RANGE
+    return low * hours, high * hours
 
 
 def estimate_carbon_savings(intensity, job_minutes=None):
@@ -843,6 +909,27 @@ def estimate_emissions(intensity, job_minutes=None):
         return 0.0
     operational = max(0.0, intensity) * resolve_energy_kwh(job_minutes) * _pue()
     return round(operational + _embodied_grams(), 1)
+
+
+def emissions_bounds(intensity, job_minutes=None):
+    """(low, high) gCO2 for this run, or None when the figure carries no error bar.
+
+    Returns None when intensity is unknown, and None when the bounds collapse
+    (the caller measured the energy), so callers can tell "no uncertainty to
+    report" from "uncertainty of zero width" without comparing floats.
+    """
+    if intensity is None:
+        return None
+    low_kwh, high_kwh = energy_bounds_kwh(job_minutes)
+    if low_kwh == high_kwh:
+        return None
+    pue = _pue()
+    embodied = _embodied_grams()
+    clamped = max(0.0, intensity)
+    return (
+        round(clamped * low_kwh * pue + embodied, 1),
+        round(clamped * high_kwh * pue + embodied, 1),
+    )
 
 
 def worth_waiting(
@@ -940,8 +1027,12 @@ def carbon_equivalents(grams):
 
     if km >= 1:
         phrase = f"~{km:.1f} km not driven"
-    else:
+    elif charges >= 1:
         phrase = f"~{charges:.0f} phone charges"
+    else:
+        # Below one phone charge, whole units round to "~0", which reads as
+        # nothing at all rather than as a small honest number
+        phrase = f"~{charges:.2f} phone charges"
 
     return {
         "km_driven": round(km, 3),
@@ -1321,6 +1412,12 @@ def set_savings_outputs(co2_saved, badge_url, intensity=None, zone=None, is_gree
         # trustworthy figure; co2_saved is a benchmark comparison.
         set_output("co2_emitted_grams", str(emitted))
         set_output("co2_saved_basis", SAVINGS_BASIS)
+        # The point estimate rests on an assumed runner power draw, so the range
+        # travels with it rather than being rounded away into false precision
+        bounds = emissions_bounds(intensity)
+        if bounds:
+            set_output("co2_emitted_grams_low", str(bounds[0]))
+            set_output("co2_emitted_grams_high", str(bounds[1]))
     if co2_saved and co2_saved > 0:
         set_output("co2_saved_grams", str(co2_saved))
         equiv = carbon_equivalents(co2_saved)
@@ -1376,7 +1473,7 @@ def run_dry_run(
     set_output("would_defer", "true" if would_defer else "false")
     set_output("grid_zone", report_zone)
     if report_intensity is not None:
-        set_output("carbon_intensity", str(report_intensity))
+        set_intensity_outputs(report_zone, report_intensity)
     set_runner_outputs(report_zone, best_label, runner_provider, runner_spec, github_run_id)
 
     co2_saved, badge_url = estimate_carbon_savings(report_intensity)
@@ -1536,7 +1633,7 @@ def _emit_green_result(
     dispatch_mode) or prints the inline green message
     """
     set_output("grid_clean", "true")
-    set_output("carbon_intensity", str(intensity))
+    set_intensity_outputs(zone, intensity)
     set_runner_outputs(zone, label, runner_provider, runner_spec, github_run_id)
     co2_saved, badge_url = estimate_carbon_savings(intensity)
     set_savings_outputs(co2_saved, badge_url, intensity, zone=zone, is_green=True)
@@ -1653,6 +1750,37 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
     return tier, tier_reason
 
 
+def _grams(value):
+    """Format grams without rounding a sub-gram figure away to zero."""
+    if value >= 10:
+        return f"{value:.0f}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _decision_confidence(record, forecast_heuristic=False):
+    """How much weight this run's verdict can bear, in one phrase.
+
+    A report-only run is meant to build confidence before enforcement is turned
+    on, so it should be explicit about how much confidence is warranted. Three
+    things degrade it: an accounting method that is itself an estimate, a
+    forecast that is a time-of-day heuristic rather than a published one, and a
+    marginal estimate whose regression explained little of the variance.
+    """
+    if record is None:
+        return "no reading, nothing to judge"
+    parts = [f"method tier {record['evidence_tier']}"]
+    if record["evidence_tier"] in ("D", "E"):
+        parts.append("this is a modeled estimate")
+    if forecast_heuristic:
+        parts.append(
+            "next-green-window is a time-of-day curve, which docs/VALIDATION.md "
+            "measures as worse than persistence under 6 hours"
+        )
+    if _marginal_summary and _marginal_summary.get("r_squared") is not None:
+        parts.append(f"marginal r2 {_marginal_summary['r_squared']}")
+    return "; ".join(parts)
+
+
 def write_job_summary(
     zone,
     intensity,
@@ -1701,10 +1829,16 @@ def write_job_summary(
 
     lines.append(f"| **Zone** | `{zone}` |")
 
+    record = None
     if intensity is not None:
         source, confidence = data_source_for(zone)
         lines.append(f"| **Carbon Intensity** | {intensity} gCO2eq/kWh ({confidence}) |")
         lines.append(f"| **Source** | {source} |")
+        record = provenance.provenance(source, consumption_traced=_was_traced(zone))
+        lines.append(
+            f"| **Method** | {record['method_description']} "
+            f"(evidence tier {record['evidence_tier']}) |"
+        )
     else:
         lines.append("| **Carbon Intensity** | unknown |")
 
@@ -1728,9 +1862,21 @@ def write_job_summary(
     if waited_minutes > 0:
         lines.append(f"| **Waited** | {waited_minutes:.0f} minutes |")
 
+    if dry_run:
+        # Report-only mode exists to build confidence before enforcing, so it
+        # should say how much confidence the decision actually deserves
+        lines.append(
+            f"| **Decision confidence** | {_decision_confidence(record, forecast_heuristic)} |"
+        )
+
     if intensity is not None:
         # The honest, measured figure: what this run actually emitted
-        lines.append(f"| **Emitted (this run)** | {estimate_emissions(intensity):.0f} g CO2 |")
+        emitted = estimate_emissions(intensity)
+        bounds = emissions_bounds(intensity)
+        # A default CI job emits a fraction of a gram now that the power draw is
+        # sourced rather than assumed, so whole grams would round it away to "0"
+        spread = f" (range {_grams(bounds[0])}-{_grams(bounds[1])})" if bounds else ""
+        lines.append(f"| **Emitted (this run)** | {_grams(emitted)} g CO2{spread} |")
 
     if co2_saved and co2_saved > 0:
         if co2_saved > 1000:
@@ -1756,6 +1902,16 @@ def write_job_summary(
         verdict = "clean" if m["clean"] else "dirty"
         lines.append(
             f"| **Marginal ({m['region']})** | {m['percentile']}th percentile MOER ({verdict}) |"
+        )
+
+    if record is not None:
+        # The number's basis travels with the number. Without this, a reader has
+        # no way to tell a grid operator's published figure from a weather guess
+        lines.append("")
+        lines.append(f"How this number was produced: {provenance.summary_line(record)}.")
+        lines.append(
+            "Sources: [docs/CITATIONS.md](docs/CITATIONS.md) | "
+            "measured accuracy: [docs/VALIDATION.md](docs/VALIDATION.md)"
         )
 
     if _sla_summary and _sla_summary.get("compliance") is not None:
@@ -1798,10 +1954,7 @@ def handle_dirty_grid(
     provider = detect_provider(zone, entsoe_token)
 
     set_output("grid_clean", "false")
-    if intensity is not None:
-        set_output("carbon_intensity", str(intensity))
-    else:
-        set_output("carbon_intensity", "unknown")
+    set_intensity_outputs(zone, intensity)
 
     trend = get_history_trend(zone, provider, eia_api_key, emaps_api_key, entsoe_token)
     if trend:
@@ -2406,7 +2559,7 @@ def main():
                         )
                         if is_green:
                             set_output("grid_clean", "true")
-                            set_output("carbon_intensity", str(intensity))
+                            set_intensity_outputs(opt_zone, intensity)
                             co2_saved, badge_url = estimate_carbon_savings(intensity)
                             set_savings_outputs(
                                 co2_saved, badge_url, intensity, zone=opt_zone, is_green=True
@@ -2457,7 +2610,7 @@ def main():
 
         if is_green is None:
             set_output("grid_clean", "false")
-            set_output("carbon_intensity", "unknown")
+            set_intensity_outputs(entry["zone"], None)
             write_job_summary(entry["zone"], None, False, max_carbon)
             if fail_on_api_error:
                 print("::error::API error and fail_on_api_error is enabled.")

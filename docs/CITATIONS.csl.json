@@ -1,0 +1,1590 @@
+[
+  {
+    "id": "ipcc-ar5-wg3-annex3",
+    "type": "chapter",
+    "title": "Annex III: Technology-specific Cost and Performance Parameters",
+    "author": [
+      {
+        "family": "Schlomer",
+        "given": "Steffen"
+      },
+      {
+        "family": "Bruckner",
+        "given": "Thomas"
+      },
+      {
+        "family": "Fulton",
+        "given": "Lew"
+      },
+      {
+        "family": "Hertwich",
+        "given": "Edgar"
+      },
+      {
+        "family": "McKinnon",
+        "given": "Alan"
+      },
+      {
+        "family": "Perczyk",
+        "given": "Daniel"
+      },
+      {
+        "family": "Roy",
+        "given": "Joyashree"
+      },
+      {
+        "family": "Schaeffer",
+        "given": "Roberto"
+      },
+      {
+        "family": "Sims",
+        "given": "Ralph"
+      },
+      {
+        "family": "Smith",
+        "given": "Pete"
+      },
+      {
+        "family": "Wiser",
+        "given": "Ryan"
+      }
+    ],
+    "container-title": "Climate Change 2014: Mitigation of Climate Change. Contribution of Working Group III to the Fifth Assessment Report of the IPCC",
+    "publisher": "Cambridge University Press",
+    "page": "1329-1356",
+    "issued": {
+      "date-parts": [
+        [
+          2014
+        ]
+      ]
+    },
+    "URL": "https://www.ipcc.ch/site/assets/uploads/2018/02/ipcc_wg3_ar5_annex-iii.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "primary-read",
+      "accessLevel": "public-domain",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "FUEL_FACTORS coal 820 (Table A.III.2, Coal-PC lifecycle median)",
+        "FUEL_FACTORS gas 490 (Gas-Combined Cycle)",
+        "FUEL_FACTORS nuclear 12, hydro 24, geothermal 38, biomass 230 (dedicated), marine 17 (Ocean)",
+        "solar 48 (Solar PV utility) and wind 11 (Wind onshore), the rows the shared corpus resolved to",
+        "MARGINAL_CLAMP upper bound: no AR5 row exceeds 910 for coal"
+      ],
+      "caveat": "Table A.III.2 read directly from the primary PDF on 2026-08-23 (SHA-256 dec39383e03caf843f833ad8f4b373f72be3b86ada6d826bd172e8955ffe24c2). It contains NO oil, lignite or waste row, so the repo's oil 650, lignite 1050 and waste 580 aren't from this source despite the code comment that claimed they were. ipcc.ch returns HTTP 403 to some automated clients but serves the PDF to a browser user-agent."
+    }
+  },
+  {
+    "id": "ipcc-ar5-wg3-ch7",
+    "type": "chapter",
+    "title": "Energy Systems",
+    "author": [
+      {
+        "family": "Bruckner",
+        "given": "Thomas"
+      },
+      {
+        "family": "Bashmakov",
+        "given": "Igor A."
+      },
+      {
+        "family": "Mulugetta",
+        "given": "Yacob"
+      }
+    ],
+    "container-title": "Climate Change 2014: Mitigation of Climate Change. Contribution of Working Group III to the Fifth Assessment Report of the IPCC",
+    "publisher": "Cambridge University Press",
+    "page": "511-597",
+    "issued": {
+      "date-parts": [
+        [
+          2014
+        ]
+      ]
+    },
+    "URL": "https://www.ipcc.ch/site/assets/uploads/2018/02/ipcc_wg3_ar5_chapter7.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "public-domain",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The only oil-fired lifecycle figure anywhere in AR5: a 510-1170 gCO2eq/kWh RANGE quoted from SRREN, with no median"
+      ],
+      "caveat": "Establishes a negative result. AR5 does give an oil range here, but it's a range attributed to SRREN (2011) with no median, and 650 never appears. Cited to show where the repo's oil factor doesn't come from."
+    }
+  },
+  {
+    "id": "uk-post-268-2006",
+    "type": "report",
+    "title": "Carbon footprint of electricity generation",
+    "author": [
+      {
+        "literal": "UK Parliamentary Office of Science and Technology"
+      }
+    ],
+    "publisher": "Parliamentary Office of Science and Technology, UK Parliament",
+    "number": "POSTnote 268",
+    "issued": {
+      "date-parts": [
+        [
+          2006
+        ]
+      ]
+    },
+    "URL": "https://www.parliament.uk/globalassets/documents/post/postpn268.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "public-domain",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "The true origin of FUEL_FACTORS oil 650, via Electricity Maps"
+      ],
+      "caveat": "Verbatim: 'The average carbon footprint of oil-fired electricity generation plants in the UK is ~650gCO2eq/kWh.' This is a UK-fleet average from 2006 for a fuel supplying 1% of UK generation. It's neither a global median nor an IPCC figure. parliament.uk returns 403 to automated clients; retrieved via the Wayback Machine. POST's own solar (58) and wind (4.64/5.25) figures don't match what this repo uses, so only the oil row travelled."
+    }
+  },
+  {
+    "id": "electricity-maps-default-factors",
+    "type": "dataset",
+    "title": "Default emission factors (config/defaults.yaml)",
+    "author": [
+      {
+        "literal": "Electricity Maps"
+      }
+    ],
+    "publisher": "Electricity Maps / electricitymaps-contrib",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://github.com/electricitymaps/electricitymaps-contrib/blob/master/config/defaults.yaml",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "D",
+      "backsClaims": [
+        "The proximate source of this project's former factor table, including the solar 45 that proved it was a copy"
+      ],
+      "caveat": "Publishes solar 45 under the label 'IPCC 2014'. 45 appears nowhere in AR5; it's the rounded mean of the AR5 rooftop (41) and utility (48) rows, i.e. Electricity Maps' own editorial choice presented as an IPCC value. This project carried 45 until 2026-08-23, which is what proved its table was copied from here rather than read out of AR5; it now uses the AR5 utility row, 48. Electricity Maps has no lignite or waste mode at all, so those two values came from somewhere else again."
+    }
+  },
+  {
+    "id": "turconi-2013-lca-electricity",
+    "type": "article-journal",
+    "title": "Life cycle assessment (LCA) of electricity generation technologies: Overview, comparability and limitations",
+    "author": [
+      {
+        "family": "Turconi",
+        "given": "Roberto"
+      },
+      {
+        "family": "Boldrin",
+        "given": "Alessio"
+      },
+      {
+        "family": "Astrup",
+        "given": "Thomas"
+      }
+    ],
+    "container-title": "Renewable and Sustainable Energy Reviews",
+    "volume": "28",
+    "page": "555-565",
+    "issued": {
+      "date-parts": [
+        [
+          2013
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.rser.2013.08.013",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "A published lignite lifecycle range of 800-1300 gCO2eq/kWh, whose midpoint is exactly the repo's 1050"
+      ],
+      "caveat": "The midpoint match is exact but gives no evidence the repo derived 1050 this way. Note also that 1050 is this review's upper bound for HARD coal, so a transcription slip is equally plausible. Cited only as the best available published range for lignite."
+    }
+  },
+  {
+    "id": "uba-2021-cc35-lca",
+    "type": "report",
+    "title": "Oekobilanzen von Windenergie- und Photovoltaikanlagen sowie weiterer Stromerzeugungstechnologien",
+    "author": [
+      {
+        "literal": "Umweltbundesamt"
+      }
+    ],
+    "publisher": "Umweltbundesamt (German Federal Environment Agency)",
+    "number": "CLIMATE CHANGE 35/2021",
+    "issued": {
+      "date-parts": [
+        [
+          2021
+        ]
+      ]
+    },
+    "URL": "https://www.umweltbundesamt.de/system/files/medien/5750/publikationen/2021-05-06_cc_35-2021_oekobilanzen_windenergie_photovoltaik.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "public-domain",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The nearest published lifecycle value to the repo's lignite 1050: 1054 gCO2eq/kWh for German Braunkohle"
+      ],
+      "caveat": "Tabelle 98 gives 1054 (UBA dataset) and 1139 (GaBi SP39) for Braunkohle. Recommended replacement source if lignite is ever re-cited, but the repo's 1050 was not taken from here."
+    }
+  },
+  {
+    "id": "eunomia-2006-energy-from-waste",
+    "type": "report",
+    "title": "A Changing Climate for Energy from Waste? Final Report for Friends of the Earth",
+    "author": [
+      {
+        "family": "Hogg",
+        "given": "Dominic"
+      }
+    ],
+    "publisher": "Eunomia Research & Consulting, for Friends of the Earth",
+    "issued": {
+      "date-parts": [
+        [
+          2006
+        ]
+      ]
+    },
+    "URL": "https://www.foe.co.uk/resource/reports/changing_climate.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "The true origin of FUEL_FACTORS waste 580"
+      ],
+      "caveat": "Table 1 gives 580 gCO2eq/kWh for an electricity-only incinerator in the FUTURE modelled scenario (current was 510), EXCLUDING biogenic carbon. Including biogenic carbon the same row is 1405. So the repo's 580 is a UK 2006 scenario figure for direct fossil-only emissions, being used in a table labelled 'lifecycle medians'. Wrong on source, vintage and system boundary at once. Retrieved via the Wayback Machine."
+    }
+  },
+  {
+    "id": "neso-carbon-intensity-methodology",
+    "type": "report",
+    "title": "Carbon Intensity Forecast Methodology",
+    "author": [
+      {
+        "literal": "National Grid ESO"
+      }
+    ],
+    "publisher": "National Grid ESO / carbon-intensity",
+    "issued": {
+      "date-parts": [
+        [
+          2021
+        ]
+      ]
+    },
+    "URL": "https://github.com/carbon-intensity/methodology",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The origin of FUEL_FACTORS other 300, which is exactly this document's 'Other' row",
+        "The per-fuel factors behind every GB reading this project consumes"
+      ],
+      "caveat": "These are DIRECT gCO2/kWh factors with lifecycle CO2eq excluded: hydro, nuclear, solar and wind are all scored 0. Mixing the 'Other 300' row into a lifecycle table is a system-boundary error. Note also that this table's oil is 935 while the repo uses 650, so the repo did not take oil from the API it actually reads."
+    }
+  },
+  {
+    "id": "staffell-2017-british-electricity",
+    "type": "article-journal",
+    "title": "Measuring the progress and impacts of decarbonising British electricity",
+    "author": [
+      {
+        "family": "Staffell",
+        "given": "Iain"
+      }
+    ],
+    "container-title": "Energy Policy",
+    "volume": "102",
+    "page": "463-475",
+    "issued": {
+      "date-parts": [
+        [
+          2017
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.enpol.2016.12.037",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "One of the two sources National Grid ESO cites for its carbon intensity factors"
+      ],
+      "caveat": "Known from the NESO methodology document's citation of it. DOI and metadata verified in Crossref; full text not obtained."
+    }
+  },
+  {
+    "id": "ember-global-electricity-review-2026",
+    "type": "report",
+    "title": "Global Electricity Review 2026",
+    "author": [
+      {
+        "literal": "Ember"
+      }
+    ],
+    "publisher": "Ember",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://ember-energy.org/app/uploads/2026/04/Global-Electricity-Review-2026.pdf",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "primary-read",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "GLOBAL_AVG_INTENSITY = 458, the baseline the co2_saved benchmark is measured against"
+      ],
+      "caveat": "Verbatim: 'The emissions intensity of electricity has dropped 14% over the last decade, from 533 grams of CO2 equivalent per kWh (gCO2e/kWh) in 2015 to 458 gCO2e/kWh in 2025.' Chosen over the better-known IEA figure because it's CO2-equivalent and incorporates IPCC lifecycle intensities, so it shares a system boundary with FUEL_FACTORS. PDF fetched and searched directly on 2026-08-23."
+    }
+  },
+  {
+    "id": "iea-electricity-2026",
+    "type": "report",
+    "title": "Electricity 2026",
+    "author": [
+      {
+        "literal": "International Energy Agency"
+      }
+    ],
+    "publisher": "International Energy Agency",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://www.iea.org/reports/electricity-2026",
+    "custom": {
+      "group": "emission-factors",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "Establishes that the widely-quoted IEA global average is 435 gCO2/kWh for 2025, and that it's a DIRECT figure with lifecycle emissions excluded"
+      ],
+      "caveat": "Verbatim: 'the improvement in global CO2 intensity has been significant, declining by 14% to 435 g CO2/kWh in 2025.' IEA's own documentation states 'the intensities corresponding to renewable sources (including biofuels) and nuclear are equal to zero', which is definitionally not a lifecycle factor. Cited here to explain why this repo avoids the IEA number. A search of the report for '450 g' returns nothing, so the repo's former 450 was not an IEA figure either."
+    }
+  },
+  {
+    "id": "hawkes-2010-marginal-emissions",
+    "type": "article-journal",
+    "title": "Estimating marginal CO2 emissions rates for national electricity systems",
+    "author": [
+      {
+        "family": "Hawkes",
+        "given": "A.D."
+      }
+    ],
+    "container-title": "Energy Policy",
+    "volume": "38",
+    "page": "5977-5987",
+    "issued": {
+      "date-parts": [
+        [
+          2010
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.enpol.2010.05.053",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "marginal.py's central claim that the marginal rate is what reflects the carbon avoided by shifting load"
+      ],
+      "caveat": "Beware: 10.1016/j.enpol.2010.07.009 is a DIFFERENT paper (Ruth et al.) frequently miscited as this one."
+    }
+  },
+  {
+    "id": "siler-evans-2012-marginal-factors",
+    "type": "article-journal",
+    "title": "Marginal Emissions Factors for the U.S. Electricity System",
+    "author": [
+      {
+        "family": "Siler-Evans",
+        "given": "Kyle"
+      },
+      {
+        "family": "Azevedo",
+        "given": "Ines Lima"
+      },
+      {
+        "family": "Morgan",
+        "given": "M. Granger"
+      }
+    ],
+    "container-title": "Environmental Science & Technology",
+    "volume": "46",
+    "page": "4742-4748",
+    "issued": {
+      "date-parts": [
+        [
+          2012
+        ]
+      ]
+    },
+    "DOI": "10.1021/es300145v",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The regression-of-deltas method that marginal.estimate_marginal implements",
+        "The claim that average factors 'may grossly misestimate the avoided emissions resulting from an intervention'"
+      ],
+      "caveat": "This is the canonical citation for the exact estimator this repo ships. docs/VALIDATION.md section 4 shows our implementation of it can't resolve a few-hour shift at a stable window length."
+    }
+  },
+  {
+    "id": "hawkes-2014-long-run-marginal",
+    "type": "article-journal",
+    "title": "Long-run marginal CO2 emissions factors in national electricity systems",
+    "author": [
+      {
+        "family": "Hawkes",
+        "given": "A.D."
+      }
+    ],
+    "container-title": "Applied Energy",
+    "volume": "125",
+    "page": "197-205",
+    "issued": {
+      "date-parts": [
+        [
+          2014
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.apenergy.2014.03.060",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The short-run versus long-run marginal distinction, which marginal.py doesn't make"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "holland-2022-marginal-not-decreasing",
+    "type": "article-journal",
+    "title": "Why marginal CO2 emissions are not decreasing for US electricity: Estimates and implications for climate policy",
+    "author": [
+      {
+        "family": "Holland",
+        "given": "Stephen P."
+      },
+      {
+        "family": "Kotchen",
+        "given": "Matthew J."
+      },
+      {
+        "family": "Mansur",
+        "given": "Erin T."
+      },
+      {
+        "family": "Yates",
+        "given": "Andrew J."
+      }
+    ],
+    "container-title": "Proceedings of the National Academy of Sciences",
+    "volume": "119",
+    "page": "e2116632119",
+    "issued": {
+      "date-parts": [
+        [
+          2022
+        ]
+      ]
+    },
+    "DOI": "10.1073/pnas.2116632119",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That US average emissions fell 28% over a decade while marginal emissions rose 7%, so the two diverge in direction as well as magnitude",
+        "That hour-of-day structure exists in marginal rates"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "gagnon-2022-short-run-omits",
+    "type": "article-journal",
+    "title": "Short-run marginal emission rates omit important impacts of electric-sector interventions",
+    "author": [
+      {
+        "family": "Gagnon",
+        "given": "Pieter J."
+      },
+      {
+        "family": "Bistline",
+        "given": "John E. T."
+      },
+      {
+        "family": "Alexander",
+        "given": "Maxwell H."
+      },
+      {
+        "family": "Cole",
+        "given": "Wesley J."
+      }
+    ],
+    "container-title": "Proceedings of the National Academy of Sciences",
+    "volume": "119",
+    "page": "e2211624119",
+    "issued": {
+      "date-parts": [
+        [
+          2022
+        ]
+      ]
+    },
+    "DOI": "10.1073/pnas.2211624119",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "The known weakness of the short-run marginal estimator this repo implements: it holds the generation fleet fixed and so omits induced structural change"
+      ],
+      "caveat": "This is a PNAS Letter commenting on Holland et al., and it has no abstract. Letters carry less weight than full research articles, hence tier C despite the venue."
+    }
+  },
+  {
+    "id": "beltrami-2020-autoregressive-mef",
+    "type": "article-journal",
+    "title": "Where did the time (series) go? Estimation of marginal emission factors with autoregressive components",
+    "author": [
+      {
+        "family": "Beltrami",
+        "given": "Filippo"
+      },
+      {
+        "family": "Burlinson",
+        "given": "Andrew"
+      },
+      {
+        "family": "Giulietti",
+        "given": "Monica"
+      },
+      {
+        "family": "Grossi",
+        "given": "Luigi"
+      },
+      {
+        "family": "Rowley",
+        "given": "Paul"
+      },
+      {
+        "family": "Wilson",
+        "given": "Grant"
+      }
+    ],
+    "container-title": "Energy Economics",
+    "volume": "91",
+    "page": "104905",
+    "issued": {
+      "date-parts": [
+        [
+          2020
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.eneco.2020.104905",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That a plain least-squares regression on consecutive differences, which is what marginal.py does, ignores the autocorrelation structure of the series"
+      ],
+      "caveat": "Crossref records an erratum with an identical title at 10.1016/j.eneco.2020.105027. Cite 104905 as the article of record."
+    }
+  },
+  {
+    "id": "koebrich-2025-mef-accuracy",
+    "type": "article-journal",
+    "title": "Towards objective evaluation of the accuracy of marginal emissions factors",
+    "author": [
+      {
+        "family": "Koebrich",
+        "given": "Samuel"
+      },
+      {
+        "family": "Cofield",
+        "given": "Jason"
+      },
+      {
+        "family": "McCormick",
+        "given": "Gavin"
+      },
+      {
+        "family": "Saraswat",
+        "given": "Ishan"
+      },
+      {
+        "family": "Steinsultz",
+        "given": "Nicholas"
+      },
+      {
+        "family": "Christian",
+        "given": "Pierre"
+      }
+    ],
+    "container-title": "Renewable and Sustainable Energy Reviews",
+    "volume": "215",
+    "page": "115508",
+    "issued": {
+      "date-parts": [
+        [
+          2025
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.rser.2025.115508",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "That ground-truth marginal emission factors can't be recorded, so no marginal estimator can be validated by standard techniques"
+      ],
+      "caveat": "Directly relevant to docs/VALIDATION.md section 7: it explains why the WattTime backtest, even once run, is a comparison against another model rather than against truth. The authors are WattTime-affiliated and WattTime's own model is the one their proposed tests favour, which should be disclosed wherever this is cited."
+    }
+  },
+  {
+    "id": "wiesner-2025-marginal-poor-metric",
+    "type": "article-journal",
+    "title": "Moving Beyond Marginal Carbon Intensity: A Poor Metric for Both Carbon Accounting and Grid Flexibility",
+    "author": [
+      {
+        "family": "Wiesner",
+        "given": "Philipp"
+      },
+      {
+        "family": "Kao",
+        "given": "Odej"
+      }
+    ],
+    "container-title": "ACM SIGMETRICS Performance Evaluation Review",
+    "volume": "53",
+    "page": "108-111",
+    "issued": {
+      "date-parts": [
+        [
+          2025
+        ]
+      ]
+    },
+    "DOI": "10.1145/3764944.3764969",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "The sharpest published argument against using marginal carbon intensity to steer compute workloads, which cuts against this project's own design"
+      ],
+      "caveat": "A workshop statement paper carrying less weight than a full study. Included precisely because it argues against the approach this repo takes."
+    }
+  },
+  {
+    "id": "ryan-2016-comparative-grid-methods",
+    "type": "article-journal",
+    "title": "Comparative Assessment of Models and Methods To Calculate Grid Electricity Emissions",
+    "author": [
+      {
+        "family": "Ryan",
+        "given": "Nicole A."
+      },
+      {
+        "family": "Johnson",
+        "given": "Jeremiah X."
+      },
+      {
+        "family": "Keoleian",
+        "given": "Gregory A."
+      }
+    ],
+    "container-title": "Environmental Science & Technology",
+    "volume": "50",
+    "page": "8937-8953",
+    "issued": {
+      "date-parts": [
+        [
+          2016
+        ]
+      ]
+    },
+    "DOI": "10.1021/acs.est.5b05216",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That the choice of accounting method alone moves the answer by up to 68%, which is the scale of the gap docs/VALIDATION.md section 4 reports"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "tranberg-2019-flow-tracing",
+    "type": "article-journal",
+    "title": "Real-time carbon accounting method for the European electricity markets",
+    "author": [
+      {
+        "family": "Tranberg",
+        "given": "Bo"
+      },
+      {
+        "family": "Corradi",
+        "given": "Olivier"
+      },
+      {
+        "family": "Lajoie",
+        "given": "Bruno"
+      },
+      {
+        "family": "Gibon",
+        "given": "Thomas"
+      },
+      {
+        "family": "Staffell",
+        "given": "Iain"
+      },
+      {
+        "family": "Andresen",
+        "given": "Gorm Bruun"
+      }
+    ],
+    "container-title": "Energy Strategy Reviews",
+    "volume": "26",
+    "page": "100367",
+    "issued": {
+      "date-parts": [
+        [
+          2019
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.esr.2019.100367",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The flow-tracing consumption-based accounting that providers/flow_tracing.py implements"
+      ],
+      "caveat": "Already named in the module docstring; this promotes it to a resolvable record. Open access, CC-BY, with a preprint at arXiv:1812.06679."
+    }
+  },
+  {
+    "id": "bialek-1996-tracing-electricity",
+    "type": "article-journal",
+    "title": "Tracing the flow of electricity",
+    "author": [
+      {
+        "family": "Bialek",
+        "given": "Janusz"
+      }
+    ],
+    "container-title": "IEE Proceedings - Generation, Transmission and Distribution",
+    "volume": "143",
+    "page": "313-320",
+    "issued": {
+      "date-parts": [
+        [
+          1996
+        ]
+      ]
+    },
+    "DOI": "10.1049/ip-gtd:19960461",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The average-participation / proportional-sharing assumption underneath providers/flow_tracing.py"
+      ],
+      "caveat": "Tranberg et al. attribute the mixing approach to this paper: 'called average participation or proportional sharing in the literature which was also proposed initially in [3]'. Crossref records only the start page 313; the 313-320 range is taken from Tranberg's own reference list."
+    }
+  },
+  {
+    "id": "kirschen-1997-contributions",
+    "type": "article-journal",
+    "title": "Contributions of individual generators to loads and flows",
+    "author": [
+      {
+        "family": "Kirschen",
+        "given": "Daniel"
+      },
+      {
+        "family": "Allan",
+        "given": "Ron"
+      },
+      {
+        "family": "Strbac",
+        "given": "Goran"
+      }
+    ],
+    "container-title": "IEEE Transactions on Power Systems",
+    "volume": "12",
+    "page": "52-60",
+    "issued": {
+      "date-parts": [
+        [
+          1997
+        ]
+      ]
+    },
+    "DOI": "10.1109/59.574923",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The companion proportional-sharing formulation cited alongside Bialek in the flow-tracing literature"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "murphy-1992-skill-standards",
+    "type": "article-journal",
+    "title": "Climatology, Persistence, and Their Linear Combination as Standards of Reference in Skill Scores",
+    "author": [
+      {
+        "family": "Murphy",
+        "given": "Allan H."
+      }
+    ],
+    "container-title": "Weather and Forecasting",
+    "volume": "7",
+    "page": "692-698",
+    "issued": {
+      "date-parts": [
+        [
+          1992
+        ]
+      ]
+    },
+    "DOI": "10.1175/1520-0434(1992)007<0692:CPATLC>2.0.CO;2",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The method of docs/VALIDATION.md section 2: scoring a forecast against both persistence and climatology, and choosing whichever naive method is more accurate as the standard of reference"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "murphy-1988-skill-scores-mse",
+    "type": "article-journal",
+    "title": "Skill Scores Based on the Mean Square Error and Their Relationships to the Correlation Coefficient",
+    "author": [
+      {
+        "family": "Murphy",
+        "given": "Allan H."
+      }
+    ],
+    "container-title": "Monthly Weather Review",
+    "volume": "116",
+    "page": "2417-2424",
+    "issued": {
+      "date-parts": [
+        [
+          1988
+        ]
+      ]
+    },
+    "DOI": "10.1175/1520-0493(1988)116<2417:SSBOTM>2.0.CO;2",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The skill-score form 1 - error_model/error_reference"
+      ],
+      "caveat": "Defines the MSE-based skill score. docs/VALIDATION.md reports an MAE-based analogue, which this paper never defines. Cited for the form alone."
+    }
+  },
+  {
+    "id": "hyndman-2006-forecast-accuracy",
+    "type": "article-journal",
+    "title": "Another look at measures of forecast accuracy",
+    "author": [
+      {
+        "family": "Hyndman",
+        "given": "Rob J."
+      },
+      {
+        "family": "Koehler",
+        "given": "Anne B."
+      }
+    ],
+    "container-title": "International Journal of Forecasting",
+    "volume": "22",
+    "page": "679-688",
+    "issued": {
+      "date-parts": [
+        [
+          2006
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.ijforecast.2006.03.001",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "Scaling mean absolute error against a naive random-walk (persistence) benchmark, which is the MAE-ratio form docs/VALIDATION.md actually uses"
+      ],
+      "caveat": "DOI and metadata verified in Crossref. The full text was NOT read and no abstract was obtainable, so nothing is quoted from it here."
+    }
+  },
+  {
+    "id": "miller-2022-hourly-accounting",
+    "type": "article-journal",
+    "title": "Hourly accounting of carbon emissions from electricity consumption",
+    "author": [
+      {
+        "family": "Miller",
+        "given": "Gregory J."
+      },
+      {
+        "family": "Novan",
+        "given": "Kevin"
+      },
+      {
+        "family": "Jenn",
+        "given": "Alan"
+      }
+    ],
+    "container-title": "Environmental Research Letters",
+    "volume": "17",
+    "page": "044073",
+    "issued": {
+      "date-parts": [
+        [
+          2022
+        ]
+      ]
+    },
+    "DOI": "10.1088/1748-9326/ac6147",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "carbon_curve.py's premise that hour-of-day variation in grid intensity is real and large enough to schedule against",
+        "That annual-average accounting can misstate an inventory by as much as 35%"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "radovanovic-2023-carbon-aware-datacenters",
+    "type": "article-journal",
+    "title": "Carbon-Aware Computing for Datacenters",
+    "author": [
+      {
+        "family": "Radovanovic",
+        "given": "Ana"
+      },
+      {
+        "family": "Koningstein",
+        "given": "Ross"
+      },
+      {
+        "family": "Schneider",
+        "given": "Ian"
+      },
+      {
+        "family": "Chen",
+        "given": "Bokan"
+      },
+      {
+        "family": "Duarte",
+        "given": "Alexandre"
+      },
+      {
+        "family": "Roy",
+        "given": "Binz"
+      },
+      {
+        "family": "Xiao",
+        "given": "Diyue"
+      },
+      {
+        "family": "Haridasan",
+        "given": "Maya"
+      },
+      {
+        "family": "Hung",
+        "given": "Patrick"
+      },
+      {
+        "family": "Care",
+        "given": "Nick"
+      },
+      {
+        "family": "Talukdar",
+        "given": "Saurav"
+      },
+      {
+        "family": "Mullen",
+        "given": "Eric"
+      },
+      {
+        "family": "Smith",
+        "given": "Kendal"
+      },
+      {
+        "family": "Cottman",
+        "given": "MariEllen"
+      },
+      {
+        "family": "Cirne",
+        "given": "Walfredo"
+      }
+    ],
+    "container-title": "IEEE Transactions on Power Systems",
+    "volume": "38",
+    "page": "1270-1280",
+    "issued": {
+      "date-parts": [
+        [
+          2023
+        ]
+      ]
+    },
+    "DOI": "10.1109/tpwrs.2022.3173250",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That delaying temporally flexible workloads to lower-carbon hours works at production scale, which is this tool's whole premise"
+      ],
+      "caveat": "Crossref gives the version of record as 2023; secondary indexes list 2021 or 2022 from the early-access DOI."
+    }
+  },
+  {
+    "id": "wiesner-2021-lets-wait-awhile",
+    "type": "paper-conference",
+    "title": "Let's wait awhile: how temporal workload shifting can reduce carbon emissions in the cloud",
+    "author": [
+      {
+        "family": "Wiesner",
+        "given": "Philipp"
+      },
+      {
+        "family": "Behnke",
+        "given": "Ilja"
+      },
+      {
+        "family": "Scheinert",
+        "given": "Dominik"
+      },
+      {
+        "family": "Gontarska",
+        "given": "Kordian"
+      },
+      {
+        "family": "Thamsen",
+        "given": "Lauritz"
+      }
+    ],
+    "container-title": "Proceedings of the 22nd International Middleware Conference",
+    "page": "260-272",
+    "issued": {
+      "date-parts": [
+        [
+          2021
+        ]
+      ]
+    },
+    "DOI": "10.1145/3464298.3493399",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That the value of temporal shifting depends on the wait budget and on forecast accuracy, which is what docs/VALIDATION.md section 3 measures"
+      ],
+      "caveat": "Crossref truncates the title to 'Let's wait awhile'; the full title is from the arXiv record (2110.13234)."
+    }
+  },
+  {
+    "id": "dodge-2022-carbon-intensity-ai",
+    "type": "paper-conference",
+    "title": "Measuring the Carbon Intensity of AI in Cloud Instances",
+    "author": [
+      {
+        "family": "Dodge",
+        "given": "Jesse"
+      },
+      {
+        "family": "Prewitt",
+        "given": "Taylor"
+      },
+      {
+        "literal": "Tachet des Combes,Remi"
+      },
+      {
+        "family": "Odmark",
+        "given": "Erika"
+      },
+      {
+        "family": "Schwartz",
+        "given": "Roy"
+      },
+      {
+        "family": "Strubell",
+        "given": "Emma"
+      },
+      {
+        "family": "Luccioni",
+        "given": "Alexandra Sasha"
+      },
+      {
+        "family": "Smith",
+        "given": "Noah A."
+      },
+      {
+        "family": "DeCario",
+        "given": "Nicole"
+      },
+      {
+        "family": "Buchanan",
+        "given": "Will"
+      }
+    ],
+    "container-title": "Proceedings of the 2022 ACM Conference on Fairness, Accountability, and Transparency",
+    "page": "1877-1894",
+    "issued": {
+      "date-parts": [
+        [
+          2022
+        ]
+      ]
+    },
+    "DOI": "10.1145/3531146.3533234",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "Both halves of this tool's premise in one place: that time of day materially changes software carbon intensity, and that marginal data is the right basis for measuring it"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "maji-2022-carboncast",
+    "type": "paper-conference",
+    "title": "CarbonCast: multi-day forecasting of grid carbon intensity",
+    "author": [
+      {
+        "family": "Maji",
+        "given": "Diptyaroop"
+      },
+      {
+        "family": "Shenoy",
+        "given": "Prashant"
+      },
+      {
+        "family": "Sitaraman",
+        "given": "Ramesh K."
+      }
+    ],
+    "container-title": "Proceedings of the 9th ACM International Conference on Systems for Energy-Efficient Buildings, Cities, and Transportation",
+    "page": "198-207",
+    "issued": {
+      "date-parts": [
+        [
+          2022
+        ]
+      ]
+    },
+    "DOI": "10.1145/3563357.3564079",
+    "custom": {
+      "group": "methodology",
+      "verification": "crossref-verified",
+      "accessLevel": "paywalled",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That grid carbon intensity is forecastable multiple days ahead, the precondition for deferring a build to a predicted window"
+      ],
+      "caveat": "Crossref truncates the title to 'CarbonCast'. An extended version exists at 10.1145/3607114.3607117 reporting different error figures; quote whichever matches the DOI cited."
+    }
+  },
+  {
+    "id": "cloud-carbon-footprint-methodology",
+    "type": "webpage",
+    "title": "Cloud Carbon Footprint: Methodology",
+    "author": [
+      {
+        "literal": "Cloud Carbon Footprint contributors"
+      }
+    ],
+    "publisher": "Thoughtworks",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://www.cloudcarbonfootprint.org/docs/methodology",
+    "custom": {
+      "group": "compute-energy",
+      "verification": "primary-read",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "CI_JOB_POWER_KW = 0.013: the Average Watts = Min + Utilisation x (Max - Min) formula",
+        "The Azure AMD EPYC 3rd Gen coefficients of 0.45 and 2.02 W per vCPU",
+        "The memory coefficient of 0.000392 kWh per GB-hour and the Azure PUE of 1.185"
+      ],
+      "caveat": "Constants read from the shipped source at packages/azure/src/domain/AzureFootprintEstimationConstants.ts on 2026-08-23. Note a live discrepancy: the methodology page states Azure averages of 0.78 and 3.76 W per vCPU while the shipped code says 0.74 and 3.54. Both were seen; which is current was not determined."
+    }
+  },
+  {
+    "id": "green-coding-cloud-energy",
+    "type": "software",
+    "title": "Cloud Energy and eco-ci-energy-estimation: machine power curves for CI runners",
+    "author": [
+      {
+        "literal": "Green Coding Solutions"
+      }
+    ],
+    "publisher": "Green Coding Solutions GmbH",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://github.com/green-coding-solutions/eco-ci-energy-estimation",
+    "custom": {
+      "group": "compute-energy",
+      "verification": "primary-read",
+      "accessLevel": "open-access",
+      "evidenceTier": "C",
+      "backsClaims": [
+        "The low end of CI_JOB_POWER_KW_RANGE: 1.76 W idle, 5.16 W at 50% and 8.18 W at 100% for a 4-vCPU GitHub-hosted runner",
+        "That GitHub-hosted runners are AMD EPYC 7763 hosts and a 4-vCPU runner is a 4/128 slice"
+      ],
+      "caveat": "This is a model: an XGBoost fit over the SPECpower database. Green Coding state that the hypervisor blocks RAPL on hosted runners, so no direct instrumented measurement of a GitHub Actions runner exists to cite. Power curve file machine-power-data/github_EPYC_7763_4_CPU_shared.sh fetched and read on 2026-08-23. Tiered C because it's a published method without independent validation."
+    }
+  },
+  {
+    "id": "github-hosted-runners-spec",
+    "type": "webpage",
+    "title": "GitHub-hosted runners reference: standard runner specifications",
+    "author": [
+      {
+        "literal": "GitHub"
+      }
+    ],
+    "publisher": "GitHub, Inc.",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://docs.github.com/en/actions/reference/runners/github-hosted-runners",
+    "custom": {
+      "group": "compute-energy",
+      "verification": "primary-read",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "That standard Linux runners are 4 vCPU / 16 GB on public repositories and 2 vCPU / 8 GB on private ones"
+      ],
+      "caveat": "Verified against the docs source of record at github/docs data/reusables/actions/supported-github-runners.md on 2026-08-23. This corrects the old code comment's '2-4 vCPU': public runners have been 4 vCPU since February 2024. GitHub states the runners are hosted in Azure but publishes no VM SKU."
+    }
+  },
+  {
+    "id": "epa-ghg-equivalencies",
+    "type": "webpage",
+    "title": "Greenhouse Gases Equivalencies Calculator: Calculations and References",
+    "author": [
+      {
+        "literal": "United States Environmental Protection Agency"
+      }
+    ],
+    "publisher": "US Environmental Protection Agency",
+    "issued": {
+      "date-parts": [
+        [
+          2026
+        ]
+      ]
+    },
+    "URL": "https://www.epa.gov/energy/greenhouse-gases-equivalencies-calculator-calculations-and-references",
+    "custom": {
+      "group": "equivalences",
+      "verification": "primary-read",
+      "accessLevel": "public-domain",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "CO2_GRAMS_PER_KM_DRIVEN = 244, converted from EPA's 4.29 tCO2e per vehicle-year over 10,917 miles",
+        "CO2_GRAMS_PER_PHONE_CHARGE = 12.4, from 1.24e-5 metric tons per smartphone charged",
+        "CO2_GRAMS_PER_TREE_YEAR = 60000, from 0.060 metric ton CO2 per urban tree planted per year"
+      ],
+      "caveat": "Page read directly on 2026-08-23; it states its own last update as 2026-08-04 and uses eGRID2022 vintage data. All three constants in this repo had drifted from it. The tree figure is the one most often misused: EPA defines it as a survival-weighted average over the first ten years of a newly planted medium-growth urban seedling, and states the figure is 'not appropriate for reforestation projects'. It isn't a mature tree's annual rate. EPA publishes no per-kilometre figure, so that conversion is ours."
+    }
+  },
+  {
+    "id": "gsf-sci-specification",
+    "type": "standard",
+    "title": "Software Carbon Intensity (SCI) Specification, version 1.1.0",
+    "author": [
+      {
+        "literal": "Green Software Foundation"
+      }
+    ],
+    "publisher": "Green Software Foundation",
+    "issued": {
+      "date-parts": [
+        [
+          2024
+        ]
+      ]
+    },
+    "URL": "https://github.com/Green-Software-Foundation/sci/blob/main/SPEC.md",
+    "custom": {
+      "group": "standards",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The operational-emissions term O = E x I that check_grid.estimate_emissions computes and reports as co2_emitted_grams"
+      ],
+      "caveat": "The repository's CITATION.cff is stale, still declaring version 1.0.0 and a 2021 release date; SPEC.md front matter on main says 1.1.0, so cite the spec."
+    }
+  },
+  {
+    "id": "iso-iec-21031-2024",
+    "type": "standard",
+    "title": "ISO/IEC 21031:2024 Information technology - Software Carbon Intensity (SCI) specification",
+    "author": [
+      {
+        "literal": "International Organization for Standardization"
+      }
+    ],
+    "publisher": "ISO/IEC JTC 1",
+    "number": "ISO/IEC 21031:2024",
+    "issued": {
+      "date-parts": [
+        [
+          2024
+        ]
+      ]
+    },
+    "URL": "https://www.iso.org/standard/86612.html",
+    "custom": {
+      "group": "standards",
+      "verification": "url-verified",
+      "accessLevel": "standard-purchase",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "That the SCI methodology this project's emissions figure follows is a published international standard in its own right"
+      ],
+      "caveat": "Published, edition 1, 2024-03, 9 pages, ISO catalogue record 86612. ISO doesn't mint DOIs, so no Crossref verification is possible. The standard text itself is paywalled and was not read; the identity was confirmed from the ISO catalogue entry."
+    }
+  },
+  {
+    "id": "riepin-2024-247-cfe",
+    "type": "article-journal",
+    "title": "On the means, costs, and system-level impacts of 24/7 carbon-free energy procurement",
+    "author": [
+      {
+        "family": "Riepin",
+        "given": "Iegor"
+      },
+      {
+        "family": "Brown",
+        "given": "Tom"
+      }
+    ],
+    "container-title": "Energy Strategy Reviews",
+    "volume": "54",
+    "page": "101488",
+    "issued": {
+      "date-parts": [
+        [
+          2024
+        ]
+      ]
+    },
+    "DOI": "10.1016/j.esr.2024.101488",
+    "custom": {
+      "group": "standards",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "The README's implicit argument that matching consumption to clean generation hour by hour is a stronger claim than annual volumetric or certificate matching"
+      ],
+      "caveat": null
+    }
+  },
+  {
+    "id": "ricks-2023-hourly-matching",
+    "type": "article-journal",
+    "title": "Minimizing emissions from grid-based hydrogen production in the United States",
+    "author": [
+      {
+        "family": "Ricks",
+        "given": "Wilson"
+      },
+      {
+        "family": "Xu",
+        "given": "Qingyu"
+      },
+      {
+        "family": "Jenkins",
+        "given": "Jesse D."
+      }
+    ],
+    "container-title": "Environmental Research Letters",
+    "volume": "18",
+    "page": "014025",
+    "issued": {
+      "date-parts": [
+        [
+          2023
+        ]
+      ]
+    },
+    "DOI": "10.1088/1748-9326/acacb5",
+    "custom": {
+      "group": "standards",
+      "verification": "crossref-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "B",
+      "backsClaims": [
+        "That hourly matching outperforms both relaxed time matching and marginal emissions accounting for minimising induced emissions"
+      ],
+      "caveat": "Note the tension this creates with the marginal-accounting sources in the methodology group: this paper finds hourly matching beats marginal accounting. Both positions are in the corpus deliberately."
+    }
+  },
+  {
+    "id": "google-2021-247-cfe",
+    "type": "report",
+    "title": "24/7 Carbon-Free Energy: Methodologies and Metrics",
+    "author": [
+      {
+        "literal": "Google LLC"
+      }
+    ],
+    "publisher": "Google LLC",
+    "issued": {
+      "date-parts": [
+        [
+          2021
+        ]
+      ]
+    },
+    "URL": "https://www.gstatic.com/gumdrop/sustainability/24x7-carbon-free-energy-methodologies-metrics.pdf",
+    "custom": {
+      "group": "standards",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "D",
+      "backsClaims": [
+        "The specific critique that annual certificate matching lets a company claim zero emissions without changing when it draws power"
+      ],
+      "caveat": "A corporate white paper with an obvious interest in the conclusion, hence tier D. Cited only for the argument's canonical statement."
+    }
+  },
+  {
+    "id": "energytag-gc-standard-v2",
+    "type": "standard",
+    "title": "Granular Certificate Scheme Standard, Version 2",
+    "author": [
+      {
+        "literal": "EnergyTag Ltd"
+      }
+    ],
+    "publisher": "EnergyTag Ltd",
+    "issued": {
+      "date-parts": [
+        [
+          2024
+        ]
+      ]
+    },
+    "URL": "https://energytag.org/wp-content/uploads/2024/12/EnergyTag_Granular-Certificate-Scheme-Standard-V2.pdf",
+    "custom": {
+      "group": "standards",
+      "verification": "url-verified",
+      "accessLevel": "open-access",
+      "evidenceTier": "A",
+      "backsClaims": [
+        "The certificate infrastructure that makes an hourly matching claim verifiable rather than merely asserted"
+      ],
+      "caveat": "Important limit: this standard makes no argument that annual matching is weaker than hourly. The word 'annual' appears essentially once in the whole document, about audit periods. It defines the granular-certificate machinery. Cite riepin-2024-247-cfe or google-2021-247-cfe for the argument."
+    }
+  }
+]

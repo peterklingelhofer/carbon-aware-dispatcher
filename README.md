@@ -1,6 +1,6 @@
 # Carbon-Aware Dispatcher
 
-[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/providers-17-blue) ![Zones](https://img.shields.io/badge/zones-200%2B-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
+[![tests](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml/badge.svg)](https://github.com/peterklingelhofer/carbon-aware-dispatcher/actions/workflows/test.yml) ![Providers](https://img.shields.io/badge/grid%20data%20providers-16-blue) ![Zones](https://img.shields.io/badge/keyless%20zones-196-blue) ![CI Platforms](https://img.shields.io/badge/CI-GitHub%20%7C%20GitLab%20%7C%20Bitbucket%20%7C%20CircleCI-orange)
 
 <!--
   Live lifetime-CO2-saved badge, powered by this repo eating its own dog food
@@ -10,7 +10,14 @@
   ![CO2 saved](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/peterklingelhofer/GIST_ID/raw/carbon-badge.json)
 -->
 
-If you're running a job or a CI pipeline, you may as well run it on 100% renewable energy. Carbon-Aware Dispatcher provides observability into which cloud regions emit the least carbon emissions, aggregating grid data from dozens of sources, making what was an opaque decision a clear one.
+**This project measures itself against primary sources and published baselines:**
+[**Validation**](docs/VALIDATION.md) grades its own forecasts against naive baselines, reports the
+deferrals that landed on a *dirtier* grid, and recomputes its savings figure under marginal rather
+than average accounting. [**Verification**](docs/VERIFICATION.md) is the self-audit that found a
+power assumption 4x too high and a factor table mislabelled as IPCC.
+[**Citations**](docs/CITATIONS.md) is the evidence base every constant and method resolves to.
+
+For a job or a CI pipeline, Carbon-Aware Dispatcher waits for a cleaner grid window, cutting carbon intensity by 27 gCO2eq/kWh per deferral in a 90-day backtest. It aggregates grid data from 16 grid-operator and open-data sources, and publishes how often it called it wrong.
 
 ```yaml
 # .github/workflows/carbon-aware-build.yml
@@ -47,6 +54,8 @@ The action auto-detects your cloud region (AWS, GCP, Azure) or checks zones acro
 
 Best for non-urgent jobs that can wait for clean energy: ML training, batch processing, media rendering, database migrations.
 
+Step 4, measured against 90 days of real Great Britain grid data at a 6-hour wait budget: it deferred 8% of runs and left the other 92% alone, each deferral cut intensity by 27 gCO2eq/kWh on average, and 16.5% of deferrals (1.3% of all runs) landed on a *dirtier* grid than they left. The losses are small and the wins are large: 10th percentile -5 gCO2eq/kWh, 90th percentile +68. The full result, including what the savings figure looks like under marginal rather than average accounting, is in [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
 ## Try it risk-free (report-only)
 
 To try it without gating your builds, add the action with `dry_run: 'true'` and it
@@ -74,9 +83,9 @@ Use a preset instead of looking up zone codes:
 | *(no input)* | Auto-detects cloud region, falls back to checking all free zones worldwide |
 | `auto:detect` | Detects AWS/GCP/Azure region from environment variables |
 | `auto:nearest` | Picks zones closest to your timezone |
-| `auto:green` | 10 curated green zones across 5 continents (free providers only) |
-| `auto:cleanest` | Checks all free-provider zones, picks the single cleanest |
-| `auto:green:full` | 21 zones including EU/Canada/NZ (requires API tokens) |
+| `auto:green` | 11 curated green zones across 4 continents (free providers only) |
+| `auto:cleanest` | Checks 16 curated zones spanning every free provider, picks the single cleanest |
+| `auto:green:full` | 19 zones including EU/Canada/NZ (requires API tokens) |
 | `auto:escape-coal` | Routes jobs away from coal-heavy grids to clean alternatives |
 | `auto:escape-coal:IN` | Escape from a specific dirty zone (IN, CN, PL, ZA, DE...) |
 
@@ -91,7 +100,8 @@ Use a preset instead of looking up zone codes:
 
 **None required.** US, UK, Australia, India, Brazil, South Africa, and the
 worldwide Open-Meteo fallback work with no setup, which covers the `auto:*`
-presets. Optional free tokens add coverage: `entsoe_token` (EU, 44 zones), `electricity_maps_token`
+presets. Optional free tokens improve accuracy rather than coverage: `entsoe_token` (EU, 44 zones, all of
+which also resolve keyless via Energy-Charts, RTE, Energinet and EirGrid), `electricity_maps_token`
 (one registered zone on the free tier), `gridstatus_api_key` (US forecasts). `eia_api_key`
 is optional too, only to raise the built-in US demo key's rate limit. See [Inputs](#inputs).
 
@@ -236,7 +246,7 @@ The `runner_label` output will be a RunsOn-compatible label like `runs-on=12345/
 
 ### Targeting reliably renewable regions
 
-Standard GitHub-hosted runners (`ubuntu-latest` etc.) run on Azure in a region you can't choose. GitHub's renewable commitment is annual REC matching, settled over a year, so gating and scheduling are your only levers on standard runners. To actually execute on clean electrons consistently, use a runner provider that lets you pick the region.
+Standard GitHub-hosted runners (`ubuntu-latest` etc.) run on Azure in a region you can't choose. GitHub's renewable commitment matches renewable energy certificates over a year, so it says nothing about the intensity in any given hour. That distinction is an argued position with a literature behind it: annual volumetric matching lets a buyer claim zero emissions without changing *when* it draws power, whereas hourly matching doesn't ([Riepin & Brown 2024](https://doi.org/10.1016/j.esr.2024.101488); [Google 2021](https://www.gstatic.com/gumdrop/sustainability/24x7-carbon-free-energy-methodologies-metrics.pdf); see [`docs/CITATIONS.md`](docs/CITATIONS.md)). So gating and scheduling are your only levers on standard runners. To actually execute on clean electrons consistently, use a runner provider that lets you pick the region.
 
 **Greenest regions by provider:**
 
@@ -931,7 +941,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `github_token` | none | Required when `workflow_id` is set. |
 | `eia_api_key` | none | Higher rate limits for US zones. [Free registration](https://www.eia.gov/opendata/register.php). Built-in demo key works for basic use. |
 | `electricity_maps_token` | none | One zone per free token (chosen at registration), 50 req/hr. Paid plans cover 200+ zones. [Register](https://portal.electricitymaps.com/). |
-| `entsoe_token` | none | EU coverage (36 countries). [Free registration](https://transparency.entsoe.eu/), 400 req/min. |
+| `entsoe_token` | none | EU accuracy for 44 bidding zones across 31 countries. [Free registration](https://transparency.entsoe.eu/), 400 req/min. |
 | `gridstatus_api_key` | none | US forecasts (7 ISOs). [Free registration](https://www.gridstatus.io), 1M rows/month. |
 | `max_wait` | `0` | Minutes to wait for green energy. Max 360. Billable time. |
 | `enable_forecast` | `false` | Fetch forecast when dirty. Free for UK, India, Brazil, SA, Open-Meteo. US needs GridStatus key. |
@@ -969,7 +979,7 @@ Ready-to-copy files in [`examples/`](examples/):
 | `intensity_trend` | `decreasing`, `increasing`, or `stable`. |
 | `forecast_green_at` | ISO 8601 timestamp of next predicted green window. |
 | `forecast_intensity` | Predicted intensity at the green window. |
-| `co2_saved_grams` | Estimated grams CO2 saved vs. global average (450 gCO2eq/kWh). |
+| `co2_saved_grams` | Estimated grams CO2 saved vs. global average (458 gCO2eq/kWh). |
 | `co2_saved_equivalent` | Human-relatable phrase for this run's saving, e.g. `~1.8 km not driven`. |
 | `carbon_badge_url` | Shields.io badge URL for READMEs: `![carbon](url)` |
 | `co2_saved_total_grams` | Cumulative grams saved across all runs (requires the `ledger` input). |
@@ -992,7 +1002,7 @@ Carbon claims are easy to inflate, so here is exactly what the numbers mean:
   hardware excluded) and maps to GHG Protocol Scope 2 (location-based). It's
   the figure to report.
 - **`co2_saved_grams` (a benchmark).** A comparison against a
-  fixed global-average grid (450 gCO2eq/kWh): "how much cleaner than a
+  fixed global-average grid (458 gCO2eq/kWh): "how much cleaner than a
   world-average grid was this run". It's **not** marginal or *additional*
   avoided emissions: on a grid where shifted load just rides baseload, the real
   avoided emissions can be far lower. The basis is stated in the
@@ -1019,9 +1029,14 @@ global-average benchmark, this is a real, self-referential measure of how much
 cleaner you ran by scheduling well; it starts accruing once the curve has
 enough hours.
 
-**Make the energy figure real.** By default emitted assumes a typical CI job
-(50 W for 15 min). For actual workloads, a GPU training run or an ETL batch, set
-your real energy so the number means something:
+**Make the energy figure real.** By default emitted assumes a typical CI job:
+13 W for 15 minutes, that being the share of server power a 4-vCPU GitHub-hosted
+runner actually represents, with a published range of 6-25 W carried through into
+the `co2_emitted_grams_low` / `co2_emitted_grams_high` outputs. (Derivation, and the
+4x correction from the earlier 50 W assumption, in
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md).) For actual workloads, a GPU
+training run or an ETL batch, set your real energy so the number means something,
+and the error bar collapses because nothing is being assumed:
 
 ```yaml
 with:
@@ -1139,10 +1154,19 @@ The action picks the best provider per zone, checking free providers first.
 | [Energinet](https://www.energidataservice.dk/) | Denmark (DK1, DK2) | None | `DK-DK1`, `DK-DK2` |
 | [RTE eco2mix](https://www.rte-france.com/eco2mix) | France | None | `FR` |
 | [Energy-Charts](https://energy-charts.info/) (Fraunhofer ISE) | EU (DE, ES, IT, NL, BE, AT, CH, PL, PT, CZ, FI, GR, HU, RO, and more) | None | `DE`, `ES`, `IT`, `NL`, ... |
-| [ENTSO-E](https://transparency.entsoe.eu/) | EU (36 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
+| [ENTSO-E](https://transparency.entsoe.eu/) | EU (44 bidding zones, 31 countries) | Free token | `DE`, `FR`, `ES`, `NL`, `NO-NO1`, `SE-SE1`..`SE-SE4`, `DK-DK1`... |
 | [Electricity Maps](https://www.electricitymaps.com/) | 1 zone (free tier) / 200+ (paid) | Token | The single zone registered to your token; see [their map](https://app.electricitymaps.com/map) |
-| [Open-Meteo](https://open-meteo.com/) | Worldwide (90+) | None | Auto-fallback for any zone with known coordinates |
+| [Open-Meteo](https://open-meteo.com/) | Worldwide (100 zones) | None | Auto-fallback for any zone with known coordinates |
 | [GridStatus](https://www.gridstatus.io) | US forecasts (7 ISOs) | Free token | `CISO`, `ERCO`, `ISNE`, `MISO`, `NYIS`, `PJM`, `SWPP` |
+
+**How the badge counts add up:** 16 of the modules above resolve a zone to a carbon
+intensity; GridStatus is forecast-only and WattTime returns a marginal percentile, so
+neither is counted as a grid data provider. Without any credential the tool accepts
+**196 distinct zones**, of which **126 hit a real grid-operator feed** and **70 fall back to
+the Open-Meteo weather estimate**, which is a modeled renewable share rather than a
+measurement. Electricity Maps advertises 200+ zones; that's their paid catalog, and
+the free tier is a single registered zone. These counts are audited in
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
 **Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > Canada > Taiwan > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (last resort; free tier is one registered zone). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
 
@@ -1160,7 +1184,7 @@ The action picks the best provider per zone, checking free providers first.
 | India | Heuristic | Solar peak 10am–4pm IST. Southern grid (IN-SO) cleanest. Automatic. |
 | Brazil | Heuristic | Hydro off-peak cleanest. Evening peak 17–21h BRT dirtier. Automatic. |
 | South Africa | Heuristic | Coal-dominant, rarely < 650 gCO2eq/kWh. Recommends escape-coal. |
-| Other | Open-Meteo | 48h solar/wind weather forecast. Automatic for 90+ zones. |
+| Other | Open-Meteo | 48h solar/wind weather forecast. Automatic for 100 zones. |
 
 Heuristic and Open-Meteo forecasts are time-of-day or weather estimates. The UK,
 ENTSO-E, and GridStatus forecasts are measured day-ahead data. The job summary

@@ -571,16 +571,16 @@ class TestEiaFuelMixToIntensity:
 
     def test_all_wind(self):
         data = [{"fueltype": "WND", "value": 100}]
-        # IPCC AR5 wind = 12, renewables are no longer treated as zero
-        assert eia._fuel_mix_to_intensity(data) == 12
+        # IPCC AR5 wind onshore = 11, renewables are no longer treated as zero
+        assert eia._fuel_mix_to_intensity(data) == 11
 
     def test_mixed(self):
         data = [
             {"fueltype": "NG", "value": 50},  # 50 * 490 = 24500
-            {"fueltype": "WND", "value": 50},  # 50 * 12 = 600
+            {"fueltype": "WND", "value": 50},  # 50 * 11 = 550
         ]
-        # (24500 + 600) / 100 = 251
-        assert eia._fuel_mix_to_intensity(data) == 251
+        # (24500 + 550) / 100 = 250.5 -> 250
+        assert eia._fuel_mix_to_intensity(data) == 250
 
     def test_negative_values_ignored(self):
         data = [
@@ -642,9 +642,9 @@ class TestEiaFuelMixSeries:
             }
         }
         series = eia.fuel_mix_series("CISO")
-        # Oldest (06): gen 150, co2 50*490 + 100*12 = 25700
-        # Newest (07): gen 200, co2 100*490 + 100*12 = 50200
-        assert series == [(150.0, 25700.0), (200.0, 50200.0)]
+        # Oldest (06): gen 150, co2 50*490 + 100*11 = 25600
+        # Newest (07): gen 200, co2 100*490 + 100*11 = 50100
+        assert series == [(150.0, 25600.0), (200.0, 50100.0)]
 
     @mock.patch("providers.eia.api_request", return_value=None)
     def test_empty_on_no_data(self, _mock_api):
@@ -680,9 +680,9 @@ class TestEiaCheckCarbonIntensity:
         }
         is_green, intensity = eia.check_carbon_intensity("CISO", 250)
         assert is_green is True
-        # wind 12, solar 45, gas 490: (500*12 + 300*45 + 100*490) / 900
-        # = (6000 + 13500 + 49000) / 900 = 68500/900 = 76.1 -> 76
-        assert intensity == 76
+        # wind 11, solar 48, gas 490: (500*11 + 300*48 + 100*490) / 900
+        # = (5500 + 14400 + 49000) / 900 = 68900/900 = 76.6 -> 77
+        assert intensity == 77
 
     @mock.patch("providers.eia.api_request")
     def test_dirty_grid(self, mock_api):
@@ -1840,24 +1840,24 @@ class TestAemoFuelMixToIntensity:
 
     def test_all_wind(self):
         data = [{"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 500}]
-        # IPCC AR5 wind = 12, renewables are no longer treated as zero
-        assert self._intensity(data, "NSW1") == 12
+        # IPCC AR5 wind onshore = 11, renewables are no longer treated as zero
+        assert self._intensity(data, "NSW1") == 11
 
     def test_mixed(self):
         data = [
             {"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 500},
             {"REGIONID": "NSW1", "FUELTYPE": "Solar", "GEN_MW": 500},
         ]
-        # coal 820, solar 45: (500*820 + 500*45) / 1000 = 432.5 -> 432
-        assert self._intensity(data, "NSW1") == 432
+        # coal 820, solar 48: (500*820 + 500*48) / 1000 = 434.0 -> 434
+        assert self._intensity(data, "NSW1") == 434
 
     def test_filters_by_region(self):
         data = [
             {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 1000},
             {"REGIONID": "QLD1", "FUELTYPE": "Black Coal", "GEN_MW": 1000},
         ]
-        # only NSW wind is counted, wind = 12
-        assert self._intensity(data, "NSW1") == 12
+        # only NSW wind is counted, wind = 11
+        assert self._intensity(data, "NSW1") == 11
 
     def test_empty_data(self):
         assert self._intensity([], "NSW1") is None
@@ -1867,8 +1867,8 @@ class TestAemoFuelMixToIntensity:
             {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 100},
             {"REGIONID": "NSW1", "FUELTYPE": "Battery", "GEN_MW": -50},
         ]
-        # wind = 12, battery is storage and excluded anyway
-        assert self._intensity(data, "NSW1") == 12
+        # wind = 11, battery is storage and excluded anyway
+        assert self._intensity(data, "NSW1") == 11
 
 
 class TestAemoCheckCarbonIntensity:
@@ -2019,9 +2019,9 @@ class TestEntsoeCheckCarbonIntensity:
         mock_get.return_value = mock.Mock(status_code=200, text=xml)
         is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
         assert is_green is True
-        # wind B19 = 12, gas B04 = 490: (800*12 + 200*490) / 1000
-        # = (9600 + 98000) / 1000 = 107.6 -> 108
-        assert intensity == 108
+        # wind B19 = 11, gas B04 = 490: (800*11 + 200*490) / 1000
+        # = (8800 + 98000) / 1000 = 106.8 -> 107
+        assert intensity == 107
 
     @mock.patch("providers.base._SESSION.get")
     def test_dirty(self, mock_get):
@@ -2455,22 +2455,22 @@ class TestCarbonEquivalents:
         # 50 g is under a km of driving, so the phrase should be phone charges
         eq = check_grid.carbon_equivalents(50)
         assert "phone charges" in eq["phrase"]
-        # 50 / 8.22 ~= 6 charges
-        assert eq["phone_charges"] == pytest.approx(50 / 8.22, rel=0.01)
+        # 50 / 12.4 ~= 4 charges
+        assert eq["phone_charges"] == pytest.approx(50 / 12.4, rel=0.01)
 
     def test_large_amount_uses_km_driven(self):
-        # 1000 g => 4 km driven, comfortably over the 1 km switchover
+        # 1000 g => ~4.1 km driven, comfortably over the 1 km switchover
         eq = check_grid.carbon_equivalents(1000)
         assert "km not driven" in eq["phrase"]
-        assert eq["km_driven"] == pytest.approx(4.0, rel=0.01)
+        assert eq["km_driven"] == pytest.approx(1000 / 244, rel=0.01)
 
     def test_switchover_at_one_km(self):
-        # Exactly 250 g == 1 km, should report km (>= 1)
-        eq = check_grid.carbon_equivalents(250)
+        # Exactly one km's worth should report km (>= 1)
+        eq = check_grid.carbon_equivalents(check_grid.CO2_GRAMS_PER_KM_DRIVEN)
         assert "km not driven" in eq["phrase"]
 
     def test_tree_years_present(self):
-        eq = check_grid.carbon_equivalents(21000)
+        eq = check_grid.carbon_equivalents(60000)
         assert eq["tree_years"] == pytest.approx(1.0, rel=0.01)
 
 
@@ -2577,12 +2577,12 @@ class TestCarbonTier:
 
 class TestWorthWaiting:
     def test_waits_when_savings_beat_idle(self):
-        # 1 kWh job, grid drops 300 -> 50 in 1h. Saved = 250 g; idle = 0.05*1*300
-        # = 15 g. Worth waiting.
+        # 1 kWh job, grid drops 300 -> 50 in 1h. Saved = 250 g; idle = 0.013*1*300
+        # = 3.9 g. Worth waiting.
         should, saved, idle = check_grid.worth_waiting(300, 50, 1.0, 1.0)
         assert should is True
         assert saved == 250.0
-        assert idle == 15.0
+        assert idle == pytest.approx(3.9)
 
     def test_runs_now_when_idle_dominates(self):
         # Tiny improvement (300 -> 290) but a 20h wait on a small job: idle wins.
@@ -2974,9 +2974,10 @@ class TestEstimateEmissions:
         assert check_grid.estimate_emissions(None) == 0.0
 
     def test_proportional_to_intensity(self):
-        # 80 and 320 avoid the banker's-rounding edge of round(1.25, 1)
-        low = check_grid.estimate_emissions(80)
-        high = check_grid.estimate_emissions(320)
+        # Chosen so both products land exactly on a tenth: the default job is
+        # 0.00325 kWh, so smaller intensities are dominated by round(x, 1)
+        low = check_grid.estimate_emissions(400)
+        high = check_grid.estimate_emissions(1600)
         assert high > low > 0
         assert high == pytest.approx(low * 4, rel=0.01)
 
@@ -2999,8 +3000,27 @@ class TestResolveEnergy:
 
     def test_default_ci_estimate(self):
         self._clear()
-        # 50 W x 0.25 h = 0.0125 kWh
-        assert check_grid.resolve_energy_kwh() == pytest.approx(0.0125, rel=1e-6)
+        # 13 W x 0.25 h = 0.00325 kWh
+        assert check_grid.resolve_energy_kwh() == pytest.approx(0.00325, rel=1e-6)
+
+    def test_bounds_bracket_the_point_estimate(self):
+        self._clear()
+        low, high = check_grid.energy_bounds_kwh()
+        assert low < check_grid.resolve_energy_kwh() < high
+
+    def test_measured_energy_collapses_the_bounds(self):
+        try:
+            os.environ["JOB_ENERGY_KWH"] = "12"
+            assert check_grid.energy_bounds_kwh() == (12.0, 12.0)
+            assert check_grid.emissions_bounds(400) is None
+        finally:
+            self._clear()
+
+    def test_emissions_bounds_bracket_the_estimate(self):
+        self._clear()
+        low, high = check_grid.emissions_bounds(400)
+        assert low < check_grid.estimate_emissions(400) < high
+        assert check_grid.emissions_bounds(None) is None
 
     def test_explicit_energy_wins(self):
         try:
@@ -3059,9 +3079,9 @@ class TestPueAndEmbodied:
         try:
             os.environ["JOB_ENERGY_KWH"] = "10"
             os.environ["PUE"] = "2.0"
-            # saved = (450 - 50) x 10 x 2.0 = 8000
+            # saved = (458 - 50) x 10 x 2.0 = 8160
             saved, _ = check_grid.estimate_carbon_savings(50)
-            assert saved == 8000.0
+            assert saved == 8160.0
         finally:
             self._clear()
 

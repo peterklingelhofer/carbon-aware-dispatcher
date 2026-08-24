@@ -66,7 +66,7 @@ inputs:
     required: false
     default: ''
   entsoe_token:
-    description: 'Optional ENTSO-E Transparency Platform security token for EU coverage (36 countries). Free registration at https://transparency.entsoe.eu/. Preferred over Electricity Maps for EU zones when set.'
+    description: 'Optional ENTSO-E Transparency Platform security token for EU coverage (44 bidding zones across 31 countries). Free registration at https://transparency.entsoe.eu/. Preferred over Electricity Maps for EU zones when set.'
     required: false
     default: ''
   strategy:
@@ -235,8 +235,26 @@ outputs:
   co2_emitted_grams:
     description: 'Measured figure: grams of CO2 this run actually produced (carbon intensity x estimated energy). Green Software Foundation SCI operational term (embodied excluded). Prefer this over co2_saved_grams for reporting.'
     value: ${{ steps.grid-check.outputs.co2_emitted_grams }}
+  carbon_method:
+    description: 'How the reported carbon_intensity was produced: production-average, operator-published, consumption-flow-traced, consumption-vendor, or weather-heuristic. A number is not comparable across methods, so this travels with it.'
+    value: ${{ steps.grid-check.outputs.carbon_method }}
+  carbon_citations:
+    description: 'Comma-separated citekeys justifying carbon_method, resolvable in docs/CITATIONS.md. Empty only for weather-heuristic, which has no source and is evidence tier E.'
+    value: ${{ steps.grid-check.outputs.carbon_citations }}
+  carbon_evidence_tier:
+    description: 'Evidence tier A-E of the accounting method behind carbon_intensity, per docs/CITATIONS.md. D and E must be treated as estimates.'
+    value: ${{ steps.grid-check.outputs.carbon_evidence_tier }}
+  carbon_factor_table:
+    description: 'Version of the emission-factor corpus (data/emission-factors.json) that produced this intensity, shared with the carbon-lens project.'
+    value: ${{ steps.grid-check.outputs.carbon_factor_table }}
+  co2_emitted_grams_low:
+    description: 'Low end of co2_emitted_grams. The default runner power draw is an assumption with a published range (6-25 W for a 4-vCPU job), so the figure carries an error bar. Empty when you supplied job_energy_kwh or job_power_watts, since then nothing is assumed. See docs/VERIFICATION.md.'
+    value: ${{ steps.grid-check.outputs.co2_emitted_grams_low }}
+  co2_emitted_grams_high:
+    description: 'High end of co2_emitted_grams. See co2_emitted_grams_low.'
+    value: ${{ steps.grid-check.outputs.co2_emitted_grams_high }}
   co2_saved_grams:
-    description: 'Grams of CO2 saved vs the global-average grid (450 gCO2eq/kWh). A location-based BENCHMARK; marginal/additional avoided emissions are a separate figure, see co2_saved_basis.'
+    description: 'Grams of CO2 saved vs the global-average grid (458 gCO2eq/kWh). A location-based BENCHMARK; marginal/additional avoided emissions are a separate figure, see co2_saved_basis. Measured against real grid history, this benchmark runs 8-12x larger than the emissions a deferral actually avoids: see docs/VALIDATION.md.'
     value: ${{ steps.grid-check.outputs.co2_saved_grams }}
   co2_saved_basis:
     description: 'States how co2_saved_grams is derived, so the methodology travels with the number.'

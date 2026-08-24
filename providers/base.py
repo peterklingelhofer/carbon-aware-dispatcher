@@ -10,6 +10,10 @@ from typing import Any, Optional, Protocol
 
 import requests
 
+from providers.factor_corpus import (  # noqa: E402
+    FUEL_FACTORS,
+)
+
 # Return contract shared by every provider module
 IntensityResult = tuple[Optional[bool], Optional[int]]
 ForecastResult = tuple[Optional[str], Optional[int]]
@@ -70,27 +74,12 @@ def _build_session():
 _SESSION = _build_session()
 
 # Canonical lifecycle emission factors in gCO2eq/kWh by generic fuel name.
-# IPCC AR5 (2014) lifecycle medians. This is the single source of truth: every
-# provider maps its own fuel labels to these names instead of hardcoding values,
-# so the numbers can never silently drift apart across providers.
-FUEL_FACTORS = {
-    "coal": 820,
-    "lignite": 1050,  # brown coal / peat-class
-    "gas": 490,
-    "oil": 650,
-    "nuclear": 12,
-    "solar": 45,
-    "wind": 12,
-    "hydro": 24,
-    "geothermal": 38,
-    "biomass": 230,
-    "marine": 17,
-    "waste": 580,
-    # Non-IPCC composite buckets used by some providers:
-    "thermal_mix": 750,  # India "thermal" = blended coal+gas, no single class
-    "other": 300,  # catch-all / imports / unknown-but-counted
-}
-
+# These are NOT defined here. They load from the versioned corpus vendored at
+# data/emission-factors.json, which carbon-lens owns and both projects consume, so
+# the two can no longer publish different numbers for the same physical quantity
+# under the same citation. Every provider maps its own fuel labels onto these
+# names instead of hardcoding values. See providers/factor_corpus.py for the
+# loader and docs/VERIFICATION.md section 1 for the audit that produced the corpus.
 # Lifecycle emission factors keyed by EIA fuel type code, sourced from the
 # canonical table above.
 EIA_EMISSION_FACTORS = {
@@ -119,27 +108,62 @@ DEFAULT_FUEL_FACTOR = FUEL_FACTORS["other"]
 
 # Average fossil fuel intensity (gCO2eq/kWh) used to estimate carbon intensity
 # from renewable percentage. Based on typical US fossil mix (~60% gas, ~30% coal, ~10% oil).
+# The mix is an assertion without a source, and it moves year to year: see docs/VERIFICATION.md.
 FOSSIL_AVG_INTENSITY = 550
 
-# Global average grid carbon intensity (~450 gCO2eq/kWh).
-# Used as baseline for estimating carbon savings from green scheduling.
-GLOBAL_AVG_INTENSITY = 450
+# Global average grid carbon intensity, the baseline the co2_saved benchmark is
+# measured against. 458 gCO2e/kWh is Ember's Global Electricity Review 2026 figure
+# for 2025, which is CO2-equivalent and incorporates IPCC lifecycle intensities, so
+# it shares a system boundary with FUEL_FACTORS above. The IEA's better-known
+# number (435 gCO2/kWh for 2025) is DIRECT emissions at the point of generation,
+# scoring renewables and nuclear at exactly zero, so benchmarking lifecycle
+# intensities against it would compare two different quantities. Replaces an
+# earlier uncited 450; derivation in docs/VERIFICATION.md section 4
+GLOBAL_AVG_INTENSITY = 458
 
-# Average CI job power draw in kW. GitHub-hosted runners are 2-4 vCPU machines
-# drawing roughly 30-60W. We use 0.05 kW as a conservative estimate.
-CI_JOB_POWER_KW = 0.05
+# Power draw of one CI job, in kW: the share of server power a runner's vCPU
+# slice actually represents, a fraction of the whole machine's draw. GitHub-hosted
+# standard runners are 4 vCPU / 16 GB on public repos and 2 vCPU / 8 GB on
+# private ones, and GitHub runs them on AMD EPYC 7763 hosts that expose 128
+# threads, so a 4-vCPU job is 4/128 of one server. 13 W is that share: Cloud
+# Carbon Footprint's Average Watts formula with its Azure AMD-EPYC-3rd-Gen
+# coefficients, plus memory and PUE, cross-checked against Green Coding's
+# measured-hardware power curve for the same processor.
+#
+# Replaces an earlier 0.05 (50 W), which is roughly the idle draw of a whole
+# server socket applied as though it were a four-thread slice of a 128-thread
+# machine, overstating every emissions and savings figure by about 4x. See
+# docs/VERIFICATION.md section 3
+CI_JOB_POWER_KW = 0.013
+
+# Plausible range for the same quantity, propagated into the reported figures so
+# they carry an error bar instead of a false point estimate. Low end: the Green
+# Coding EPYC 7763 curve at CI-typical utilization. High end: Cloud Carbon
+# Footprint's generic Azure coefficients at 100% utilization. A caller who
+# supplies JOB_ENERGY_KWH or JOB_POWER_WATTS has measured the thing this range
+# exists to bound, so their figures collapse to a point.
+CI_JOB_POWER_KW_RANGE = (0.006, 0.025)
 
 # Default estimated CI job duration in hours (15 minutes).
 DEFAULT_JOB_DURATION_HOURS = 0.25
 
 # Real-world equivalence factors for translating grams of CO2 into relatable
-# units. Sourced from the US EPA Greenhouse Gas Equivalencies Calculator.
-# Average passenger car: ~400 gCO2/mile = ~250 gCO2/km.
-CO2_GRAMS_PER_KM_DRIVEN = 250
-# One smartphone charged: ~8.22 gCO2 (EPA).
-CO2_GRAMS_PER_PHONE_CHARGE = 8.22
-# CO2 sequestered by one tree in a year: ~21 kg = 21000 gCO2 (EPA, ~0.06 g/min).
-CO2_GRAMS_PER_TREE_YEAR = 21000
+# units, from the US EPA Greenhouse Gas Equivalencies Calculator, "Calculations
+# and References" page as published 2026-08-04 (eGRID2022 / 2022 inventory
+# vintage). All three were checked against that page and all three had drifted:
+# see docs/VERIFICATION.md section 5.
+
+# EPA publishes 4.29 metric tons CO2e per vehicle per year over 10,917 miles,
+# i.e. 393 gCO2e/mile. EPA publishes no per-km figure, so this is our conversion.
+CO2_GRAMS_PER_KM_DRIVEN = 244
+# One smartphone charged: 1.24e-5 metric tons = 12.4 gCO2. Note this uses EPA's
+# DELIVERED electricity rate, which includes transmission and distribution losses.
+CO2_GRAMS_PER_PHONE_CHARGE = 12.4
+# EPA: "0.060 metric ton CO2 per urban tree planted per year" = 60000 g. This is
+# NOT a general tree's annual sequestration. It is a survival-weighted average
+# over the first ten years of a newly planted medium-growth urban seedling, and
+# EPA states it "is not appropriate for reforestation projects".
+CO2_GRAMS_PER_TREE_YEAR = 60000
 
 
 # Status codes worth retrying: transient server errors and rate limiting
