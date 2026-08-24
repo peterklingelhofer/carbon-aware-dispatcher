@@ -1,0 +1,41 @@
+{
+  "note": "Every row was recomputed here from constants fetched directly from the cited source on 2026-08-23, not taken from a secondary summary. All figures are for one 4-vCPU / 16 GB GitHub-hosted runner, which is the public-repo standard runner, and include a PUE of 1.185 (Cloud Carbon Footprint's Azure figure).",
+  "estimates": [
+    {
+      "basis": "eco-ci power curve for the EPYC 7763, idle",
+      "watts": "2.1",
+      "source": "Green Coding `machine-power-data/github_EPYC_7763_4_CPU_shared.sh`, entry [0.00] = 1.7586 W"
+    },
+    {
+      "basis": "eco-ci power curve for the EPYC 7763, 50% CPU",
+      "watts": "6.1",
+      "source": "same file, entry [50.00] = 5.1641 W. Modelled on the processor GitHub actually runs, at the actual 4/128-thread split"
+    },
+    {
+      "basis": "eco-ci power curve for the EPYC 7763, 100% CPU",
+      "watts": "9.7",
+      "source": "same file, entry [100.00] = 8.1796 W"
+    },
+    {
+      "basis": "Cloud Carbon Footprint, Azure AMD EPYC 3rd Gen, 50% CPU",
+      "watts": "11.4",
+      "source": "`AzureFootprintEstimationConstants.ts`: 0.45-2.02 W/vCPU, 128 GB/chip included, 0.392 W/GB on the 12 GB excess, PUE 1.185"
+    },
+    {
+      "basis": "Cloud Carbon Footprint, Azure AMD EPYC 3rd Gen, 100% CPU",
+      "watts": "15.1",
+      "source": "same constants at full utilization"
+    },
+    {
+      "basis": "Cloud Carbon Footprint, generic Azure averages, 100% CPU",
+      "watts": "22.4",
+      "source": "same file's provider-wide `MIN_WATTS_AVG` 0.74 / `MAX_WATTS_AVG` 3.54, i.e. not matched to the actual processor. The conservative end"
+    },
+    {
+      "basis": "Prior assumption, to 2026-08-23",
+      "watts": "50.0",
+      "source": "Code comment: \"GitHub-hosted runners are 2-4 vCPU machines drawing roughly 30-60W\". No citation, and outside every estimate above"
+    }
+  ],
+  "conclusion": "**The prior 50 W figure was about four times too high, for a specific reason: it is approximately the idle draw of a whole server, applied as though it were the draw of a four-thread slice of a 128-thread machine.** To make 50 W correct for 4 vCPUs, the server behind those 128 threads would have to draw about 1,600 W; real ones draw 260 to 850 W. `CI_JOB_POWER_KW` is now **0.013 kW**, with the published range **6 to 25 W** propagated into the `co2_emitted_grams_low` and `co2_emitted_grams_high` outputs. Two things this does not claim. First, no direct instrumented measurement of a GitHub-hosted runner exists: the hypervisor blocks RAPL, so even Green Coding's numbers are a model over the SPECpower database rather than a meter reading, and the search for one is recorded as unresolvable rather than quietly dropped. Second, the correction cuts every emissions and savings figure this tool reports by about 4x, including the historical entries already accumulated in the ledger, which were banked on the old basis and are not restated."
+}
