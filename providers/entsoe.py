@@ -1,6 +1,7 @@
 """ENTSO-E Transparency Platform provider: free EU coverage with registration.
 
-Covers 36 European countries with actual generation per production type.
+Covers 44 bidding zones across 31 European countries, with actual generation
+per production type.
 Requires a free security token from https://transparency.entsoe.eu/.
 Rate limit: 400 requests/min.
 

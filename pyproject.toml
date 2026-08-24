@@ -73,6 +73,8 @@ only-include = [
     "suggest_pr.py",
     "marginal.py",
     "forecast_log.py",
+    "citations_generated.py",
+    "data/emission-factors.json",
     "providers",
     "integrations",
 ]
@@ -89,6 +91,8 @@ only-include = [
 "suggest_pr.py" = "suggest_pr.py"
 "marginal.py" = "marginal.py"
 "forecast_log.py" = "forecast_log.py"
+"citations_generated.py" = "citations_generated.py"
+"data/emission-factors.json" = "data/emission-factors.json"
 "providers" = "providers"
 "integrations" = "integrations"
 
