@@ -1304,6 +1304,22 @@ On commit they run `ruff check --fix` and `ruff format`; on push they run `mypy`
 and the test suite, the same checks as CI, via `uv run` so the tool versions
 match exactly. Run them manually anytime with `uv run --extra dev pre-commit run --all-files`.
 
+## Companion project
+
+**[carbon-lens](https://github.com/peterklingelhofer/carbon-lens)**: the grid data itself as a
+free, keyless REST API with provenance on every number, plus GHG-Protocol Scope 2/3 reporting and
+a dashboard.
+
+The two stand alone. This project reaches grid operators through the providers in
+[`providers/`](providers/) and never calls that API. They share exactly one thing,
+`data/emission-factors.json`, which carbon-lens owns and this repo
+[vendors byte-identically](providers/factor_corpus.py), so neither can publish a different number
+for the same fuel. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) records what that reconciliation
+corrected on both sides.
+
+Use this project for CI gating with nothing to host. Use carbon-lens to query the data yourself,
+report on it, or drive Kubernetes, Airflow and Terraform from it.
+
 ## License
 
 [MIT](LICENSE)
