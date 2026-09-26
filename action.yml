@@ -337,7 +337,7 @@ runs:
     - name: Check grid and dispatch
       id: grid-check
       shell: bash
-      run: uv run --with requests==2.32.* --python 3.11 python ${{ github.action_path }}/check_grid.py
+      run: uv run --with requests==2.34.* --python 3.11 python ${{ github.action_path }}/check_grid.py
       env:
         GRID_ZONE: ${{ inputs.grid_zone }}
         GRID_ZONES: ${{ inputs.grid_zones }}
