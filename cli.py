@@ -41,6 +41,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import check_grid
 
@@ -76,18 +77,14 @@ def first_zone(args):
     return (check_grid.parse_zones_input(args.zones) or [{"zone": args.zones}])[0]["zone"]
 
 
-def _workflow_files(directory):
-    """Sorted, de-duplicated *.yml/*.yaml workflow files in a directory."""
+def _iter_crons(directory):
+    """Yield (path, cron) for every cron expression in the directory's *.yml/*.yaml files."""
     import glob
 
-    return sorted(set(glob.glob(f"{directory}/*.yml") + glob.glob(f"{directory}/*.yaml")))
-
-
-def _iter_crons(directory):
-    """Yield (path, cron) for every cron expression in the directory's workflows."""
     import suggest_pr
 
-    for path in _workflow_files(directory):
+    paths = sorted(set(glob.glob(f"{directory}/*.yml") + glob.glob(f"{directory}/*.yaml")))
+    for path in paths:
         try:
             with open(path) as fh:
                 text = fh.read()
@@ -211,14 +208,8 @@ def cmd_split(args):
     intensity. With --energy-kwh it also reports the emissions and the saving vs
     an even split. Exit 0 if any zone was placed, 2 if no zone could be read.
     """
-    zones = check_grid.parse_zones_input(args.zones)
-    tok = _tokens(args)
     capacities = _parse_capacity(args.capacity)  # may raise ValueError -> EXIT_USAGE
-    measured = []
-    with contextlib.redirect_stdout(sys.stderr):
-        check_grid.check_multiple_zones(
-            zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
-        )
+    measured = _measure_all(args)
     if not measured:
         if args.json:
             print(json.dumps({"status": "error"}))
@@ -318,11 +309,9 @@ def cmd_marginal_estimate(args):
     import marginal as marginal_mod
     from providers import eia
 
-    zones = check_grid.parse_zones_input(args.zones)
-    first = zones[0]["zone"] if zones else args.zones
-    tok = _tokens(args)
+    first = first_zone(args)
     with contextlib.redirect_stdout(sys.stderr):
-        series = eia.fuel_mix_series(first, tok["eia"])
+        series = eia.fuel_mix_series(first, _tokens(args)["eia"])
     est = marginal_mod.estimate_marginal(series) if series else None
     if not est:
         if args.json:
@@ -357,12 +346,9 @@ def cmd_forecast_accuracy(args):
     grading, and reports mean error, bias, and a suggested bias correction.
     Persists to --store. Exit 0 (a report), 2 when the zone can't be read.
     """
-    from datetime import datetime, timezone
-
     import forecast_log
 
-    zones = check_grid.parse_zones_input(args.zones)
-    first = zones[0]["zone"] if zones else args.zones
+    first = first_zone(args)
     tok = _tokens(args)
 
     doc = forecast_log.empty_log()
@@ -394,16 +380,7 @@ def cmd_forecast_accuracy(args):
 
     doc, resolved = forecast_log.resolve_due(doc, now, actual, zone=first, window_min=args.window)
 
-    with contextlib.redirect_stdout(sys.stderr):
-        fz, when, fi = check_grid.queue_find_optimal_window(
-            zones,
-            args.max_carbon,
-            args.hours,
-            tok["eia"],
-            tok["gridstatus"],
-            tok["emaps"],
-            tok["entsoe"],
-        )
+    fz, when, fi = _optimal_window(args, args.hours)
     if when and when != "none_in_forecast" and fi is not None:
         doc = forecast_log.record_prediction(
             doc, fz or first, when, fi, now.strftime("%Y-%m-%dT%H:%MZ")
@@ -450,23 +427,10 @@ def _run_now_instead_of_waiting(args, now_result, deadline, energy_kwh):
     Only invoked when the caller supplied --energy-kwh, since the idle-vs-saved
     trade-off is meaningless without the job's energy.
     """
-    from datetime import datetime, timezone
-
     i_now = now_result.get("intensity")
     if i_now is None:
         return None
-    zones = check_grid.parse_zones_input(args.zones)
-    tok = _tokens(args)
-    with contextlib.redirect_stdout(sys.stderr):
-        zone, when, i_future = check_grid.queue_find_optimal_window(
-            zones,
-            args.max_carbon,
-            max(1.0, deadline / 3600.0),
-            tok["eia"],
-            tok["gridstatus"],
-            tok["emaps"],
-            tok["entsoe"],
-        )
+    zone, when, i_future = _optimal_window(args, max(1.0, deadline / 3600.0))
     if zone is None or when is None or i_future is None:
         return None  # no forecast -> fall back to plain blocking
     try:
@@ -501,8 +465,6 @@ def _run_now_instead_of_waiting(args, now_result, deadline, energy_kwh):
 def cmd_wait(args):
     deadline = parse_duration(args.max_wait)
     poll = parse_duration(args.poll)
-    # Blocking holds the machine powered on. For recurring jobs, shifting
-    # the schedule (suggest-cron) saves more, with no idle-energy waste
     print(
         "note: blocking keeps this machine running. For recurring jobs prefer "
         "`carbon-aware suggest-cron` to shift the schedule instead.",
@@ -515,7 +477,7 @@ def cmd_wait(args):
 
     # Optimal-stopping guard: only block if a cleaner forecast window saves more
     # carbon than idling until it costs (needs the job's energy to weigh)
-    if getattr(args, "energy_kwh", None) is not None:
+    if args.energy_kwh is not None:
         verdict = _run_now_instead_of_waiting(args, result, deadline, _energy_kwh(args))
         if verdict is not None:
             return verdict
@@ -543,9 +505,7 @@ def cmd_wait(args):
 
 def _energy_kwh(args):
     """Resolve the run's energy (kWh) for savings math, honoring --energy-kwh."""
-    value = getattr(args, "energy_kwh", None)
-    if value is not None:
-        os.environ["JOB_ENERGY_KWH"] = str(value)
+    _apply_sci_env(args)
     return check_grid.resolve_energy_kwh()
 
 
@@ -569,8 +529,6 @@ def cmd_report(args):
     Aggregates cleanly for CSRD / GHG-Protocol sustainability reporting: one
     object per run with energy, intensity, PUE, embodied, and total emitted.
     """
-    from datetime import datetime, timezone
-
     _apply_sci_env(args)
     result = evaluate(args)
     zone, intensity = result.get("zone"), result.get("intensity")
@@ -606,6 +564,21 @@ def _measure_all(args):
             zones, args.max_carbon, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
         )
     return measured
+
+
+def _optimal_window(args, hours):
+    """Cleanest (zone, when, intensity) forecast window within hours, engine logs to stderr."""
+    tok = _tokens(args)
+    with contextlib.redirect_stdout(sys.stderr):
+        return check_grid.queue_find_optimal_window(
+            check_grid.parse_zones_input(args.zones),
+            args.max_carbon,
+            hours,
+            tok["eia"],
+            tok["gridstatus"],
+            tok["emaps"],
+            tok["entsoe"],
+        )
 
 
 def cmd_suggest_region(args):
@@ -731,14 +704,9 @@ def cmd_suggest_cron(args):
     hour-of-day curve (stable, multi-day) where free history exists, then the
     live forecast, then a per-zone heuristic.
     """
-    from datetime import datetime
-
     import carbon_curve
 
-    zones = check_grid.parse_zones_input(args.zones)
-    tok = _tokens(args)
-    first = zones[0]["zone"] if zones else args.zones
-
+    first = first_zone(args)
     with contextlib.redirect_stdout(sys.stderr):
         profile = carbon_curve.build_profile(first)
     if profile:
@@ -750,7 +718,7 @@ def cmd_suggest_cron(args):
             )
         energy = _energy_kwh(args)
         mean = carbon_curve.mean_intensity(profile)
-        duration = int(getattr(args, "duration_hours", 1) or 1)
+        duration = args.duration_hours or 1
         if duration > 1:
             # Batch jobs want the cleanest contiguous block of hours
             start, wavg = carbon_curve.cleanest_window(profile, duration)
@@ -770,7 +738,7 @@ def cmd_suggest_cron(args):
         hour, intensity = carbon_curve.cleanest_hour(profile)
         savings = round(max(0.0, (mean - intensity) * energy), 1)
         dow = day_name = None
-        if getattr(args, "weekly", False):
+        if args.weekly:
             wprofile = carbon_curve.build_weekday_profile(first)
             py_day, _ = carbon_curve.cleanest_weekday(wprofile)
             if py_day is not None:
@@ -788,10 +756,7 @@ def cmd_suggest_cron(args):
             day_name=day_name,
         )
 
-    with contextlib.redirect_stdout(sys.stderr):
-        zone, when, intensity = check_grid.queue_find_optimal_window(
-            zones, args.max_carbon, 24, tok["eia"], tok["gridstatus"], tok["emaps"], tok["entsoe"]
-        )
+    zone, when, intensity = _optimal_window(args, 24)
     if zone and when:
         try:
             hour = datetime.fromisoformat(when.replace("Z", "+00:00")).hour
@@ -1087,7 +1052,7 @@ def cmd_score(args):
     if err is not None:
         return err
 
-    clean_hour, clean_int = carbon_curve.cleanest_hour(profile)
+    _, clean_int = carbon_curve.cleanest_hour(profile)
     mean = carbon_curve.mean_intensity(profile)
     _energy_kwh(args)
     per_run_clean = check_grid.estimate_emissions(clean_int)
@@ -1164,7 +1129,7 @@ def cmd_plan(args):
 
     zones = [z["zone"] for z in check_grid.parse_zones_input(args.zones)]
     energy = _energy_kwh(args)
-    duration = int(getattr(args, "duration_hours", 1) or 1)
+    duration = args.duration_hours or 1
     options = []  # (zone, hour, intensity, mean)
     with contextlib.redirect_stdout(sys.stderr):
         for z in zones:
@@ -1229,23 +1194,15 @@ def cmd_sla(args):
     Commit to a target (e.g. 95% of runs on a clean grid) and prove it over a
     window, with an attestation. Exit 0 compliant/warning, 1 breached, 2 unknown.
     """
+    import carbon_curve
     import ledger
 
-    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
-    if not backend or not location:
+    data = carbon_curve._load_ledger_doc()
+    if data is None:
         print("Green SLA needs the ledger (set LEDGER=gist:<id> or file:<path>)", file=sys.stderr)
         return EXIT_NODATA
-    if backend == "file":
-        data = ledger._load_file(location)
-    else:
-        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
 
-    from datetime import datetime, timezone
-
-    if args.window == "month":
-        prefix = datetime.now(timezone.utc).strftime("%Y-%m")
-    else:
-        prefix = ""  # lifetime
+    prefix = datetime.now(timezone.utc).strftime("%Y-%m") if args.window == "month" else ""
     green, total = ledger.sla_window(data, prefix)
     if total < 5:
         print(
@@ -1292,16 +1249,12 @@ def cmd_export_curves(args):
     API for still gain a diurnal profile as adoption grows. Exit 0 on export,
     2 when there's no ledger or no curve yet.
     """
-    import ledger
+    import carbon_curve
 
-    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
-    if not backend or not location:
+    data = carbon_curve._load_ledger_doc()
+    if data is None:
         print("export-curves needs the ledger (LEDGER=gist:<id> or file:<path>)", file=sys.stderr)
         return EXIT_NODATA
-    if backend == "file":
-        data = ledger._load_file(location)
-    else:
-        data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
 
     curve = data.get("curve") or {}
     if not curve:
@@ -1337,7 +1290,7 @@ def cmd_merge_curves(args):
         try:
             with open(path) as fh:
                 docs.append(json.load(fh))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError) as exc:  # noqa: PERF203 skip bad files, keep merging the rest
             print(f"skipping {path}: {exc}", file=sys.stderr)
     if not docs:
         print("merge-curves needs at least one readable curve file", file=sys.stderr)
@@ -1363,8 +1316,6 @@ def cmd_sample_curves(args):
     per readable zone to --output (created if absent). Exit 0 on any sample, 2
     when no zone could be read.
     """
-    from datetime import datetime, timezone
-
     import ledger
 
     zones = check_grid.parse_zones_input(args.zones)
@@ -1442,8 +1393,7 @@ def cmd_curve(args):
     """Print the hour-of-day carbon curve from historical data (where free)."""
     import carbon_curve
 
-    zones = check_grid.parse_zones_input(args.zones)
-    first = zones[0]["zone"] if zones else args.zones
+    first = first_zone(args)
     with contextlib.redirect_stdout(sys.stderr):
         profile = carbon_curve.build_profile(first)
     if not profile:
@@ -1501,8 +1451,7 @@ def cmd_worth_it(args):
     """
     import carbon_curve
 
-    zones = check_grid.parse_zones_input(args.zones)
-    first = zones[0]["zone"] if zones else args.zones
+    first = first_zone(args)
     with contextlib.redirect_stdout(sys.stderr):
         profile = carbon_curve.build_profile(first)
     if not profile:
@@ -1513,7 +1462,7 @@ def cmd_worth_it(args):
         return EXIT_NODATA
 
     spread = carbon_curve.spread_pct(profile)
-    hour, intensity = carbon_curve.cleanest_hour(profile)
+    hour, _ = carbon_curve.cleanest_hour(profile)
     worth = spread >= args.min_spread
     best = carbon_curve.best_case_savings_grams(profile, _energy_kwh(args))
     annual_kg = best * 365 / 1000
@@ -1565,18 +1514,7 @@ def cmd_worth_it(args):
 
 
 def cmd_best_window(args):
-    zones = check_grid.parse_zones_input(args.zones)
-    tok = _tokens(args)
-    with contextlib.redirect_stdout(sys.stderr):
-        zone, when, intensity = check_grid.queue_find_optimal_window(
-            zones,
-            args.max_carbon,
-            args.hours,
-            tok["eia"],
-            tok["gridstatus"],
-            tok["emaps"],
-            tok["entsoe"],
-        )
+    zone, when, intensity = _optimal_window(args, args.hours)
     if zone is None:
         if args.json:
             print(json.dumps({"status": "none", "hours": args.hours}))
@@ -1596,37 +1534,46 @@ def build_parser():
     p = argparse.ArgumentParser(prog="carbon-aware", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
 
-    def add_common(sp):
-        sp.add_argument(
-            "--zones",
-            default="auto:green",
-            help="Zones or preset (e.g. 'GB,CISO' or 'auto:green'). Default: auto:green",
-        )
-        sp.add_argument(
-            "--max-carbon",
-            type=float,
-            default=200.0,
-            help="Max gCO2eq/kWh to count as green. Default: 200",
-        )
-        sp.add_argument("--json", action="store_true", help="Emit a JSON result on stdout")
-        sp.add_argument("--eia-key", default="")
-        sp.add_argument("--electricity-maps-token", default="")
-        sp.add_argument("--entsoe-token", default="")
-        sp.add_argument("--gridstatus-key", default="")
-        sp.add_argument(
-            "--cache-ttl",
-            type=int,
-            default=None,
-            help="Cache grid reads for N seconds (reuses recent data across composed "
-            "runs on the same host). Default: off, unless CARBON_CACHE_TTL is set",
-        )
+    def command(name, func, help_text, common=True):
+        """Add a subcommand. With common, it also takes the shared zone/threshold/token flags."""
+        sp = sub.add_parser(name, help=help_text)
+        if common:
+            sp.add_argument(
+                "--zones",
+                default="auto:green",
+                help="Zones or preset (e.g. 'GB,CISO' or 'auto:green'). Default: auto:green",
+            )
+            sp.add_argument(
+                "--max-carbon",
+                type=float,
+                default=200.0,
+                help="Max gCO2eq/kWh to count as green. Default: 200",
+            )
+            sp.add_argument("--json", action="store_true", help="Emit a JSON result on stdout")
+            sp.add_argument("--eia-key", default="")
+            sp.add_argument("--electricity-maps-token", default="")
+            sp.add_argument("--entsoe-token", default="")
+            sp.add_argument("--gridstatus-key", default="")
+            sp.add_argument(
+                "--cache-ttl",
+                type=int,
+                default=None,
+                help="Cache grid reads for N seconds (reuses recent data across composed "
+                "runs on the same host). Default: off, unless CARBON_CACHE_TTL is set",
+            )
+        sp.set_defaults(func=func)
+        return sp
 
-    c = sub.add_parser("check", help="Exit 0 if the grid is green now")
-    add_common(c)
-    c.set_defaults(func=cmd_check)
+    def repo_command(name, func, help_text, energy_help):
+        """A subcommand that scans a repo's workflow directory."""
+        sp = command(name, func, help_text)
+        sp.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
+        sp.add_argument("--energy-kwh", type=float, help=energy_help)
+        return sp
 
-    scl = sub.add_parser("scale", help="Print a carbon-aware autoscale factor (or replica count)")
-    add_common(scl)
+    command("check", cmd_check, "Exit 0 if the grid is green now")
+
+    scl = command("scale", cmd_scale, "Print a carbon-aware autoscale factor (or replica count)")
     scl.add_argument(
         "--scale-min",
         type=float,
@@ -1650,12 +1597,9 @@ def build_parser():
         default=None,
         help="Print integer replicas (ceil(factor x N), >=1) instead of the factor",
     )
-    scl.set_defaults(func=cmd_scale)
-
-    spl = sub.add_parser(
-        "split", help="Emissions-optimal split of N divisible shards across regions"
+    spl = command(
+        "split", cmd_split, "Emissions-optimal split of N divisible shards across regions"
     )
-    add_common(spl)
     spl.add_argument(
         "--shards", type=int, required=True, help="Number of divisible work units to place"
     )
@@ -1671,10 +1615,7 @@ def build_parser():
         default=None,
         help="Per-shard energy (kWh) to report emissions and saving vs an even split",
     )
-    spl.set_defaults(func=cmd_split)
-
-    w = sub.add_parser("wait-for-green", help="Block until green or a deadline")
-    add_common(w)
+    w = command("wait-for-green", cmd_wait, "Block until green or a deadline")
     w.add_argument("--max-wait", default="6h", help="Give up after this long. Default: 6h")
     w.add_argument("--poll", default="15m", help="How often to recheck. Default: 15m")
     w.add_argument(
@@ -1684,15 +1625,10 @@ def build_parser():
         help="Job energy (kWh). Enables optimal stopping: run now if idling for a "
         "cleaner forecast window would emit more than it saves",
     )
-    w.set_defaults(func=cmd_wait)
-
-    b = sub.add_parser("best-window", help="Print the cleanest upcoming forecast window")
-    add_common(b)
+    b = command("best-window", cmd_best_window, "Print the cleanest upcoming forecast window")
     b.add_argument("--hours", type=int, default=24, help="Forecast horizon in hours. Default: 24")
-    b.set_defaults(func=cmd_best_window)
 
-    s = sub.add_parser("suggest-cron", help="Recommend a daily cron at the cleanest hour")
-    add_common(s)
+    s = command("suggest-cron", cmd_suggest_cron, "Recommend a daily cron at the cleanest hour")
     s.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     s.add_argument(
         "--duration-hours",
@@ -1703,50 +1639,48 @@ def build_parser():
     s.add_argument(
         "--weekly", action="store_true", help="For weekly jobs: also pick the cleanest day of week"
     )
-    s.set_defaults(func=cmd_suggest_cron)
-
-    sr = sub.add_parser("suggest-region", help="Recommend the cleanest region among candidates")
-    add_common(sr)
+    sr = command(
+        "suggest-region", cmd_suggest_region, "Recommend the cleanest region among candidates"
+    )
     sr.add_argument("--current", default="", help="Your current zone, to quantify the saving vs it")
     sr.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
-    sr.set_defaults(func=cmd_suggest_region)
 
-    pl = sub.add_parser("plan", help="Combined when+where: cleanest (region, hour) across zones")
-    add_common(pl)
+    pl = command("plan", cmd_plan, "Combined when+where: cleanest (region, hour) across zones")
     pl.add_argument("--current", default="", help="Your current zone, to quantify the saving vs it")
     pl.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
     pl.add_argument("--duration-hours", type=int, default=1, help="Job length in hours")
-    pl.set_defaults(func=cmd_plan)
 
-    au = sub.add_parser("audit", help="Scan a repo's workflows for schedules worth shifting")
-    add_common(au)
-    au.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
-    au.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
-    au.set_defaults(func=cmd_audit)
-
-    scost = sub.add_parser("schedule-cost", help="Rank scheduled workflows by annual emissions")
-    add_common(scost)
-    scost.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
-    scost.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
-    scost.set_defaults(func=cmd_schedule_cost)
-
-    sc = sub.add_parser("score", help="Grade a repo's scheduling carbon posture (A-F) + badge")
-    add_common(sc)
-    sc.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
-    sc.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
-    sc.add_argument("--badge-file", default="", help="Write a shields.io badge JSON to this path")
-    sc.set_defaults(func=cmd_score)
-
-    ad = sub.add_parser("advise", help="One prioritized carbon action plan for the repo")
-    add_common(ad)
-    ad.add_argument("--dir", default=".github/workflows", help="Workflows directory to scan")
-    ad.add_argument("--energy-kwh", type=float, help="Per-run energy (kWh)")
-    ad.set_defaults(func=cmd_advise)
-
-    mg = sub.add_parser(
-        "marginal", help="WattTime marginal-emissions signal (real avoided-emissions metric)"
+    repo_command(
+        "audit",
+        cmd_audit,
+        "Scan a repo's workflows for schedules worth shifting",
+        "Run energy (kWh) for the savings estimate",
     )
-    add_common(mg)
+    repo_command(
+        "schedule-cost",
+        cmd_schedule_cost,
+        "Rank scheduled workflows by annual emissions",
+        "Per-run energy (kWh)",
+    )
+    sc = repo_command(
+        "score",
+        cmd_score,
+        "Grade a repo's scheduling carbon posture (A-F) + badge",
+        "Per-run energy (kWh)",
+    )
+    sc.add_argument("--badge-file", default="", help="Write a shields.io badge JSON to this path")
+    repo_command(
+        "advise",
+        cmd_advise,
+        "One prioritized carbon action plan for the repo",
+        "Per-run energy (kWh)",
+    )
+
+    mg = command(
+        "marginal",
+        cmd_marginal,
+        "WattTime marginal-emissions signal (real avoided-emissions metric)",
+    )
     mg.add_argument("--region", default="CAISO_NORTH", help="WattTime region. Default: CAISO_NORTH")
     mg.add_argument(
         "--max-percentile",
@@ -1756,17 +1690,15 @@ def build_parser():
     )
     mg.add_argument("--username", default="", help="WattTime username (or WATTTIME_USERNAME)")
     mg.add_argument("--password", default="", help="WattTime password (or WATTTIME_PASSWORD)")
-    mg.set_defaults(func=cmd_marginal)
-
-    me = sub.add_parser(
+    command(
         "marginal-estimate",
-        help="Free marginal-emissions estimate from EIA (US) fuel-mix history",
+        cmd_marginal_estimate,
+        "Free marginal-emissions estimate from EIA (US) fuel-mix history",
     )
-    add_common(me)
-    me.set_defaults(func=cmd_marginal_estimate)
 
-    fa = sub.add_parser("forecast-accuracy", help="Grade our own green-window forecasts over time")
-    add_common(fa)
+    fa = command(
+        "forecast-accuracy", cmd_forecast_accuracy, "Grade our own green-window forecasts over time"
+    )
     fa.add_argument(
         "--store",
         default="forecast-log.json",
@@ -1779,10 +1711,7 @@ def build_parser():
         default=90,
         help="Minutes after a predicted time to resolve it against the actual. Default: 90",
     )
-    fa.set_defaults(func=cmd_forecast_accuracy)
-
-    sla = sub.add_parser("sla", help="Report Green SLA compliance from the ledger")
-    add_common(sla)
+    sla = command("sla", cmd_sla, "Report Green SLA compliance from the ledger")
     sla.add_argument(
         "--target",
         type=float,
@@ -1795,18 +1724,19 @@ def build_parser():
         default="month",
         help="Compliance window. Default: month",
     )
-    sla.set_defaults(func=cmd_sla)
+    command("curve", cmd_curve, "Print the hour-of-day carbon curve (historical)")
 
-    cv = sub.add_parser("curve", help="Print the hour-of-day carbon curve (historical)")
-    add_common(cv)
-    cv.set_defaults(func=cmd_curve)
-
-    ec = sub.add_parser("export-curves", help="Export accumulated curves to share (data commons)")
-    add_common(ec)
+    ec = command(
+        "export-curves", cmd_export_curves, "Export accumulated curves to share (data commons)"
+    )
     ec.add_argument("--output", default="", help="Write to this file instead of stdout")
-    ec.set_defaults(func=cmd_export_curves)
 
-    mc = sub.add_parser("merge-curves", help="Pool exported curve files into one community curve")
+    mc = command(
+        "merge-curves",
+        cmd_merge_curves,
+        "Pool exported curve files into one community curve",
+        common=False,
+    )
     mc.add_argument("paths", nargs="+", help="Curve files to merge (from export-curves)")
     mc.add_argument("--output", default="", help="Write to this file instead of stdout")
     mc.add_argument(
@@ -1815,16 +1745,17 @@ def build_parser():
         default=0,
         help="Cap each file's per-hour sample weight (0 = no cap) to limit skew",
     )
-    mc.set_defaults(func=cmd_merge_curves)
-
-    sc = sub.add_parser("sample-curves", help="Sample live zones into a growing curve file")
-    add_common(sc)
-    sc.add_argument(
+    smp = command("sample-curves", cmd_sample_curves, "Sample live zones into a growing curve file")
+    smp.add_argument(
         "--output", default="", help="Curve file to accumulate into (created if absent)"
     )
-    sc.set_defaults(func=cmd_sample_curves)
 
-    vc = sub.add_parser("validate-curves", help="Validate contributed curve files for the pool")
+    vc = command(
+        "validate-curves",
+        cmd_validate_curves,
+        "Validate contributed curve files for the pool",
+        common=False,
+    )
     vc.add_argument("paths", nargs="+", help="Curve files to validate (from export-curves)")
     vc.add_argument(
         "--max-intensity",
@@ -1838,10 +1769,7 @@ def build_parser():
         default=6,
         help="Require a zone with at least this many sampled hours (0 to disable)",
     )
-    vc.set_defaults(func=cmd_validate_curves)
-
-    wi = sub.add_parser("worth-it", help="Is carbon-aware scheduling worth it for this zone?")
-    add_common(wi)
+    wi = command("worth-it", cmd_worth_it, "Is carbon-aware scheduling worth it for this zone?")
     wi.add_argument(
         "--min-spread",
         type=float,
@@ -1849,17 +1777,13 @@ def build_parser():
         help="Min hour-of-day spread %% to call shifting worthwhile. Default: 15",
     )
     wi.add_argument("--energy-kwh", type=float, help="Run energy (kWh) for the savings estimate")
-    wi.set_defaults(func=cmd_worth_it)
-
-    r = sub.add_parser("report", help="Emit an SCI (carbon) report as JSON for reporting")
-    add_common(r)
+    r = command("report", cmd_report, "Emit an SCI (carbon) report as JSON for reporting")
     r.add_argument("--energy-kwh", type=float, help="Measured energy this run uses (kWh)")
     r.add_argument("--power-watts", type=float, help="Average power draw (W), used with duration")
     r.add_argument("--duration-minutes", type=float, help="Job duration (minutes)")
     r.add_argument("--pue", type=float, help="Datacenter PUE multiplier (e.g. 1.12)")
     r.add_argument("--embodied-grams", type=float, help="Amortized embodied gCO2 for this run")
     r.add_argument("--functional-unit", default="run", help="SCI functional unit label")
-    r.set_defaults(func=cmd_report)
     return p
 
 

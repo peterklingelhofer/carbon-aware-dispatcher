@@ -1,11 +1,16 @@
 """Tests for the standalone carbon-aware CLI."""
 
+import contextlib
 import json
+import sys
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
 
 import cli
+import ledger
+import setup_wizard
 
 
 class TestParseDuration:
@@ -25,6 +30,27 @@ def _zones(_):
     return [{"zone": "GB"}]
 
 
+def _measured(pairs):
+    """A check_multiple_zones stand-in that reports the given (zone, intensity) readings."""
+
+    def fake(zones, max_carbon, *a, collect=None, **k):
+        if collect is not None:
+            collect.extend(pairs)
+        return (None, None, None, [])
+
+    return fake
+
+
+def _curve_file(tmp_path, name, zone="FR", base=100):
+    """Write a six-hour curve file for zone and return its path."""
+    data = ledger.empty_ledger()
+    for hour in range(6):
+        data = ledger.merge_curve_sample(data, zone, hour, base + hour)
+    p = tmp_path / name
+    p.write_text(json.dumps({"curve": data["curve"]}))
+    return str(p)
+
+
 class TestCheck:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.check_multiple_zones")
@@ -38,11 +64,7 @@ class TestCheck:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_dirty_exit_1(self, cmz, capsys):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            collect.append(("GB", 300))
-            return (None, None, None, [])
-
-        cmz.side_effect = fake
+        cmz.side_effect = _measured([("GB", 300)])
         rc = cli.main(["check", "--zones", "GB", "--max-carbon", "200"])
         assert rc == cli.EXIT_DIRTY
         assert "DIRTY" in capsys.readouterr().out
@@ -67,11 +89,7 @@ class TestScale:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_dirty_grid_floor_scale(self, cmz, capsys):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            collect.append(("GB", 400))  # above amber boundary
-            return (None, None, None, [])
-
-        cmz.side_effect = fake
+        cmz.side_effect = _measured([("GB", 400)])  # above amber boundary
         rc = cli.main(["scale", "--zones", "GB", "--json"])
         assert rc == cli.EXIT_GREEN  # a scaling signal always exits 0
         out = json.loads(capsys.readouterr().out)
@@ -107,28 +125,29 @@ class TestWait:
         assert rc == cli.EXIT_GREEN
         sleep.assert_called_once()
 
+    @pytest.mark.parametrize("flags,marker", [([], "TIMEOUT"), (["--json"], '"timeout"')])
     @mock.patch("cli.time.sleep")
     @mock.patch("cli.evaluate")
-    def test_times_out(self, ev, sleep, capsys):
+    def test_times_out(self, ev, sleep, capsys, flags, marker):
         ev.return_value = {"status": "dirty", "zone": "GB", "intensity": 300}
-        rc = cli.main(["wait-for-green", "--max-wait", "30s", "--poll", "60s"])
+        rc = cli.main(["wait-for-green", "--max-wait", "30s", "--poll", "60s", *flags])
         assert rc == cli.EXIT_DIRTY
-        assert "TIMEOUT" in capsys.readouterr().out
+        assert marker in capsys.readouterr().out
+
+    @mock.patch("cli.time.sleep")
+    @mock.patch("cli.evaluate")
+    def test_green_at_once_skips_waiting(self, ev, sleep, capsys):
+        ev.return_value = {"status": "green", "zone": "GB", "intensity": 80}
+        assert cli.main(["wait-for-green"]) == cli.EXIT_GREEN
+        sleep.assert_not_called()
+        assert "GREEN: GB" in capsys.readouterr().out
 
 
 class TestSplit:
-    @staticmethod
-    def _measured(pairs):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            collect.extend(pairs)
-            return (None, None, None, [])
-
-        return fake
-
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_water_fills_cleanest_first(self, cmz, capsys):
-        cmz.side_effect = self._measured([("GB", 200), ("FR", 50)])
+        cmz.side_effect = _measured([("GB", 200), ("FR", 50)])
         rc = cli.main(
             ["split", "--zones", "GB,FR", "--shards", "6", "--capacity", '{"FR":4}', "--json"]
         )
@@ -140,7 +159,7 @@ class TestSplit:
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_reports_saving_vs_even_split(self, cmz, capsys):
-        cmz.side_effect = self._measured([("FR", 50), ("GB", 250)])
+        cmz.side_effect = _measured([("FR", 50), ("GB", 250)])
         rc = cli.main(["split", "--zones", "FR,GB", "--shards", "4", "--energy-kwh", "1", "--json"])
         out = json.loads(capsys.readouterr().out)
         assert rc == cli.EXIT_GREEN
@@ -165,15 +184,8 @@ class TestForecastAccuracy:
     @mock.patch("cli.check_grid.queue_find_optimal_window")
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_resolves_seeded_prediction(self, cmz, qf, tmp_path, capsys):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            collect.append(("GB", 100))  # actual reading now
-            return (None, None, None, [])
-
-        cmz.side_effect = fake
+        cmz.side_effect = _measured([("GB", 100)])  # actual reading now
         qf.return_value = ("GB", "2026-09-01T03:00Z", 150)  # a fresh forecast to log
-
-        from datetime import datetime, timedelta, timezone
-
         store = tmp_path / "log.json"
         target = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%MZ")
         store.write_text(
@@ -204,6 +216,18 @@ class TestForecastAccuracy:
         cmz.return_value = (None, None, None, [("GB", "network error")])
         rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(tmp_path / "l.json")])
         assert rc == cli.EXIT_NODATA
+
+    @mock.patch("cli.check_grid.parse_zones_input", _zones)
+    @mock.patch("cli.check_grid.queue_find_optimal_window")
+    @mock.patch("cli.check_grid.check_multiple_zones")
+    def test_first_run_records_a_prediction(self, cmz, qf, tmp_path, capsys):
+        cmz.side_effect = _measured([("GB", 100)])
+        qf.return_value = ("GB", "2026-09-01T03:00Z", 150)
+        store = tmp_path / "log.json"
+        rc = cli.main(["forecast-accuracy", "--zones", "GB", "--store", str(store)])
+        assert rc == cli.EXIT_GREEN
+        assert "nothing resolved yet" in capsys.readouterr().out
+        assert len(json.loads(store.read_text())["predictions"]) == 1
 
 
 class TestMarginalEstimate:
@@ -236,8 +260,6 @@ class TestWaitOptimalStopping:
         # Dirty now (300), but the cleanest forecast window is only slightly
         # cleaner and ~20h out, so idling that long emits more than it saves
         ev.return_value = {"status": "dirty", "zone": "GB", "intensity": 300}
-        from datetime import datetime, timedelta, timezone
-
         future = (datetime.now(timezone.utc) + timedelta(hours=20)).strftime("%Y-%m-%dT%H:%MZ")
         qf.return_value = ("GB", future, 280)
         rc = cli.main(
@@ -255,18 +277,14 @@ class TestWaitOptimalStopping:
     def test_waits_when_worth_it(self, ev, qf, sleep, capsys):
         # Big drop (300 -> 50) soon (1h): waiting clearly pays, so it blocks and
         # then catches the green window
-        from datetime import datetime, timedelta, timezone
-
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%MZ")
         qf.return_value = ("GB", future, 50)
         ev.side_effect = [
             {"status": "dirty", "zone": "GB", "intensity": 300},
             {"status": "green", "zone": "GB", "intensity": 50},
         ]
-        rc = cli.main(
-            ["wait-for-green", "--zones", "GB", "--max-wait", "6h", "--poll", "1m"]
-            + ["--energy-kwh", "5"]
-        )
+        argv = ["wait-for-green", "--zones", "GB", "--max-wait", "6h", "--poll", "1m"]
+        rc = cli.main([*argv, "--energy-kwh", "5"])
         assert rc == cli.EXIT_GREEN
         sleep.assert_called_once()
 
@@ -305,7 +323,7 @@ class TestSuggestCron:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_weekly_picks_day(self, bp, wbp, capsys):
-        bp.return_value = {h: 100.0 for h in range(24)} | {12: 60.0}  # cleanest hour 12
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {12: 60.0}  # cleanest hour 12
         wbp.return_value = {0: 200.0, 5: 80.0, 6: 90.0}  # cleanest day Sat (py 5)
         rc = cli.main(["suggest-cron", "--zones", "GB", "--weekly", "--json"])
         assert rc == cli.EXIT_GREEN
@@ -316,7 +334,7 @@ class TestSuggestCron:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", _zones)
     def test_duration_window(self, bp, capsys):
-        profile = {h: 100.0 for h in range(24)}
+        profile = dict.fromkeys(range(24), 100.0)
         profile.update({11: 50.0, 12: 40.0, 13: 45.0})
         bp.return_value = profile
         rc = cli.main(
@@ -381,17 +399,10 @@ class TestSuggestCron:
 
 
 class TestSuggestRegion:
-    def _measure(self, pairs):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            collect.extend(pairs)
-            return (None, None, None, [])
-
-        return fake
-
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_recommends_cleanest(self, cmz, capsys):
-        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380)])
+        cmz.side_effect = _measured([("CISO", 90), ("PJM", 380)])
         rc = cli.main(["suggest-region", "--zones", "CISO,PJM", "--energy-kwh", "10", "--json"])
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
@@ -402,7 +413,7 @@ class TestSuggestRegion:
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_current_baseline(self, cmz, capsys):
-        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380), ("GB", 200)])
+        cmz.side_effect = _measured([("CISO", 90), ("PJM", 380), ("GB", 200)])
         cli.main(
             [
                 "suggest-region",
@@ -422,7 +433,7 @@ class TestSuggestRegion:
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "X"}])
     @mock.patch("cli.check_grid.check_multiple_zones")
     def test_already_cleanest(self, cmz, capsys):
-        cmz.side_effect = self._measure([("CISO", 90), ("PJM", 380)])
+        cmz.side_effect = _measured([("CISO", 90), ("PJM", 380)])
         rc = cli.main(["suggest-region", "--zones", "CISO,PJM", "--current", "CISO"])
         assert rc == cli.EXIT_DIRTY
         assert "Already" in capsys.readouterr().out
@@ -440,8 +451,8 @@ class TestPlan:
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "CISO"}, {"zone": "PJM"}])
     def test_picks_best_zone_and_hour(self, bp, capsys):
         profiles = {
-            "CISO": {h: 300.0 for h in range(24)} | {3: 80.0},
-            "PJM": {h: 400.0 for h in range(24)} | {5: 350.0},
+            "CISO": dict.fromkeys(range(24), 300.0) | {3: 80.0},
+            "PJM": dict.fromkeys(range(24), 400.0) | {5: 350.0},
         }
         bp.side_effect = lambda z: profiles.get(z)
         rc = cli.main(["plan", "--zones", "CISO,PJM", "--energy-kwh", "10", "--json"])
@@ -464,7 +475,7 @@ class TestAudit:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_ranks_shiftable_crons(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 50.0}  # cleanest hour 3
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 50.0}  # cleanest hour 3
         (tmp_path / "a.yml").write_text("on:\n  schedule:\n    - cron: '0 20 * * *'\n")
         (tmp_path / "b.yml").write_text("    - cron: '*/15 * * * *'\n")  # complex, skipped
         (tmp_path / "c.yml").write_text("    - cron: '0 3 * * *'\n")  # already optimal
@@ -483,7 +494,7 @@ class TestAudit:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_all_optimal(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 50.0}
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 50.0}
         (tmp_path / "a.yml").write_text("    - cron: '0 3 * * *'\n")
         rc = cli.main(["audit", "--zones", "GB", "--dir", str(tmp_path)])
         assert rc == cli.EXIT_DIRTY
@@ -499,7 +510,7 @@ class TestScheduleCost:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_ranks_by_annual_emissions(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)}  # mean 100 gCO2/kWh
+        bp.return_value = dict.fromkeys(range(24), 100.0)  # mean 100 gCO2/kWh
         (tmp_path / "hourly.yml").write_text("    - cron: '0 * * * *'\n")  # 24x/day
         (tmp_path / "daily.yml").write_text("    - cron: '0 3 * * *'\n")  # 1x/day
         rc = cli.main(
@@ -535,7 +546,7 @@ class TestAdvise:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_shift_action(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}  # spread big, cleanest 3
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 10.0}  # spread big, cleanest 3
         (tmp_path / "a.yml").write_text("    - cron: '0 20 * * *'\n")
         rc = cli.main(
             ["advise", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
@@ -548,7 +559,7 @@ class TestAdvise:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_throttle_action_for_hourly(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 10.0}
         (tmp_path / "a.yml").write_text("    - cron: '0 * * * *'\n")  # hourly, unshiftable
         cli.main(
             ["advise", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
@@ -600,10 +611,6 @@ class TestMarginal:
 
 class TestSla:
     def _seed(self, tmp_path, green, dirty):
-        import json
-
-        import ledger
-
         data = ledger.empty_ledger()
         for _ in range(green):
             data = ledger.merge_entry(data, 0, "2026-06-17", is_green=True)
@@ -619,6 +626,11 @@ class TestSla:
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "compliant" and out["compliance_pct"] == 100.0
+
+    def test_compliant_text(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEDGER", self._seed(tmp_path, green=10, dirty=0))
+        assert cli.main(["sla", "--target", "95", "--window", "lifetime"]) == cli.EXIT_GREEN
+        assert "Green SLA: compliant, 100% of 10 runs clean" in capsys.readouterr().out
 
     def test_breached(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LEDGER", self._seed(tmp_path, green=5, dirty=5))
@@ -647,7 +659,7 @@ class TestScore:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_low_grade_when_savings_unclaimed(self, bp, capsys, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}  # hour 3 well below the rest
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 10.0}  # hour 3 well below the rest
         (tmp_path / "a.yml").write_text("    - cron: '0 20 * * *'\n")  # daily at dirty hour
         rc = cli.main(
             ["score", "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10", "--json"]
@@ -660,7 +672,7 @@ class TestScore:
     @mock.patch("carbon_curve.build_profile")
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "GB"}])
     def test_writes_badge_file(self, bp, tmp_path):
-        bp.return_value = {h: 100.0 for h in range(24)} | {3: 10.0}
+        bp.return_value = dict.fromkeys(range(24), 100.0) | {3: 10.0}
         (tmp_path / "a.yml").write_text("    - cron: '0 3 * * *'\n")  # already optimal
         badge = tmp_path / "badge.json"
         rc = cli.main(
@@ -679,16 +691,7 @@ class TestScore:
 
 class TestExportCurves:
     def _seed(self, tmp_path):
-        import json
-
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
-        p = tmp_path / "led.json"
-        p.write_text(json.dumps(data))
-        return f"file:{p}"
+        return f"file:{_curve_file(tmp_path, 'led.json')}"
 
     def test_exports_to_stdout(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LEDGER", self._seed(tmp_path))
@@ -710,26 +713,16 @@ class TestExportCurves:
 
 
 class TestMergeCurves:
-    def _curve_file(self, tmp_path, name, zone, base):
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, zone, hour, base + hour)
-        p = tmp_path / name
-        p.write_text(json.dumps({"curve": data["curve"]}))
-        return str(p)
-
     def test_merges_to_stdout(self, capsys, tmp_path):
-        a = self._curve_file(tmp_path, "a.json", "FR", 100)
-        b = self._curve_file(tmp_path, "b.json", "DE", 300)
+        a = _curve_file(tmp_path, "a.json", "FR", 100)
+        b = _curve_file(tmp_path, "b.json", "DE", 300)
         rc = cli.main(["merge-curves", a, b])
         assert rc == cli.EXIT_GREEN
         out = json.loads(capsys.readouterr().out)
         assert set(out["curve"]) == {"FR", "DE"}
 
     def test_writes_file(self, tmp_path):
-        a = self._curve_file(tmp_path, "a.json", "FR", 100)
+        a = _curve_file(tmp_path, "a.json", "FR", 100)
         dest = tmp_path / "pool.json"
         rc = cli.main(["merge-curves", a, "--output", str(dest)])
         assert rc == cli.EXIT_GREEN
@@ -749,19 +742,11 @@ class TestMergeCurves:
 
 
 class TestSampleCurves:
-    def _collect(self, pairs):
-        def fake(zones, max_carbon, *a, collect=None, **k):
-            if collect is not None:
-                collect.extend(pairs)
-            return (None, None, None, [])
-
-        return fake
-
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}, {"zone": "ES"}])
     def test_samples_into_new_file(self, tmp_path):
         dest = tmp_path / "seed.json"
         with mock.patch(
-            "cli.check_grid.check_multiple_zones", self._collect([("DE", 400), ("ES", 200)])
+            "cli.check_grid.check_multiple_zones", _measured([("DE", 400), ("ES", 200)])
         ):
             rc = cli.main(["sample-curves", "--zones", "DE,ES", "--output", str(dest)])
         assert rc == cli.EXIT_GREEN
@@ -772,7 +757,7 @@ class TestSampleCurves:
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}])
     def test_accumulates_into_existing_file(self, tmp_path):
         dest = tmp_path / "seed.json"
-        with mock.patch("cli.check_grid.check_multiple_zones", self._collect([("DE", 400)])):
+        with mock.patch("cli.check_grid.check_multiple_zones", _measured([("DE", 400)])):
             cli.main(["sample-curves", "--zones", "DE", "--output", str(dest)])
             cli.main(["sample-curves", "--zones", "DE", "--output", str(dest)])
         # two samples folded into the same hour cell
@@ -782,23 +767,13 @@ class TestSampleCurves:
 
     @mock.patch("cli.check_grid.parse_zones_input", lambda s: [{"zone": "DE"}])
     def test_no_data(self, tmp_path):
-        with mock.patch("cli.check_grid.check_multiple_zones", self._collect([])):
+        with mock.patch("cli.check_grid.check_multiple_zones", _measured([])):
             assert cli.main(["sample-curves", "--zones", "DE"]) == cli.EXIT_NODATA
 
 
 class TestValidateCurves:
-    def _curve_file(self, tmp_path, name, zone="FR", base=100):
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, zone, hour, base + hour)
-        p = tmp_path / name
-        p.write_text(json.dumps({"curve": data["curve"]}))
-        return str(p)
-
     def test_valid_file_passes(self, tmp_path):
-        good = self._curve_file(tmp_path, "good.json")
+        good = _curve_file(tmp_path, "good.json")
         assert cli.main(["validate-curves", good]) == cli.EXIT_GREEN
 
     def test_invalid_file_fails(self, tmp_path):
@@ -810,7 +785,7 @@ class TestValidateCurves:
         assert cli.main(["validate-curves", str(tmp_path / "missing.json")]) == cli.EXIT_DIRTY
 
     def test_mixed_batch_fails_if_any_bad(self, tmp_path):
-        good = self._curve_file(tmp_path, "good.json")
+        good = _curve_file(tmp_path, "good.json")
         bad = tmp_path / "bad.json"
         bad.write_text("{not json")
         assert cli.main(["validate-curves", good, str(bad)]) == cli.EXIT_DIRTY
@@ -910,9 +885,9 @@ class TestWorthIt:
 
 
 class TestReport:
-    def _clear(self):
-        import os
-
+    @pytest.fixture(autouse=True)
+    def _sci_env(self, monkeypatch):
+        # The report pushes its flags into these env vars, so undo that after each test
         for k in (
             "JOB_ENERGY_KWH",
             "JOB_POWER_WATTS",
@@ -920,47 +895,195 @@ class TestReport:
             "PUE",
             "EMBODIED_GRAMS",
         ):
-            os.environ.pop(k, None)
+            monkeypatch.delenv(k, raising=False)
 
     @mock.patch("cli.evaluate")
     def test_report_json(self, ev, capsys):
         ev.return_value = {"status": "green", "zone": "GB", "intensity": 100}
-        try:
-            rc = cli.main(
-                [
-                    "report",
-                    "--zones",
-                    "GB",
-                    "--energy-kwh",
-                    "10",
-                    "--pue",
-                    "1.0",
-                    "--embodied-grams",
-                    "0",
-                    "--json",
-                ]
-            )
-            assert rc == cli.EXIT_GREEN
-            out = json.loads(capsys.readouterr().out)
-            assert out["zone"] == "GB"
-            assert out["energy_kwh"] == 10.0
-            assert out["emitted_grams"] == 1000.0  # 100 g/kWh x 10 kWh x 1.0
-            assert out["functional_unit"] == "run"
-            assert out["schema"] == "sci-report/1"
-        finally:
-            self._clear()
+        rc = cli.main(
+            [
+                "report",
+                "--zones",
+                "GB",
+                "--energy-kwh",
+                "10",
+                "--pue",
+                "1.0",
+                "--embodied-grams",
+                "0",
+                "--json",
+            ]
+        )
+        assert rc == cli.EXIT_GREEN
+        out = json.loads(capsys.readouterr().out)
+        assert out["zone"] == "GB"
+        assert out["energy_kwh"] == 10.0
+        assert out["emitted_grams"] == 1000.0  # 100 g/kWh x 10 kWh x 1.0
+        assert out["functional_unit"] == "run"
+        assert out["schema"] == "sci-report/1"
 
     @mock.patch("cli.evaluate")
     def test_report_no_data(self, ev, capsys):
         ev.return_value = {"status": "error", "skipped": 1}
-        try:
-            rc = cli.main(["report", "--zones", "GB"])
-            assert rc == cli.EXIT_NODATA
-        finally:
-            self._clear()
+        rc = cli.main(["report", "--zones", "GB"])
+        assert rc == cli.EXIT_NODATA
 
 
 class TestUsage:
     def test_bad_duration_returns_usage(self, capsys):
         rc = cli.main(["wait-for-green", "--max-wait", "notaduration"])
         assert rc == cli.EXIT_USAGE
+
+
+_CURVE = dict.fromkeys(range(24), 100.0) | {3: 50.0}
+_NO_SAMPLES = {"carbon_curve.build_profile_samples": mock.Mock(return_value=None)}
+
+
+def _fake(value):
+    return mock.Mock(return_value=value)
+
+
+@pytest.mark.parametrize(
+    "argv,patches,expected",
+    [
+        (
+            ["scale", "--zones", "GB", "--max-replicas", "10", "--json"],
+            {"cli.check_grid.check_multiple_zones": _fake(("GB", 80, None, []))},
+            '"replicas": 10',
+        ),
+        (
+            [
+                *["split", "--zones", "GB,FR", "--shards", "6", "--energy-kwh", "1"],
+                "--capacity",
+                '{"FR":4,"GB":1}',
+            ],
+            {"cli.check_grid.check_multiple_zones": _measured([("GB", 200), ("FR", 50)])},
+            "unplaced: 1 shards",
+        ),
+        (
+            ["split", "--zones", "GB", "--shards", "4", "--json"],
+            {"cli.check_grid.check_multiple_zones": _measured([])},
+            '"status": "error"',
+        ),
+        (
+            ["marginal-estimate", "--zones", "CISO"],
+            {
+                "providers.eia.fuel_mix_series": _fake(
+                    [(100.0, 2400), (130.0, 2400 + 30 * 490), (190.0, 2400 + 90 * 490)]
+                )
+            },
+            "Estimated marginal for CISO",
+        ),
+        (
+            ["marginal-estimate", "--zones", "GB", "--json"],
+            {"providers.eia.fuel_mix_series": _fake([])},
+            '"status": "unavailable"',
+        ),
+        (
+            ["suggest-region", "--zones", "CISO,PJM", "--energy-kwh", "10"],
+            {"cli.check_grid.check_multiple_zones": _measured([("CISO", 90), ("PJM", 380)])},
+            "Run in CISO",
+        ),
+        (
+            ["suggest-cron", "--zones", "GB", "--energy-kwh", "10"],
+            {"carbon_curve.build_profile": _fake({11: 85.0, 12: 82.0, 19: 145.0})},
+            "Suggested schedule: 0 12 * * *",
+        ),
+        (
+            ["suggest-cron", "--zones", "GB"],
+            {
+                "carbon_curve.build_profile": _fake(None),
+                "cli.check_grid.queue_find_optimal_window": _fake((None, None, None)),
+                "cli.check_grid.suggest_green_cron": _fake(("0 2 * * *", "daily at 2am (wind)")),
+            },
+            "[heuristic]",
+        ),
+        (
+            ["plan", "--zones", "CISO,PJM", "--energy-kwh", "10"],
+            {"carbon_curve.build_profile": _fake(_CURVE)},
+            "Run your job in CISO at 03:00 UTC",
+        ),
+        (
+            ["curve", "--zones", "GB"],
+            {"carbon_curve.build_profile": _fake({12: 82.0, 19: 145.0}), **_NO_SAMPLES},
+            "Hour-of-day carbon curve for GB",
+        ),
+        (
+            ["worth-it", "--zones", "GB", "--energy-kwh", "10"],
+            {"carbon_curve.build_profile": _fake({12: 80.0, 19: 160.0}), **_NO_SAMPLES},
+            "Worth shifting: GB",
+        ),
+        (
+            ["best-window", "--zones", "FR"],
+            {"cli.check_grid.queue_find_optimal_window": _fake(("FR", "2026-06-17T03:00:00Z", 60))},
+            "Cleanest window: FR at",
+        ),
+    ],
+)
+def test_output_names_the_result(argv, patches, expected, capsys):
+    """Each command's text (or JSON) rendering carries the result it computed."""
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            mock.patch(
+                "cli.check_grid.parse_zones_input", lambda s: [{"zone": z} for z in s.split(",")]
+            )
+        )
+        for target, value in patches.items():
+            stack.enter_context(mock.patch(target, value))
+        cli.main(argv)
+    assert expected in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("audit", "Carbon audit of"),
+        ("schedule-cost", "Scheduled-workflow emissions for"),
+        ("advise", "Carbon plan for GB"),
+    ],
+)
+@mock.patch("carbon_curve.build_profile", return_value=_CURVE)
+@mock.patch("cli.check_grid.parse_zones_input", _zones)
+def test_repo_scan_text_output(_bp, command, expected, capsys, tmp_path):
+    (tmp_path / "a.yml").write_text("    - cron: '0 20 * * *'\n")
+    cli.main([command, "--zones", "GB", "--dir", str(tmp_path), "--energy-kwh", "10"])
+    assert expected in capsys.readouterr().out
+
+
+class TestSetupWizardMain:
+    """The carbon-dispatch-setup entry point: zone selection, summary and exit code."""
+
+    @staticmethod
+    def _run(monkeypatch, argv, status):
+        def fake_zone(zone, **_kw):
+            state = status(zone)
+            return {
+                "zone": zone,
+                "provider": "P",
+                "status": state,
+                "intensity": 100,
+                "error": state,
+            }
+
+        monkeypatch.setattr(sys, "argv", ["setup_wizard", *argv])
+        monkeypatch.setattr(setup_wizard, "test_zone", fake_zone)
+        with pytest.raises(SystemExit) as exc:
+            setup_wizard.main()
+        return exc.value.code
+
+    @pytest.mark.parametrize("argv", [[], ["--zone", "GB"], ["--auto-green"], ["--auto-cleanest"]])
+    def test_all_ok_exits_0(self, argv, capsys, monkeypatch):
+        keys = ["--eia-api-key", "k", "--entsoe-token", "t", "--electricity-maps-token", "e"]
+        assert self._run(monkeypatch, [*argv, *keys], lambda _zone: "ok") == 0
+        assert "All zones working" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "routing,marker",
+        [("gate", "grid_clean"), ("runner", "runner_provider"), ("deploy", "AWS_DEFAULT_REGION")],
+    )
+    def test_error_exits_1_with_routing_snippet(self, routing, marker, capsys, monkeypatch):
+        status = {"GB": "ok", "DE": "skipped", "XX": "error"}.__getitem__
+        rc = self._run(monkeypatch, ["--zones", "GB,DE,XX", "--routing", routing], status)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "1 ok, 1 skipped, 1 errors" in out and marker in out
