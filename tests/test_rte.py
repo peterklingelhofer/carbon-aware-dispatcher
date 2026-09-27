@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import providers
 from providers import rte
 
@@ -27,14 +29,14 @@ class TestCheckCarbonIntensity:
         req.return_value = {"records": [{"fields": {"taux_co2": 240}}]}
         assert rte.check_carbon_intensity("FR", 200) == (False, 240)
 
+    @pytest.mark.parametrize(
+        "response",
+        [None, {"records": [{"fields": {"taux_co2": None}}]}],
+        ids=["no_data", "all_null"],
+    )
     @mock.patch("providers.rte.request")
-    def test_no_data(self, req):
-        req.return_value = None
-        assert rte.check_carbon_intensity("FR", 200) == (None, None)
-
-    @mock.patch("providers.rte.request")
-    def test_all_null(self, req):
-        req.return_value = {"records": [{"fields": {"taux_co2": None}}]}
+    def test_returns_none_none_without_usable_data(self, req, response):
+        req.return_value = response
         assert rte.check_carbon_intensity("FR", 200) == (None, None)
 
 

@@ -12,7 +12,6 @@ from urllib.parse import quote
 from providers.base import compute_trend, green_result, request
 
 API = "https://api.energidataservice.dk/dataset/CO2Emis"
-ENERGINET_ZONES = {"DK-DK1", "DK-DK2", "DK1", "DK2"}
 _AREA = {"DK-DK1": "DK1", "DK1": "DK1", "DK-DK2": "DK2", "DK2": "DK2"}
 
 

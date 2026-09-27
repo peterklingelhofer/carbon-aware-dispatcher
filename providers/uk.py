@@ -8,6 +8,13 @@ from providers.base import api_request, compute_trend, green_result, iso_now
 UK_API_BASE = "https://api.carbonintensity.org.uk"
 
 
+def _periods(data, zone):
+    """Half-hour periods of a response: a flat list nationally, nested one level for a region."""
+    if zone in ("GB", "GB-national"):
+        return data.get("data", [])
+    return data.get("data", {}).get("data", [])
+
+
 def check_carbon_intensity(zone, max_carbon):
     """Check carbon intensity using the UK Carbon Intensity API.
 
@@ -59,22 +66,13 @@ def get_forecast(zone, max_carbon):
         return None, None
 
     try:
-        if zone in ("GB", "GB-national"):
-            periods = data.get("data", [])
-            for period in periods:
-                intensity = period["intensity"]["forecast"]
-                if intensity <= max_carbon:
-                    dt = period["from"]
-                    print(f"  Forecast: grid expected to be green at {dt} ({intensity} gCO2eq/kWh)")
-                    return dt, intensity
-        else:
-            periods = data.get("data", {}).get("data", [])
-            for period in periods:
-                intensity = period["intensity"]["forecast"]
-                if intensity <= max_carbon:
-                    dt = period["from"]
-                    print(f"  Forecast: grid expected to be green at {dt} ({intensity} gCO2eq/kWh)")
-                    return dt, intensity
+        periods = _periods(data, zone)
+        for period in periods:
+            intensity = period["intensity"]["forecast"]
+            if intensity <= max_carbon:
+                dt = period["from"]
+                print(f"  Forecast: grid expected to be green at {dt} ({intensity} gCO2eq/kWh)")
+                return dt, intensity
     except (KeyError, TypeError):
         print(f"::warning::Could not parse forecast response for zone {zone}")
         return None, None
@@ -102,10 +100,7 @@ def get_history_trend(zone):
         return None
 
     try:
-        if zone in ("GB", "GB-national"):
-            points = [p["intensity"]["forecast"] for p in data.get("data", [])]
-        else:
-            points = [p["intensity"]["forecast"] for p in data.get("data", {}).get("data", [])]
+        points = [p["intensity"]["forecast"] for p in _periods(data, zone)]
     except (KeyError, TypeError):
         return None
 

@@ -64,7 +64,7 @@ def _fuel_mix_to_intensity(fuel_data):
 
 
 def _fuel_mix_rows(zone, eia_api_key="", length=100):
-    """Fetch recent hourly fuel-mix rows for a zone (newest first), or []."""
+    """Recent hourly fuel-mix rows for a zone (newest first), or None when the request fails."""
     api_key = eia_api_key or "DEMO_KEY"
     url = (
         f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
@@ -78,7 +78,7 @@ def _fuel_mix_rows(zone, eia_api_key="", length=100):
     )
     data = api_request(url)
     if data is None:
-        return []
+        return None
     return data.get("response", {}).get("data", [])
 
 
@@ -105,30 +105,17 @@ def check_carbon_intensity(zone, max_carbon, eia_api_key=""):
 
     Returns (is_green, intensity) or (None, None) on error.
     """
-    api_key = eia_api_key or "DEMO_KEY"
-    if api_key == "DEMO_KEY":
+    if not eia_api_key or eia_api_key == "DEMO_KEY":
         print(
             "::notice::Using built-in EIA DEMO_KEY (rate limit ~30 req/hr). "
             "For higher limits, register a free key at https://www.eia.gov/opendata/register.php "
             f"and {ci_secret_hint('EIA_API_KEY')}."
         )
-    url = (
-        f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
-        f"?api_key={api_key}"
-        f"&frequency=hourly"
-        f"&data[0]=value"
-        f"&facets[respondent][]={zone}"
-        f"&sort[0][column]=period"
-        f"&sort[0][direction]=desc"
-        f"&length=10"
-    )
 
     print(f"Checking carbon intensity for zone: {zone} (EIA API)...")
-    data = api_request(url)
-    if data is None:
+    rows = _fuel_mix_rows(zone, eia_api_key=eia_api_key, length=10)
+    if rows is None:
         return None, None
-
-    rows = data.get("response", {}).get("data", [])
     if not rows:
         print(f"::warning::No fuel mix data returned for zone {zone}")
         return None, None
@@ -150,44 +137,9 @@ def get_history_trend(zone, eia_api_key=""):
 
     Returns one of: "decreasing", "increasing", "stable", or None.
     """
-    api_key = eia_api_key or "DEMO_KEY"
-    url = (
-        f"{EIA_API_BASE}/electricity/rto/fuel-type-data/data"
-        f"?api_key={api_key}"
-        f"&frequency=hourly"
-        f"&data[0]=value"
-        f"&facets[respondent][]={zone}"
-        f"&sort[0][column]=period"
-        f"&sort[0][direction]=desc"
-        f"&length=100"
-    )
-
     print(f"  Fetching history trend for zone: {zone}...")
-    data = api_request(url)
-    if data is None:
-        return None
-
-    rows = data.get("response", {}).get("data", [])
-    if not rows:
-        return None
-
-    # Group by period and calculate intensity for each
-    periods = OrderedDict()
-    for row in rows:
-        p = row.get("period")
-        if p not in periods:
-            periods[p] = []
-        periods[p].append(row)
-
-    intensities = []
-    for period_rows in periods.values():
-        intensity = _fuel_mix_to_intensity(period_rows)
-        if intensity is not None:
-            intensities.append(intensity)
-
-    # Reverse so oldest is first (API returns newest first)
-    intensities.reverse()
-    return compute_trend(intensities)
+    series = fuel_mix_series(zone, eia_api_key=eia_api_key)
+    return compute_trend([round(co2 / generation) for generation, co2 in series])
 
 
 def get_forecast(zone, max_carbon, eia_api_key=""):

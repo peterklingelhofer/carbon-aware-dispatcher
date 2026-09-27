@@ -120,7 +120,7 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return
 
 
 def get_forecast(zone, max_carbon):
@@ -148,19 +148,15 @@ def get_forecast(zone, max_carbon):
     peak_intensity = 150 if is_hydro_heavy else 200
 
     # If already in off-peak and green, no forecast needed
-    if not (17 <= local_hour <= 21):
-        if offpeak_intensity <= max_carbon:
-            return None, None
+    if not (17 <= local_hour <= 21) and offpeak_intensity <= max_carbon:
+        return None, None
 
     # Find next green window
     for hours_ahead in range(1, 49):
         future = now_brt + timedelta(hours=hours_ahead)
         future_hour = future.hour
 
-        if 17 <= future_hour <= 21:
-            est_intensity = peak_intensity
-        else:
-            est_intensity = offpeak_intensity
+        est_intensity = peak_intensity if 17 <= future_hour <= 21 else offpeak_intensity
 
         if est_intensity <= max_carbon:
             future_utc = future.astimezone(timezone.utc)

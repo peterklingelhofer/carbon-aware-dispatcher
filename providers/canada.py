@@ -10,9 +10,8 @@ Three provinces, three different public feeds:
 import re
 import xml.etree.ElementTree as ET
 
+from providers import CANADA_ZONE_IDS
 from providers.base import FUEL_FACTORS, green_result, mix_to_intensity, request
-
-CANADA_ZONES = {"CA-ON", "CA-AB", "CA-QC"}
 
 IESO_URL = (
     "https://reports-public.ieso.ca/public/GenOutputbyFuelHourly/PUB_GenOutputbyFuelHourly.xml"
@@ -135,7 +134,9 @@ def check_carbon_intensity(zone, max_carbon):
         text = request(AESO_URL, parse="text")
         fuel_mix = _parse_aeso(text) if text else None
     else:
-        print(f"::warning::Unknown Canada zone: {zone}. Valid: {', '.join(sorted(CANADA_ZONES))}")
+        print(
+            f"::warning::Unknown Canada zone: {zone}. Valid: {', '.join(sorted(CANADA_ZONE_IDS))}"
+        )
         return None, None
 
     if not fuel_mix:
@@ -162,4 +163,4 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return

@@ -101,7 +101,7 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return
 
 
 def get_forecast(zone, max_carbon):

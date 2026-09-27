@@ -7,13 +7,11 @@ South Africa's grid is heavily coal-dependent (~80-85% coal).
 Data source: https://www.eskom.co.za/dataportal/
 """
 
+from providers import ESKOM_ZONE_IDS
 from providers.base import FUEL_FACTORS, flatten_mix, green_result, mix_to_intensity, request
 
 # Eskom supply/demand data endpoint
 ESKOM_API = "https://www.eskom.co.za/dataportal/wp-content/uploads/2023/generation.json"
-
-# Eskom zone identifiers
-ESKOM_ZONES = {"ZA"}
 
 # Local fuel labels mapped to canonical factors (see providers.base.FUEL_FACTORS).
 # SA grid is ~85% coal, 5% nuclear, 5% wind/solar, 5% other
@@ -32,10 +30,8 @@ SA_EMISSION_FACTORS = {
 # Pumped storage discharge is not zero-carbon, so it is excluded from the mix
 SA_STORAGE_FUELS = ("pumped_storage", "pumped storage", "pumped")
 
-# Known SA grid characteristics for estimation when API is unavailable.
-# SA is ~85% coal with some nuclear and renewables.
-# Typical intensity: 700-900 gCO2eq/kWh, one of the dirtiest grids globally
-SA_DEFAULT_INTENSITY = 750
+# Known SA grid shares for estimation when the API is unavailable: ~85% coal, the
+# rest nuclear and renewables. Typical intensity is 700-900 gCO2eq/kWh
 SA_NUCLEAR_PCT = 0.05
 SA_RENEWABLE_PCT = 0.10  # Wind + solar combined
 
@@ -86,7 +82,7 @@ def check_carbon_intensity(zone, max_carbon):
     only for an unknown zone.
     Note: SA grid is typically 700-900 gCO2eq/kWh, rarely "green".
     """
-    if zone not in ESKOM_ZONES:
+    if zone not in ESKOM_ZONE_IDS:
         print(f"::warning::Unknown Eskom zone: {zone}. Valid zones: ZA")
         return None, None
 
@@ -109,7 +105,7 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return
 
 
 def get_forecast(zone, max_carbon):

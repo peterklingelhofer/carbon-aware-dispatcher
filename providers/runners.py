@@ -686,26 +686,28 @@ def detect_cloud_zone():
         if zone:
             return zone, f"Azure region {azure_region}"
 
-    # GitHub Actions: detect from runner name hints
-    # GitHub-hosted runners are in Azure US regions by default
+    # GitHub Actions: hosted runners sit in Azure US regions and carry no hint, but
+    # a self-hosted runner's name often names its region
     runner_name = os.environ.get("RUNNER_NAME", "")
-    if os.environ.get("GITHUB_ACTIONS") == "true" and not aws_region and not gcp_region:
-        # GitHub-hosted runners are typically in US East (Azure eastus)
-        # Self-hosted runners may have region hints in their name
-        if runner_name:
-            name_lower = runner_name.lower()
-            for keyword, zone in [
-                ("europe", "DE"),
-                ("eu-", "DE"),
-                ("london", "GB"),
-                ("asia", "SG"),
-                ("australia", "AU-NSW"),
-                ("india", "IN-WE"),
-                ("brazil", "BR-SE"),
-                ("canada", "CA-ON"),
-                ("japan", "JP-TK"),
-            ]:
-                if keyword in name_lower:
-                    return zone, f"GitHub runner name '{runner_name}'"
+    if (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and not aws_region
+        and not gcp_region
+        and runner_name
+    ):
+        name_lower = runner_name.lower()
+        for keyword, zone in [
+            ("europe", "DE"),
+            ("eu-", "DE"),
+            ("london", "GB"),
+            ("asia", "SG"),
+            ("australia", "AU-NSW"),
+            ("india", "IN-WE"),
+            ("brazil", "BR-SE"),
+            ("canada", "CA-ON"),
+            ("japan", "JP-TK"),
+        ]:
+            if keyword in name_lower:
+                return zone, f"GitHub runner name '{runner_name}'"
 
     return None, None

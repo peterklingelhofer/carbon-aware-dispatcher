@@ -9,7 +9,6 @@ Zone: FR.
 from providers.base import compute_trend, green_result, request
 
 API = "https://odre.opendatasoft.com/api/records/1.0/search/"
-RTE_ZONES = {"FR"}
 
 
 def _fetch(rows=8):

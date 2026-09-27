@@ -278,9 +278,8 @@ def _estimate_intensity_from_weather(solar_w_m2, wind_speed_ms, base=FOSSIL_AVG_
     mix which we don't fully know. But high solar + high wind correlates with a
     cleaner grid, so we modulate down from ``base`` (the zone's annual-average
     prior when known, else the fossil default). The calm/dark case lands at the
-    prior, which slightly understates the no-renewables hours. That is a known
-    simplification of an already-estimated number, and far closer than the old
-    one-size-fits-all fossil base.
+    prior, which slightly understates the no-renewables hours, a known
+    simplification of an already-estimated number.
 
     Returns estimated gCO2eq/kWh.
     """
@@ -306,9 +305,7 @@ def _estimate_intensity_from_weather(solar_w_m2, wind_speed_ms, base=FOSSIL_AVG_
         wind_factor = 1.0  # Calm
 
     # Combine: multiplicative (both solar and wind reduce intensity)
-    estimated = round(base * solar_factor * wind_factor)
-
-    return estimated
+    return round(base * solar_factor * wind_factor)
 
 
 def check_carbon_intensity(zone, max_carbon, lat=None, lon=None):
@@ -398,4 +395,4 @@ def get_history_trend(zone, lat=None, lon=None):
 
     Returns None.
     """
-    return None
+    return

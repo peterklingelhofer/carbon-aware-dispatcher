@@ -119,4 +119,4 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return

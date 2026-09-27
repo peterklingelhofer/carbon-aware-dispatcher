@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import providers
 from providers import energinet
 
@@ -17,14 +19,14 @@ class TestCheckCarbonIntensity:
         req.return_value = {"records": [{"CO2Emission": 410.0}]}
         assert energinet.check_carbon_intensity("DK-DK2", 200) == (False, 410)
 
+    @pytest.mark.parametrize(
+        "response",
+        [None, {"records": []}],
+        ids=["no_data", "empty_records"],
+    )
     @mock.patch("providers.energinet.request")
-    def test_no_data(self, req):
-        req.return_value = None
-        assert energinet.check_carbon_intensity("DK1", 200) == (None, None)
-
-    @mock.patch("providers.energinet.request")
-    def test_empty_records(self, req):
-        req.return_value = {"records": []}
+    def test_returns_none_none_without_usable_data(self, req, response):
+        req.return_value = response
         assert energinet.check_carbon_intensity("DK1", 200) == (None, None)
 
     @mock.patch("providers.energinet.request")
@@ -36,6 +38,6 @@ class TestCheckCarbonIntensity:
 
 
 class TestRouting:
-    def test_detect_provider_routes_denmark(self):
-        for zone in ("DK-DK1", "DK-DK2", "DK1", "DK2"):
-            assert providers.detect_provider(zone) == providers.PROVIDER_ENERGINET
+    @pytest.mark.parametrize("zone", ["DK-DK1", "DK-DK2", "DK1", "DK2"])
+    def test_detect_provider_routes_denmark(self, zone):
+        assert providers.detect_provider(zone) == providers.PROVIDER_ENERGINET
