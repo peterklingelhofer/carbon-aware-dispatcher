@@ -1338,6 +1338,14 @@ class TestHandleDirtyGrid:
 
 
 class TestWriteJobSummary:
+    def test_provenance_note_follows_the_last_row(self, step_summary):
+        # A paragraph ends a markdown table, so a row written after it renders as text
+        check_grid.write_job_summary("GB", 120, True, 250, skipped=[("DE", "no token")])
+        content = step_summary.read_text()
+        assert content.index("| **Skipped Zones** |") < content.index(
+            "How this number was produced"
+        )
+
     def test_writes_summary_green(self, step_summary):
         check_grid.write_job_summary("CISO", 45, True, 200)
         content = step_summary.read_text()
@@ -3487,11 +3495,12 @@ class TestSetupWizard:
         assert result["status"] == "error"
         assert "boom" in result["error"]
 
-    def test_zone_test_entsoe_skipped_without_token(self):
+    @mock.patch("providers.energy_charts.check_carbon_intensity", return_value=(True, 120))
+    def test_zone_test_de_without_entsoe_token_uses_energy_charts(self, _mock_check):
         result = setup_wizard.test_zone("DE", entsoe_token="")
-        # DE without entsoe token should use Open-Meteo (if coordinates exist)
-        # or be skipped for ENTSO-E
-        assert result["status"] in ("ok", "skipped", "error")
+        assert result["status"] == "ok"
+        assert result["intensity"] == 120
+        assert "Energy-Charts" in result["provider"]
 
     def test_zone_test_emaps_skipped_without_token(self):
         # Use a fake zone that only Electricity Maps can handle (no coordinates)
