@@ -71,6 +71,7 @@ from providers.base import (
     DEFAULT_TIMEOUT,
     GLOBAL_AVG_INTENSITY,
     ci_secret_hint,
+    github_headers,
     last_failure_reason,
 )
 from providers.runners import (
@@ -101,13 +102,16 @@ def get_required_env(name):
     return value
 
 
-def _convert_env(name, raw, default, converter):
-    """Convert a raw env value via converter, exiting on malformed input.
+def _convert_env(name, default, converter, raw=None):
+    """Read name from the environment via converter, exiting on malformed input.
 
-    Falls back to default when raw is unset/empty so existing default
-    behavior (including policy-file fallbacks) is preserved
+    Pass an already-resolved raw string to honor policy-file precedence. Falls
+    back to default when the value is unset or empty so policy-file fallbacks
+    keep working
     """
-    if raw is None or raw == "":
+    if raw is None:
+        raw = os.environ.get(name)
+    if raw in (None, ""):
         return default
     try:
         return converter(raw)
@@ -117,23 +121,13 @@ def _convert_env(name, raw, default, converter):
 
 
 def _env_float(name, default, raw=None):
-    """Read name from the environment as a float, exiting on malformed input.
-
-    Pass an already-resolved raw string to honor policy-file precedence
-    """
-    if raw is None:
-        raw = os.environ.get(name)
-    return _convert_env(name, raw, default, float)
+    """Read name from the environment as a float, exiting on malformed input."""
+    return _convert_env(name, default, float, raw)
 
 
 def _env_int(name, default, raw=None):
-    """Read name from the environment as an int, exiting on malformed input.
-
-    Pass an already-resolved raw string to honor policy-file precedence
-    """
-    if raw is None:
-        raw = os.environ.get(name)
-    return _convert_env(name, raw, default, int)
+    """Read name from the environment as an int, exiting on malformed input."""
+    return _convert_env(name, default, int, raw)
 
 
 def _soft_float(name, default=None):
@@ -153,7 +147,7 @@ def _soft_float(name, default=None):
 
 
 # ---------------------------------------------------------------------------
-# Provider dispatch registry: maps provider IDs to modules.
+# Provider dispatch registry: maps provider IDs to modules
 # Each module must have: check_carbon_intensity(zone, max_carbon, *extra_args)
 # Optional: get_forecast(zone, max_carbon, *extra_args), get_history_trend(zone, *extra_args)
 # ---------------------------------------------------------------------------
@@ -176,27 +170,15 @@ _PROVIDER_MODULES = {
     PROVIDER_EIA: eia,
 }
 
-# Providers that need an extra auth token passed to their functions.
-# Maps (provider, function_type) -> env-key-based extra arg
-_PROVIDER_AUTH_ARGS = {
-    PROVIDER_ENTSOE: lambda keys: [keys.get("entsoe_token", "")],
-    PROVIDER_ELECTRICITY_MAPS: lambda keys: [keys.get("emaps_api_key", "")],
-    PROVIDER_EIA: lambda keys: [keys.get("eia_api_key", "")],
-}
-
 
 def _get_extra_args(provider, eia_api_key="", emaps_api_key="", entsoe_token=""):
     """Positional auth arguments a provider's functions expect, if any."""
-    resolver = _PROVIDER_AUTH_ARGS.get(provider)
-    if not resolver:
-        return []
-    return resolver(
-        {
-            "eia_api_key": eia_api_key,
-            "emaps_api_key": emaps_api_key,
-            "entsoe_token": entsoe_token,
-        }
-    )
+    tokens = {
+        PROVIDER_ENTSOE: entsoe_token,
+        PROVIDER_ELECTRICITY_MAPS: emaps_api_key,
+        PROVIDER_EIA: eia_api_key,
+    }
+    return [tokens[provider]] if provider in tokens else []
 
 
 # The actual provider that produced each zone's reading (zone -> provider id),
@@ -222,13 +204,14 @@ def check_carbon_intensity(
     actual_provider = provider
 
     # Fallback: if primary provider failed, try Open-Meteo estimation
-    if result == (None, None) and provider != PROVIDER_OPEN_METEO:
-        from providers.open_meteo import ZONE_COORDINATES
-
-        if zone in ZONE_COORDINATES:
-            print(f"  Falling back to Open-Meteo estimate for zone {zone}...")
-            result = open_meteo.check_carbon_intensity(zone, max_carbon)
-            actual_provider = PROVIDER_OPEN_METEO
+    if (
+        result == (None, None)
+        and provider != PROVIDER_OPEN_METEO
+        and zone in open_meteo.ZONE_COORDINATES
+    ):
+        print(f"  Falling back to Open-Meteo estimate for zone {zone}...")
+        result = open_meteo.check_carbon_intensity(zone, max_carbon)
+        actual_provider = PROVIDER_OPEN_METEO
 
     if result != (None, None):
         _provider_used[zone] = actual_provider
@@ -365,41 +348,40 @@ def _emit_token_warnings(zones_config, emaps_api_key, entsoe_token):
     Tells users exactly what tokens to add and which zones they enable.
     Only warns once per missing token type.
     """
-    from providers.open_meteo import ZONE_COORDINATES
-
     needs_emaps = []
     needs_entsoe = []
 
     for entry in zones_config:
         zone = entry["zone"]
         provider = detect_provider(zone, entsoe_token)
-        if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
-            if zone not in ZONE_COORDINATES:
-                needs_emaps.append(zone)
+        if (
+            provider == PROVIDER_ELECTRICITY_MAPS
+            and not emaps_api_key
+            and zone not in open_meteo.ZONE_COORDINATES
+        ):
+            needs_emaps.append(zone)
         # Also warn if ENTSO-E zones would work with a token but aren't
-        if not entsoe_token:
-            from providers.entsoe import ENTSOE_AREA_CODES
+        if not entsoe_token and zone in entsoe.ENTSOE_AREA_CODES and provider != PROVIDER_ENTSOE:
+            needs_entsoe.append(zone)
 
-            if zone in ENTSOE_AREA_CODES and provider != PROVIDER_ENTSOE:
-                needs_entsoe.append(zone)
-
-    if needs_emaps:
-        zones_str = ", ".join(needs_emaps[:5])
-        extra = f" (+{len(needs_emaps) - 5} more)" if len(needs_emaps) > 5 else ""
-        print(
-            f"::notice::Zones [{zones_str}{extra}] need electricity_maps_token. "
-            f"Get free at https://portal.electricitymaps.com/ "
-            f"and {ci_secret_hint('electricity_maps_token')}."
-        )
-
-    if needs_entsoe:
-        zones_str = ", ".join(needs_entsoe[:5])
-        extra = f" (+{len(needs_entsoe) - 5} more)" if len(needs_entsoe) > 5 else ""
-        print(
-            f"::notice::Zones [{zones_str}{extra}] would use ENTSO-E with entsoe_token. "
-            f"Get free at https://transparency.entsoe.eu/ "
-            f"and {ci_secret_hint('entsoe_token')}."
-        )
+    for zones, secret, hint in (
+        (
+            needs_emaps,
+            "electricity_maps_token",
+            "need electricity_maps_token. Get free at https://portal.electricitymaps.com/",
+        ),
+        (
+            needs_entsoe,
+            "entsoe_token",
+            "would use ENTSO-E with entsoe_token. Get free at https://transparency.entsoe.eu/",
+        ),
+    ):
+        if zones:
+            extra = f" (+{len(zones) - 5} more)" if len(zones) > 5 else ""
+            print(
+                f"::notice::Zones [{', '.join(zones[:5])}{extra}] {hint} "
+                f"and {ci_secret_hint(secret)}."
+            )
 
 
 def _cost_weight():
@@ -468,12 +450,10 @@ def rank_by_cost_carbon(candidates, cost_weight):
     norm_price = _norm(prices)
     norm_carbon = _norm(intensities)
 
-    best_i = 0
-    best_score = None
-    for i in range(len(candidates)):
-        score = cost_weight * norm_price[i] + (1 - cost_weight) * norm_carbon[i]
-        if best_score is None or score < best_score:
-            best_score, best_i = score, i
+    best_i = min(
+        range(len(candidates)),
+        key=lambda i: cost_weight * norm_price[i] + (1 - cost_weight) * norm_carbon[i],
+    )
 
     zone, intensity, label = candidates[best_i]
     set_output("selected_cost_usd_hr", str(prices[best_i]))
@@ -517,8 +497,6 @@ def check_multiple_zones(
     # Sort: free providers first, then token-requiring ones. With concurrent
     # checks the call count is unchanged (every zone is measured either way), but
     # the order keeps logs and the deterministic reduction stable
-    from providers.open_meteo import ZONE_COORDINATES
-
     def _provider_cost(entry):
         provider = detect_provider(entry["zone"], entsoe_token)
         if provider in (
@@ -556,7 +534,7 @@ def check_multiple_zones(
 
         # Fall back to Open-Meteo if no Electricity Maps token
         if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
-            if zone in ZONE_COORDINATES:
+            if zone in open_meteo.ZONE_COORDINATES:
                 provider = PROVIDER_OPEN_METEO
                 print(f"  Zone {zone}: no electricity_maps_token, using Open-Meteo estimate")
             else:
@@ -622,7 +600,7 @@ def _detect_utc_offset():
     """Detect the UTC offset from environment or system timezone.
 
     Checks TZ env var first, then falls back to system local time offset.
-    Returns a numeric offset (e.g., -8, 5.5) or None.
+    Returns a numeric offset (e.g., -8, 5.5).
     """
     import math
 
@@ -653,22 +631,17 @@ def _detect_utc_offset():
                 except (ValueError, IndexError):
                     pass
 
-    # Fall back to system local time
-    try:
-        local_offset_seconds = datetime.now().astimezone().utcoffset().total_seconds()
-        offset_hours = local_offset_seconds / 3600
-        # Round to nearest 0.5 (handles India's +5:30, etc.)
-        return math.floor(offset_hours * 2 + 0.5) / 2
-    except (AttributeError, TypeError):
-        return None
+    # Fall back to system local time, rounded to the nearest 0.5 (India's +5:30)
+    offset_hours = datetime.now().astimezone().utcoffset().total_seconds() / 3600
+    return math.floor(offset_hours * 2 + 0.5) / 2
 
 
 def expand_auto_zones(zones_str):
     """Expand auto presets into curated zone lists.
 
     Supported presets:
-      - auto:green: 15 curated zones frequently powered by clean energy
-      - auto:cleanest: ALL free-provider zones, picks the single cleanest
+      - auto:green: 11 curated zones frequently powered by clean energy
+      - auto:cleanest: 16 curated zones spanning every free provider, picks the single cleanest
       - auto:escape-coal: Routes dirty-grid users to nearest clean alternatives
 
     Sorts zones by time-of-day priority so the most likely green zones
@@ -692,25 +665,21 @@ def expand_auto_zones(zones_str):
 
     if normalized == "auto:nearest":
         offset = _detect_utc_offset()
-        if offset is not None:
-            zones = NEAREST_ZONES_BY_OFFSET.get(offset)
-            if zones:
-                print(f"auto:nearest: UTC offset {offset:+g} -> checking {', '.join(zones)}")
-                return [{"zone": z, "runner_label": None} for z in zones]
+        zones = NEAREST_ZONES_BY_OFFSET.get(offset)
+        if zones:
+            print(f"auto:nearest: UTC offset {offset:+g} -> checking {', '.join(zones)}")
+            return [{"zone": z, "runner_label": None} for z in zones]
         print("::notice::Could not detect timezone. Falling back to auto:cleanest.")
         return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
 
-    if normalized == "auto:green":
-        return sort_auto_green_by_time(list(AUTO_GREEN_ZONES), utc_hour)
-
-    if normalized == "auto:green:full":
-        return sort_auto_green_by_time(list(AUTO_GREEN_ZONES_FULL), utc_hour)
-
-    if normalized == "auto:cleanest":
-        return sort_auto_green_by_time(list(AUTO_CLEANEST_ZONES), utc_hour)
-
-    if normalized == "auto:escape-coal":
-        return sort_auto_green_by_time(list(AUTO_ESCAPE_COAL_ZONES), utc_hour)
+    presets = {
+        "auto:green": AUTO_GREEN_ZONES,
+        "auto:green:full": AUTO_GREEN_ZONES_FULL,
+        "auto:cleanest": AUTO_CLEANEST_ZONES,
+        "auto:escape-coal": AUTO_ESCAPE_COAL_ZONES,
+    }
+    if normalized in presets:
+        return sort_auto_green_by_time(list(presets[normalized]), utc_hour)
 
     # auto:escape-coal:ZONE escapes from a specific dirty zone
     if normalized.startswith("auto:escape-coal:"):
@@ -748,7 +717,6 @@ def parse_zones_input(zones_str):
       - With runner labels: "GB:runner-uk,CISO:runner-us-cal"
       - Auto preset: "auto:green"
     """
-    # Check for auto presets first
     auto = expand_auto_zones(zones_str)
     if auto is not None:
         return auto
@@ -768,12 +736,7 @@ def parse_zones_input(zones_str):
 
 def trigger_workflow(repo, workflow_id, token, ref):
     """Trigger a GitHub Actions workflow via the REST API."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
+    headers = {**github_headers(token), "X-GitHub-Api-Version": "2022-11-28"}
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_id}/dispatches"
     payload = {"ref": ref}
 
@@ -882,12 +845,7 @@ def estimate_carbon_savings(intensity, job_minutes=None):
 
     saved = max(0, round(baseline_co2 - actual_co2, 1))
 
-    # Generate shields.io badge
-    if saved > 1000:
-        label = f"{saved / 1000:.1f}kg"
-    else:
-        label = f"{saved:.0f}g"
-
+    label = f"{saved / 1000:.1f}kg" if saved > 1000 else f"{saved:.0f}g"
     color = "brightgreen" if saved > 0 else "yellow"
     badge_url = (
         f"https://img.shields.io/badge/CO2_saved-{label}_CO2-{color}"
@@ -1535,51 +1493,35 @@ def suggest_green_cron(zone):
     Returns a cron expression string (e.g., '0 18 * * *') and a human
     description, or (None, None) if no suggestion is available.
     """
-    from providers import (
-        AUTO_CLEANEST_ZONES,
-        AUTO_GREEN_ZONES,
-        AUTO_GREEN_ZONES_FULL,
+    zone_meta = next(
+        (
+            entry
+            for zone_list in (AUTO_GREEN_ZONES, AUTO_GREEN_ZONES_FULL, AUTO_CLEANEST_ZONES)
+            for entry in zone_list
+            if entry["zone"] == zone
+        ),
+        None,
     )
-
-    # Find zone metadata from our curated lists
-    zone_meta = None
-    for zone_list in (AUTO_GREEN_ZONES, AUTO_GREEN_ZONES_FULL, AUTO_CLEANEST_ZONES):
-        for entry in zone_list:
-            if entry["zone"] == zone:
-                zone_meta = entry
-                break
-        if zone_meta:
-            break
-
     if not zone_meta:
         return None, None
-
-    energy_type = zone_meta.get("type", "unknown")
-    utc_offset = zone_meta.get("utc_offset", 0)
 
     # NOTE: these time-of-day heuristics are rough generalizations and the
     # suggestion is advisory only. Real renewable output varies by region,
     # season, and weather (e.g. wind tends to be stronger at night in many
-    # regions). Treat the cron as a starting point and tune it from there
-    if energy_type == "solar":
-        # Best during local noon (12pm local = 12 - offset UTC)
-        best_utc_hour = int((12 - utc_offset) % 24)
-        cron = f"0 {best_utc_hour} * * *"
-        desc = f"daily at {best_utc_hour}:00 UTC (solar peak ~12pm local in {zone})"
-    elif energy_type == "wind":
-        # Wind is stronger at night, so target 2am local
-        best_utc_hour = int((2 - utc_offset) % 24)
-        cron = f"0 {best_utc_hour} * * *"
-        desc = f"daily at {best_utc_hour}:00 UTC (wind peak ~2am local in {zone})"
-    elif energy_type in ("hydro", "nuclear"):
-        # Always-on, but off-peak demand = higher renewable share, so target 3am local
-        best_utc_hour = int((3 - utc_offset) % 24)
-        cron = f"0 {best_utc_hour} * * *"
-        desc = f"daily at {best_utc_hour}:00 UTC (off-peak ~3am local in {zone})"
-    else:
+    # regions). Treat the cron as a starting point and tune it from there.
+    # Hydro and nuclear run flat, so off-peak demand is when their share peaks
+    local_peaks = {
+        "solar": (12, "solar peak ~12pm local"),
+        "wind": (2, "wind peak ~2am local"),
+        "hydro": (3, "off-peak ~3am local"),
+        "nuclear": (3, "off-peak ~3am local"),
+    }
+    peak = local_peaks.get(zone_meta.get("type", "unknown"))
+    if peak is None:
         return None, None
-
-    return cron, desc
+    local_hour, why = peak
+    best_utc_hour = int((local_hour - zone_meta.get("utc_offset", 0)) % 24)
+    return f"0 {best_utc_hour} * * *", f"daily at {best_utc_hour}:00 UTC ({why} in {zone})"
 
 
 def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_run_id):
@@ -1589,7 +1531,6 @@ def set_runner_outputs(zone, user_label, runner_provider, runner_spec, github_ru
     runner label. Otherwise uses the user-provided label from grid_zones.
     Always sets cloud regions for all three major providers.
     """
-    # Always output cloud regions for all providers
     cloud_region = get_cloud_region(zone)
     set_output("cloud_region", cloud_region)
     set_output("gcp_region", get_gcp_region(zone))
@@ -1733,15 +1674,10 @@ def emit_run_signals(zone, intensity, is_green, max_carbon, co2_saved=0, dry_run
         set_output("data_confidence", confidence)
 
     # Record the run on every path (including dirty-grid deferrals) so the ledger,
-    # budget, and Green SLA counts include every run.
-    # Idempotent: a no-op once the green/report path has already recorded. A
+    # budget, and Green SLA counts include every run. Idempotent: a no-op once the
+    # green/report path has already recorded or when no ledger is configured. A
     # deferred dirty run emits nothing (build skipped), so emitted stays 0
-    if (
-        os.environ.get("LEDGER", "")
-        or os.environ.get("MONTHLY_BUDGET_GRAMS", "")
-        or os.environ.get("GREEN_SLA_TARGET", "")
-    ):
-        record_lifetime_savings(0, 0, zone=zone, intensity=intensity, is_green=is_green)
+    record_lifetime_savings(0, 0, zone=zone, intensity=intensity, is_green=is_green)
 
     emit_marginal_outputs()
     emit_status_badge(zone, intensity, tier)
@@ -1761,10 +1697,9 @@ def _decision_confidence(record, forecast_heuristic=False):
     """How much weight this run's verdict can bear, in one phrase.
 
     A report-only run is meant to build confidence before enforcement is turned
-    on, so it should be explicit about how much confidence is warranted. Three
-    things degrade it: an accounting method that is itself an estimate, a
-    forecast that is a time-of-day heuristic rather than a published one, and a
-    marginal estimate whose regression explained little of the variance.
+    on, so it should be explicit about how much confidence is warranted. Two
+    things degrade it: an accounting method that is itself an estimate, and a
+    forecast that is a time-of-day heuristic rather than a published one.
     """
     if record is None:
         return "no reading, nothing to judge"
@@ -1776,8 +1711,6 @@ def _decision_confidence(record, forecast_heuristic=False):
             "next-green-window is a time-of-day curve that docs/VALIDATION.md "
             "measures as worse than persistence under 6 hours"
         )
-    if _marginal_summary and _marginal_summary.get("r_squared") is not None:
-        parts.append(f"marginal r2 {_marginal_summary['r_squared']}")
     return ", ".join(parts)
 
 
@@ -1802,8 +1735,8 @@ def write_job_summary(
     more zones were checked, an ASCII routing comparison panel is appended.
     dry_run: when True, the status reflects report-only mode (the build was
     never gated) and states what the action *would* have done.
-    forecast_heuristic: when True, the forecast is a time-of-day estimate (not a
-    measured day-ahead forecast), so the row is labeled accordingly.
+    forecast_heuristic: when True, the forecast comes from a time-of-day curve
+    rather than a published day-ahead forecast, so the row is labeled an estimate.
     """
     # Emit all run signals/side effects (tier, budget, marginal, badge, PR
     # comment, notification) before any early return, so they fire even when
@@ -1988,7 +1921,6 @@ def handle_dirty_grid(
             set_output("forecast_green_at", "none_in_forecast")
             print("\n  No green window found in forecast horizon.")
 
-    # Suggest optimal cron schedule
     cron, cron_desc = suggest_green_cron(zone)
     if cron:
         set_output("suggested_cron", cron)
@@ -2027,14 +1959,14 @@ def smart_wait_single(
             zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
         )
 
-        if forecast_at and forecast_at not in (None, "none_in_forecast"):
+        if forecast_at and forecast_at != "none_in_forecast":
             try:
                 ft = datetime.fromisoformat(forecast_at.replace("Z", "+00:00"))
                 wait_until = (ft - datetime.now(timezone.utc)).total_seconds()
                 if wait_until > remaining:
                     print(f"  Forecast green at {forecast_at} but exceeds max wait.")
                     break
-                if 0 < wait_until:
+                if wait_until > 0:
                     # Wake 30s before forecast, minimum 60s sleep
                     sleep_seconds = max(min(wait_until - 30, remaining), 60)
                     print(
@@ -2053,7 +1985,6 @@ def smart_wait_single(
         )
         _time.sleep(sleep_seconds)
 
-        # Re-check
         is_green, intensity = check_carbon_intensity(
             zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
         )
@@ -2063,7 +1994,6 @@ def smart_wait_single(
             return True, intensity, waited
 
     waited = (_time.time() - start) / 60
-    # Final check
     is_green, intensity = check_carbon_intensity(
         zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
     )
@@ -2186,19 +2116,15 @@ def queue_find_optimal_window(
 
         # Fall back to Open-Meteo if needed
         if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
-            from providers.open_meteo import ZONE_COORDINATES
-
-            if zone in ZONE_COORDINATES:
-                provider = PROVIDER_OPEN_METEO
-            else:
+            if zone not in open_meteo.ZONE_COORDINATES:
                 continue
+            provider = PROVIDER_OPEN_METEO
 
         forecast_at, forecast_intensity = get_forecast(
             zone, max_carbon, provider, gridstatus_api_key, emaps_api_key, entsoe_token, eia_api_key
         )
 
         if forecast_at and forecast_at != "none_in_forecast" and forecast_intensity is not None:
-            # Parse forecast time and check if within deadline
             try:
                 ft = datetime.fromisoformat(forecast_at.replace("Z", "+00:00"))
                 hours_away = (ft - datetime.now(timezone.utc)).total_seconds() / 3600
@@ -2270,24 +2196,28 @@ def _enabled_features(env):
 
 def render_doctor_report(results, features):
     """Build the doctor diagnostic markdown (pure)."""
-    lines = ["## Carbon-Aware Dispatcher: doctor\n", "### Zone connectivity", ""]
-    lines.append("| Zone | Provider | Token | Status | Detail |")
-    lines.append("|---|---|---|---|---|")
-    for r in results:
-        lines.append(
-            f"| `{r['zone']}` | {r['provider']} | {r['token']} | {r['status']} | {r['detail']} |"
-        )
+    lines = [
+        "## Carbon-Aware Dispatcher: doctor\n",
+        "### Zone connectivity",
+        "",
+        "| Zone | Provider | Token | Status | Detail |",
+        "|---|---|---|---|---|",
+    ]
+    lines.extend(
+        f"| `{r['zone']}` | {r['provider']} | {r['token']} | {r['status']} | {r['detail']} |"
+        for r in results
+    )
     lines += ["", "### Optional features", "", "| Feature | Status |", "|---|---|"]
-    for name, status in features:
-        lines.append(f"| {name} | {status} |")
+    lines.extend(f"| {name} | {status} |" for name, status in features)
     return lines
 
 
 def resolve_cleanest_hour(zone, max_carbon, eia="", gridstatus="", emaps="", entsoe=""):
     """Find the grid's cleanest UTC hour for a zone, best signal first.
 
-    Returns (hour, source) using the historical/accumulated curve, then the live
-    forecast, then the per-zone heuristic, or (None, None) when nothing is available.
+    Returns (hour, source, profile) using the historical/accumulated curve, then
+    the live forecast, then the per-zone heuristic, or (None, None, {}) when
+    nothing is available. profile is the hourly curve when history supplied it.
     """
     import carbon_curve
 
@@ -2321,7 +2251,7 @@ def run_suggest():
     zones_str = os.environ.get("GRID_ZONES", "") or os.environ.get("GRID_ZONE", "") or "auto:green"
     zones = parse_zones_input(zones_str)
     zone = zones[0]["zone"] if zones else "GB"
-    max_carbon = _env_float("MAX_CARBON", 250.0)
+    max_carbon = _env_float("MAX_CARBON", float(DEFAULT_MAX_CARBON))
     hour, source, profile = resolve_cleanest_hour(
         zone,
         max_carbon,
@@ -2345,7 +2275,7 @@ def run_suggest():
 
 def run_doctor():
     """Diagnostic mode: probe configured zones and report config health."""
-    max_carbon = _env_float("MAX_CARBON", 250.0)
+    max_carbon = _env_float("MAX_CARBON", float(DEFAULT_MAX_CARBON))
     eia_api_key = os.environ.get("EIA_API_KEY", "")
     emaps_api_key = os.environ.get("ELECTRICITY_MAPS_TOKEN", "")
     entsoe_token = os.environ.get("ENTSOE_TOKEN", "")
@@ -2381,11 +2311,9 @@ def main():
 
         digest.run(os.environ)
         return
-    # Doctor mode: probe configured zones and report config health, then exit
     if mode == "doctor":
         run_doctor()
         return
-    # Suggest mode: open a PR shifting a workflow's cron to the cleanest hour
     if mode == "suggest":
         run_suggest()
         return
@@ -2437,14 +2365,11 @@ def main():
     )
 
     # Parse zone(s): action inputs override policy
-    grid_zones_str = os.environ.get("GRID_ZONES", "")
-    grid_zone_str = os.environ.get("GRID_ZONE", "")
+    zones_str = os.environ.get("GRID_ZONES", "") or os.environ.get("GRID_ZONE", "")
     policy_zones = policy.get("grid_zones", "") or policy.get("grid_zone", "")
 
-    if grid_zones_str:
-        zones_config = parse_zones_input(grid_zones_str)
-    elif grid_zone_str:
-        zones_config = parse_zones_input(grid_zone_str)
+    if zones_str:
+        zones_config = parse_zones_input(zones_str)
     elif policy_zones:
         zones_config = parse_zones_input(policy_zones)
         print(f"Using zones from carbon policy: {policy_zones}")
@@ -2457,13 +2382,11 @@ def main():
         print("::error::No valid zones provided.")
         sys.exit(EXIT_FAILURE)
 
-    # Show auto preset expansion
-    raw_input = (grid_zones_str or grid_zone_str).strip().lower()
+    raw_input = zones_str.strip().lower()
     if raw_input.startswith("auto:"):
         zone_names = [z["zone"] for z in zones_config]
         print(f"{raw_input} expanded to {len(zones_config)} zones: {', '.join(zone_names)}")
 
-    # Emit upfront warnings about missing tokens
     _emit_token_warnings(zones_config, emaps_api_key, entsoe_token)
 
     print(f"Carbon intensity threshold: {max_carbon} gCO2eq/kWh")
@@ -2545,7 +2468,6 @@ def main():
             )
             print("  Schedule your workflow to run at that time for green energy.")
 
-            # If max_wait is set and the window is within range, wait
             if max_wait > 0:
                 try:
                     ft = datetime.fromisoformat(opt_time.replace("Z", "+00:00"))
@@ -2553,7 +2475,6 @@ def main():
                     if 0 < wait_minutes <= max_wait:
                         print(f"  Waiting {wait_minutes:.0f}m for optimal window...")
                         _time.sleep(wait_minutes * 60)
-                        # Re-check
                         provider = detect_provider(opt_zone, entsoe_token)
                         is_green, intensity = check_carbon_intensity(
                             opt_zone, max_carbon, provider, eia_api_key, emaps_api_key, entsoe_token
@@ -2623,7 +2544,6 @@ def main():
 
         waited_minutes = 0
 
-        # Smart wait if dirty and max_wait configured
         if not is_green and max_wait > 0:
             is_green, intensity, waited_minutes = smart_wait_single(
                 entry["zone"],
@@ -2690,7 +2610,6 @@ def main():
 
         waited_minutes = 0
 
-        # Smart wait if no green zone and max_wait configured
         if best_zone is None and max_wait > 0:
             best_zone, best_intensity, best_label, waited_minutes, skipped = smart_wait_multi(
                 zones_config, max_carbon, max_wait, eia_api_key, emaps_api_key, entsoe_token
