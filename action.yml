@@ -337,7 +337,9 @@ runs:
     - name: Check grid and dispatch
       id: grid-check
       shell: bash
-      run: uv run --with requests==2.34.* --python 3.11 python ${{ github.action_path }}/check_grid.py
+      # --no-project keeps uv from syncing the calling repo's own pyproject.toml
+      # (its Python requirement or dependencies would otherwise fail this step)
+      run: uv run --no-project --with requests==2.34.* --python 3.11 python "${{ github.action_path }}/check_grid.py"
       env:
         GRID_ZONE: ${{ inputs.grid_zone }}
         GRID_ZONES: ${{ inputs.grid_zones }}
