@@ -452,3 +452,10 @@ class TestGistBackend:
         summary = ledger.record_savings("gist:abc", "tok", 75, "2026-06-14")
         assert summary["total_grams"] == 75
         assert summary["total_runs"] == 1
+
+    @mock.patch("ledger.base.request")
+    def test_read_failure_skips_instead_of_overwriting(self, mock_request):
+        # A failed GET must not be followed by a PATCH that replaces the history
+        mock_request.return_value = None
+        assert ledger.record_savings("gist:abc", "tok", 100, "2026-06-14") is None
+        assert mock_request.call_count == 1
