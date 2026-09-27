@@ -11,7 +11,7 @@ installed. The sensor then subclasses object and exposes poke() for testing.
 
 from integrations.gate import grid_is_clean
 
-__all__ = ["grid_is_clean", "CarbonAwareSensor"]
+__all__ = ["CarbonAwareSensor", "grid_is_clean"]
 
 
 try:  # pragma: no cover - import shim depends on the installed Airflow version

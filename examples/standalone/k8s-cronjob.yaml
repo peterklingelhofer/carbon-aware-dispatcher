@@ -4,7 +4,7 @@
 # An initContainer runs `carbon-aware wait-for-green`. If it exits non-zero
 # (no green window within the deadline) the Pod fails and the next schedule
 # tries again. Carbon-aware scheduling has the most impact on large,
-# deferrable batch/ML/ETL workloads, which dwarf a CI job.
+# deferrable batch/ML/ETL workloads, which dwarf a CI job
 #
 # Build/push the image from the repo's Dockerfile first:
 #   docker build -t your-registry/carbon-aware:latest .

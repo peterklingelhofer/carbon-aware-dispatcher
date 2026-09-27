@@ -23,26 +23,6 @@ import check_grid
 _MEASURE_CEILING = 100_000
 
 
-def _zone_intensities(zones, tokens):
-    """Measure each unique zone once and return {zone: intensity}."""
-    unique = sorted(set(zones))
-    measured = []
-    check_grid.check_multiple_zones(
-        [{"zone": z} for z in unique],
-        _MEASURE_CEILING,
-        tokens.get("eia", ""),
-        tokens.get("emaps", ""),
-        tokens.get("entsoe", ""),
-        collect=measured,
-    )
-    by_zone = {}
-    for zone, intensity in measured:
-        # keep the cleanest reading if a zone somehow reports more than once
-        if zone not in by_zone or intensity < by_zone[zone]:
-            by_zone[zone] = intensity
-    return by_zone
-
-
 def rank_endpoints(candidates, tokens=None):
     """Rank endpoints by their zone's live carbon intensity, cleanest first.
 
@@ -51,7 +31,17 @@ def rank_endpoints(candidates, tokens=None):
     last so a usable endpoint is always preferred.
     """
     tokens = tokens or {}
-    by_zone = _zone_intensities([c["zone"] for c in candidates], tokens)
+    measured = []
+    # Each distinct zone is measured once and shared by every endpoint sitting in it
+    check_grid.check_multiple_zones(
+        [{"zone": z} for z in sorted({c["zone"] for c in candidates})],
+        _MEASURE_CEILING,
+        tokens.get("eia", ""),
+        tokens.get("emaps", ""),
+        tokens.get("entsoe", ""),
+        collect=measured,
+    )
+    by_zone = dict(measured)
     ranked = [dict(c, intensity=by_zone.get(c["zone"])) for c in candidates]
     ranked.sort(key=lambda c: (c["intensity"] is None, c["intensity"] or 0))
     return ranked
@@ -59,7 +49,5 @@ def rank_endpoints(candidates, tokens=None):
 
 def cleanest_endpoint(candidates, tokens=None):
     """Return the single cleanest endpoint with a live reading, or None."""
-    for endpoint in rank_endpoints(candidates, tokens):
-        if endpoint.get("intensity") is not None:
-            return endpoint
-    return None
+    ranked = rank_endpoints(candidates, tokens)
+    return next((e for e in ranked if e["intensity"] is not None), None)

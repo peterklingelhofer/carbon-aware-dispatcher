@@ -38,6 +38,15 @@ def wait_until_clean(
             return True
         if waited >= max_wait_s:
             return False
-        nap = min(poll_s, max_wait_s - waited) or poll_s
+        nap = min(poll_s, max_wait_s - waited)
         sleep(nap)
         waited += nap
+
+
+def carbon_gate(zones="auto:green", max_carbon=200.0, max_wait_s=6 * 3600, poll_s=900, tokens=None):
+    """Block until the grid is clean (or the max wait elapses). Returns True if clean.
+
+    The same wait without the test hooks, so Prefect and Dagster can wrap it as a
+    task or op whose parameters are all user-facing.
+    """
+    return wait_until_clean(zones, max_carbon, max_wait_s, poll_s, tokens=tokens)

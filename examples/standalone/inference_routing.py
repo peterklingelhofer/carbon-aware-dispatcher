@@ -1,8 +1,8 @@
 """Carbon-aware inference routing: send each async request to the cleanest region.
 
 For latency-tolerant inference (batch, async, background), route to the endpoint
-whose grid is cleanest right now. Re-rank periodically (intensity shifts hourly),
-not per request, to avoid hammering the grid APIs.
+whose grid is cleanest right now. Re-rank periodically (intensity shifts hourly)
+and reuse the ranking between requests, so the grid APIs aren't hammered.
 
     pip install carbon-aware-dispatcher
 """

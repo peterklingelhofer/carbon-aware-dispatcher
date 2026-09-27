@@ -4,7 +4,7 @@
 # scaled job only proceeds when the grid is clean. The initContainer runs
 # `carbon-aware wait-for-green` and blocks the worker container until a green
 # window opens (or the deadline passes, failing the job so KEDA retries). This
-# pairs event-driven scaling with clean-energy timing for deferrable work.
+# pairs event-driven scaling with clean-energy timing for deferrable work
 #
 # Build/push the image from the repo's Dockerfile first:
 #   docker build -t your-registry/carbon-aware:latest .

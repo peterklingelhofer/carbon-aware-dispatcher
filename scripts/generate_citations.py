@@ -50,9 +50,13 @@ VERIFICATION_LABEL = {
 LEDGER_HEADING = "## Unsourced and weakly-sourced claims"
 
 
+def _read(path):
+    with open(path) as fh:
+        return fh.read()
+
+
 def load():
-    with open(SOURCE) as fh:
-        entries = json.load(fh)
+    entries = json.loads(_read(SOURCE))
     if not isinstance(entries, list):
         raise SystemExit("CITATIONS.csl.json must be a JSON array")
     return entries
@@ -166,8 +170,7 @@ def _table(heading, counted, total=None):
 
 def write_markdown(entries):
     """Regenerate the body and counts, preserving the preamble and gaps ledger."""
-    with open(MARKDOWN) as fh:
-        previous = fh.read()
+    previous = _read(MARKDOWN)
     first_heading = f"\n## {GROUPS[0][1]}"
     if first_heading not in previous:
         raise SystemExit(f"docs/CITATIONS.md is missing the '{GROUPS[0][1]}' heading")
@@ -217,7 +220,7 @@ def write_markdown(entries):
                 [f"## {heading}", "", f"{len(group)} sources.", ""] + [_render(e) for e in group]
             )
         )
-    rendered = re.sub(r"\n{3,}", "\n\n", "\n".join([preamble] + body + [ledger]))
+    rendered = re.sub(r"\n{3,}", "\n\n", "\n".join([preamble, *body, ledger]))
     with open(MARKDOWN, "w") as fh:
         fh.write(rendered)
 
@@ -235,10 +238,10 @@ def main(argv=None):
     ids = validate(entries)
 
     if args.check:
-        before = {path: open(path).read() for path in (TYPES, MARKDOWN) if os.path.exists(path)}
+        before = {path: _read(path) for path in (TYPES, MARKDOWN) if os.path.exists(path)}
         write_types(ids)
         write_markdown(entries)
-        stale = [path for path, text in before.items() if open(path).read() != text]
+        stale = [path for path, text in before.items() if _read(path) != text]
         if stale or len(before) < 2:
             names = ", ".join(os.path.relpath(p, ROOT) for p in stale) or "generated files"
             print(

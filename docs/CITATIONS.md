@@ -27,9 +27,9 @@ the finding is true, and nothing about whether this project applied it correctly
 | `unverified` | Neither a resolvable DOI nor a successfully fetched authoritative URL. Bibliographic details are inherited from secondary citation and may be wrong. |
 
 A `crossref-verified` record can still carry a serious caveat. Verification confirms
-the *citation*. Whether the *claim* holds is a separate question. Several entries are verified as references while
-the number this project takes from them was never checked against the full text,
-and each caveat notes it.
+the *citation*, and whether the *claim* holds is a separate question. Several entries
+are verified as references while the number this project takes from them was never
+checked against the full text, and each caveat notes it.
 
 ### Access level
 
