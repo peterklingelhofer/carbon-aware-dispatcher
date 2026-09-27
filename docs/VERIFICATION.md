@@ -183,13 +183,14 @@ They previously published different numbers for the same physical quantity while
 both citing IPCC AR5.
 
 `providers/factor_corpus.py` loads it strictly. Each record must either resolve
-its `citation` against `docs/CITATIONS.csl.json` or carry an `assumption` string
-and evidence tier E. Anything else raises at import rather than degrading
-quietly, because a wrong factor table makes every intensity this tool reports
-wrong. Storage records (battery, pumped storage) carry a null value by design and
-are excluded from the mix rather than priced at zero.
-`tests/test_provenance.py` re-asserts every one of those invariants independently
-of the loader, so the contract survives the loader being rewritten.
+its `citation` against the citekeys generated from `docs/CITATIONS.csl.json` or
+carry an `assumption` string and evidence tier E. Anything else raises at import
+rather than degrading quietly, because a wrong factor table makes every
+intensity this tool reports wrong. Storage records (battery, pumped storage)
+carry a null value by design and are excluded from the mix rather than priced at
+zero. `tests/test_provenance.py` re-asserts every one of those invariants
+independently of the loader, so the contract survives the loader being
+rewritten.
 
 Two of this project's values moved in the process, both towards the published AR5
 median the label always claimed: `solar` 45 to 48 and `wind` 12 to 11, as
