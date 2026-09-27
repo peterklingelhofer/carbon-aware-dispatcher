@@ -15,33 +15,6 @@ from providers.base import compute_trend, green_result, request
 
 API = "https://api.energy-charts.info/co2eq"
 
-# Countries Energy-Charts covers, excluding those with a dedicated provider here
-# (FR -> RTE, DK -> Energinet, GB -> UK, IE -> EirGrid)
-ENERGY_CHARTS_ZONES = {
-    "DE",
-    "ES",
-    "IT",
-    "NL",
-    "BE",
-    "AT",
-    "CH",
-    "PL",
-    "PT",
-    "CZ",
-    "FI",
-    "GR",
-    "HU",
-    "RO",
-    "SK",
-    "SI",
-    "BG",
-    "HR",
-    "EE",
-    "LV",
-    "LT",
-    "LU",
-}
-
 
 def _fetch(zone):
     return request(f"{API}?country={zone.lower()}", parse="json") or {}
@@ -70,7 +43,7 @@ def get_forecast(zone, max_carbon):
     times = data.get("unix_seconds") or []
     forecast = data.get("co2eq_forecast") or []
     now = datetime.now(timezone.utc).timestamp()
-    for ts, value in zip(times, forecast):
+    for ts, value in zip(times, forecast, strict=False):
         if value is None or ts < now:
             continue
         if round(float(value)) <= max_carbon:

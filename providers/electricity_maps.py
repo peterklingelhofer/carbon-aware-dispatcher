@@ -3,10 +3,9 @@
 Direct consumption-based carbon intensity in gCO2eq/kWh. Electricity Maps covers
 200+ zones, but the FREE tier is limited to a SINGLE zone, which you choose when
 registering (plus a 50 requests/hour cap). So this provider only works for that
-one registered zone unless you have a paid plan. It is not a global catch-all on
-the free tier. Use the free grid-operator providers for broad coverage and
-register the one Electricity Maps zone you most need (e.g. a region with no free
-feed, such as JP-TK or SG).
+one registered zone unless you have a paid plan. Use the free grid-operator
+providers for broad coverage and register the one Electricity Maps zone you most
+need (e.g. a region with no free feed, such as JP-TK or SG).
 
 Register at https://portal.electricitymaps.com/. Paid plans (200+ zones) are
 sold per country/year, so they cost far more than a flat API key.

@@ -47,7 +47,8 @@ ENERGINET_ZONE_IDS = {"DK-DK1", "DK-DK2", "DK1", "DK2"}
 # France (free, no API key): RTE eco2mix national CO2 intensity via ODRE
 RTE_ZONE_IDS = {"FR"}
 
-# Europe (free, no API key): Fraunhofer ISE Energy-Charts co2eq, keyless EU coverage
+# Europe (free, no API key): Fraunhofer ISE Energy-Charts co2eq, keyless EU coverage.
+# Countries with their own keyless provider (FR, DK, GB, IE) route there instead
 ENERGY_CHARTS_ZONE_IDS = {
     "DE",
     "ES",
@@ -237,16 +238,8 @@ AUTO_GREEN_ZONES = [
 # Requires electricity_maps_token or entsoe_token for non-free zones.
 # Use this when you have API tokens configured for maximum global coverage
 AUTO_GREEN_ZONES_FULL = [
-    # All free zones from auto:green
-    {"zone": "CISO", "runner_label": "us-west", "utc_offset": -8, "type": "solar"},
-    {"zone": "BPAT", "runner_label": "us-northwest", "utc_offset": -8, "type": "hydro"},
-    {"zone": "SCL", "runner_label": "us-seattle", "utc_offset": -8, "type": "hydro"},
-    {"zone": "GB-16", "runner_label": "uk-scotland", "utc_offset": 0, "type": "wind"},
-    {"zone": "GB", "runner_label": "uk-national", "utc_offset": 0, "type": "wind"},
-    {"zone": "AU-TAS", "runner_label": "oc-tasmania", "utc_offset": 10, "type": "hydro"},
-    {"zone": "AU-SA", "runner_label": "au-south", "utc_offset": 9.5, "type": "wind"},
-    {"zone": "BR-S", "runner_label": "br-south", "utc_offset": -3, "type": "hydro"},
-    {"zone": "BR-NE", "runner_label": "br-northeast", "utc_offset": -3, "type": "wind"},
+    # The free zones from auto:green, except Canada: CA-QC is listed with the Americas below
+    *(z for z in AUTO_GREEN_ZONES if z["zone"] not in ("CA-QC", "CA-ON")),
     # Europe (ENTSO-E or Electricity Maps, token needed)
     {"zone": "NO-NO1", "runner_label": "eu-norway", "utc_offset": 1, "type": "hydro"},
     {"zone": "SE-SE2", "runner_label": "eu-sweden", "utc_offset": 1, "type": "hydro"},
@@ -262,9 +255,9 @@ AUTO_GREEN_ZONES_FULL = [
     {"zone": "NZ-NZN", "runner_label": "oc-newzealand", "utc_offset": 12, "type": "hydro"},
 ]
 
-# auto:cleanest: ALL free-provider zones for zero-config global routing.
-# Checks a smart subset of zones from every free provider (no API keys needed).
-# Picks the zone with the lowest carbon intensity worldwide
+# auto:cleanest: a curated subset of 16 free-provider zones (no API keys needed) for
+# zero-config routing, see docs/VERIFICATION.md section 2.4. The dispatcher picks
+# the one with the lowest carbon intensity
 AUTO_CLEANEST_ZONES = [
     # US (EIA, no key needed): most likely clean regions
     {"zone": "CISO", "runner_label": None, "utc_offset": -8, "type": "solar"},
@@ -487,13 +480,13 @@ def _time_priority_score(zone_entry, utc_hour):
 
     if energy_type == "hydro" or energy_type == "nuclear":
         # Always-on, slight preference for off-peak (lower demand = higher % renewable)
-        if 22 <= local_hour or local_hour <= 6:
+        if local_hour >= 22 or local_hour <= 6:
             return 85  # Off-peak
         return 80  # On-peak (still very green)
 
     if energy_type == "wind":
         # Wind is statistically stronger at night in many regions
-        if 20 <= local_hour or local_hour <= 8:
+        if local_hour >= 20 or local_hour <= 8:
             return 75  # Night wind
         return 55  # Day (less reliable)
 

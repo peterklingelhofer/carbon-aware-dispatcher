@@ -21,7 +21,6 @@ Docker image, where ``docs/`` does not.
 
 import json
 import os
-from typing import Optional
 
 from citations_generated import CITATION_IDS
 
@@ -106,17 +105,3 @@ for _key, _record in _RECORDS.items():
     if _record.get("storage") or _record.get("value") is None:
         continue
     FUEL_FACTORS[LOCAL_NAMES.get(_key, _key)] = _record["value"]
-
-# Keys whose value is an assumption rather than a citation, so a caller can flag
-# a reported number that leans on one
-ASSUMED_FUELS = frozenset(
-    LOCAL_NAMES.get(k, k) for k, r in _RECORDS.items() if r.get("citation") is None
-)
-
-
-def citation_for(fuel: str) -> Optional[str]:
-    """Citekey backing a fuel's factor, or None when the factor is an assumption."""
-    for key, record in _RECORDS.items():
-        if LOCAL_NAMES.get(key, key) == fuel:
-            return record.get("citation")
-    return None

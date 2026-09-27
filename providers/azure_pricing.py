@@ -2,9 +2,9 @@
 
 Uses the public Azure Retail Prices API (no auth, no key) to fetch a
 representative on-demand Linux VM hourly price per region, so the dispatcher can
-pick a zone that is both clean and cheap. The price is a *relative* signal for
-ranking regions against each other. It isn't a billing quote. Results are memoized
-per region for the life of the process.
+pick a zone that is both clean and cheap. The price is only a relative signal for
+ranking regions against each other. Results are memoized per region for the life
+of the process.
 """
 
 from urllib.parse import quote

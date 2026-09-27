@@ -12,7 +12,7 @@ other way round, at load time in providers/factor_corpus.py, because its keys
 come from JSON that mypy never sees.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 from citations_generated import CitationId
 from providers.factor_corpus import CORPUS_VERSION
@@ -106,7 +106,7 @@ def method_for(provider: str, consumption_traced: bool = False) -> str:
 def provenance(
     provider: str,
     consumption_traced: bool = False,
-    confidence: Optional[float] = None,
+    confidence: float | None = None,
 ) -> dict:
     """The full provenance record for one reading.
 

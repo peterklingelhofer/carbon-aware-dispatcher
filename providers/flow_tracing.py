@@ -161,7 +161,7 @@ def compute_consumption_intensities(entsoe_token):
         ea, eb = ENTSOE_AREA_CODES[a], ENTSOE_AREA_CODES[b]
         b_to_a = _flow(ea, eb, period_start, period_end, entsoe_token)  # b -> a
         a_to_b = _flow(eb, ea, period_start, period_end, entsoe_token)  # a -> b
-        net = (b_to_a or 0.0) - (a_to_b or 0.0)  # net b -> a
+        net = b_to_a - a_to_b  # net b -> a
         if net > 0:
             flows[(b, a)] = net
         elif net < 0:

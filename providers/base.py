@@ -6,38 +6,18 @@ import os
 import tempfile
 import threading
 import time
-from typing import Any, Optional, Protocol
+from typing import Any
 
 import requests
 
-from providers.factor_corpus import (  # noqa: E402
-    FUEL_FACTORS,
-)
+from providers.factor_corpus import FUEL_FACTORS
 
 # Return contract shared by every provider module
-IntensityResult = tuple[Optional[bool], Optional[int]]
-ForecastResult = tuple[Optional[str], Optional[int]]
-
-
-class CarbonProvider(Protocol):
-    """Structural interface every provider module satisfies.
-
-    Concrete providers may accept extra credential arguments (api key or
-    token) after the first two positional arguments
-    """
-
-    def check_carbon_intensity(
-        self, zone: str, max_carbon: float, *args: Any
-    ) -> IntensityResult: ...
-
-    def get_forecast(self, zone: str, max_carbon: float, *args: Any) -> ForecastResult: ...
-
-    def get_history_trend(self, zone: str, *args: Any) -> Optional[str]: ...
-
+IntensityResult = tuple[bool | None, int | None]
 
 # Defaults
-# 10s is ample for these small JSON grid endpoints. The old 30s meant a single
-# hung host could stall a check for ~90s (3 attempts) of pure runner-on time
+# 10s is ample for these small JSON grid endpoints. Anything longer lets a single
+# hung host stall a check for three attempts' worth of pure runner-on time
 DEFAULT_TIMEOUT = 10
 MAX_RETRIES = 2
 RETRY_DELAY = 5
@@ -117,8 +97,8 @@ FOSSIL_AVG_INTENSITY = 550
 # it shares a system boundary with FUEL_FACTORS above. The IEA's better-known
 # number (435 gCO2/kWh for 2025) is DIRECT emissions at the point of generation,
 # scoring renewables and nuclear at exactly zero, so benchmarking lifecycle
-# intensities against it would compare two different quantities. Replaces an
-# earlier uncited 450. Derivation in docs/VERIFICATION.md section 4
+# intensities against it would compare two different quantities. Derivation in
+# docs/VERIFICATION.md section 4
 GLOBAL_AVG_INTENSITY = 458
 
 # Power draw of one CI job, in kW: the share of server power a runner's vCPU
@@ -326,7 +306,6 @@ def request(
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            # Dispatch to the verb-specific helper on the shared pooled session
             if verb == "POST":
                 response = _SESSION.post(url, headers=headers, json=json_body, timeout=timeout)
             elif verb == "PATCH":
@@ -406,7 +385,7 @@ def request(
     return None
 
 
-def api_request(url: str, api_key: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT) -> Any:
+def api_request(url: str, api_key: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> Any:
     """Make a GET request with retries.
 
     Thin wrapper over request(). Sets the auth-token header when api_key is
@@ -431,7 +410,7 @@ def api_request_with_header(
     )
 
 
-def compute_trend(points: list[float]) -> Optional[str]:
+def compute_trend(points: list[float]) -> str | None:
     """Compute trend direction from a list of intensity values.
 
     Returns "decreasing", "increasing", "stable", or None.
@@ -474,23 +453,13 @@ def green_result(zone: str, intensity: int, max_carbon: float) -> IntensityResul
     return is_green, intensity
 
 
-def _fuel_matches(fuel: str, names: Any, substring: bool) -> bool:
-    return any(n in fuel for n in names) if substring else fuel in names
-
-
-def _fuel_factor(fuel: str, factors: dict, substring: bool) -> Optional[int]:
-    if not substring:
-        return factors.get(fuel)
-    return next((factor for key, factor in factors.items() if key in fuel), None)
-
-
 def mix_to_intensity(
     fuel_mix: dict,
     factors: dict,
     storage_fuels: Any = frozenset(),
     substring: bool = False,
     on_unknown: str = "fallback",
-) -> Optional[int]:
+) -> int | None:
     """Weighted-average gCO2eq/kWh from a {fuel: MW} mix, or None.
 
     factors maps a fuel name to its lifecycle factor. storage_fuels are dropped:
@@ -505,9 +474,14 @@ def mix_to_intensity(
     for fuel, mw in fuel_mix.items():
         if mw is None or mw <= 0:
             continue
-        if _fuel_matches(fuel, storage_fuels, substring):
-            continue
-        factor = _fuel_factor(fuel, factors, substring)
+        if substring:
+            if any(name in fuel for name in storage_fuels):
+                continue
+            factor = next((f for key, f in factors.items() if key in fuel), None)
+        else:
+            if fuel in storage_fuels:
+                continue
+            factor = factors.get(fuel)
         if factor is None:
             if on_unknown == "skip":
                 continue

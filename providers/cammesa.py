@@ -16,15 +16,14 @@ Zone: AR (national).
 from providers.base import FUEL_FACTORS, compute_trend, green_result, request
 
 API = "https://api.cammesa.com/demanda-svc/generacion/ObtieneGeneracioEnergiaPorRegion"
-CAMMESA_ZONES = {"AR"}
 _REGION = {"AR": 1002}
 _HEADERS = {"Accept": "application/json", "Referer": "https://cammesaweb.cammesa.com/"}
 
 # CAMMESA category -> representative gCO2eq/kWh (IPCC AR5 lifecycle)
 _FACTORS = {
-    "hidraulico": FUEL_FACTORS.get("hydro", 24),
-    "termico": FUEL_FACTORS.get("gas", 490),  # gas-dominated thermal fleet
-    "nuclear": FUEL_FACTORS.get("nuclear", 12),
+    "hidraulico": FUEL_FACTORS["hydro"],
+    "termico": FUEL_FACTORS["gas"],  # gas-dominated thermal fleet
+    "nuclear": FUEL_FACTORS["nuclear"],
     "renovable": 25,  # wind/solar-dominated mix
 }
 

@@ -8,10 +8,10 @@ Updates roughly every 10 minutes.
 import json
 import re
 
+from providers import TAIWAN_ZONE_IDS
 from providers.base import FUEL_FACTORS, green_result, mix_to_intensity, request
 
 API_URL = "https://www.taipower.com.tw/d006/loadGraph/loadGraph/data/genary.json"
-TAIWAN_ZONES = {"TW"}
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -104,7 +104,7 @@ def check_carbon_intensity(zone, max_carbon):
 
     Returns (is_green, intensity) or (None, None) on error.
     """
-    if zone not in TAIWAN_ZONES:
+    if zone not in TAIWAN_ZONE_IDS:
         print(f"::warning::Unknown Taiwan zone: {zone}. Valid: TW")
         return None, None
 
@@ -139,4 +139,4 @@ def get_history_trend(zone):
 
     Returns None.
     """
-    return None
+    return

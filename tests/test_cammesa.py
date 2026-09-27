@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import providers
 from providers import cammesa
 
@@ -36,14 +38,14 @@ class TestCheckCarbonIntensity:
         req.return_value = [{"sumTotal": 100, "termico": 100}]
         assert cammesa.check_carbon_intensity("AR", 200) == (False, 490)
 
+    @pytest.mark.parametrize(
+        "response",
+        [None, []],
+        ids=["no_data", "empty_list"],
+    )
     @mock.patch("providers.cammesa.request")
-    def test_no_data(self, req):
-        req.return_value = None
-        assert cammesa.check_carbon_intensity("AR", 200) == (None, None)
-
-    @mock.patch("providers.cammesa.request")
-    def test_empty_list(self, req):
-        req.return_value = []
+    def test_returns_none_none_without_usable_data(self, req, response):
+        req.return_value = response
         assert cammesa.check_carbon_intensity("AR", 200) == (None, None)
 
 

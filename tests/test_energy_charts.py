@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import providers
 from providers import energy_charts
 
@@ -17,14 +19,14 @@ class TestCheckCarbonIntensity:
         req.return_value = {"co2eq": [664.7]}
         assert energy_charts.check_carbon_intensity("DE", 200) == (False, 665)
 
+    @pytest.mark.parametrize(
+        "response",
+        [None, {"co2eq": [None, None]}],
+        ids=["no_data", "all_null"],
+    )
     @mock.patch("providers.energy_charts.request")
-    def test_no_data(self, req):
-        req.return_value = None
-        assert energy_charts.check_carbon_intensity("IT", 200) == (None, None)
-
-    @mock.patch("providers.energy_charts.request")
-    def test_all_null(self, req):
-        req.return_value = {"co2eq": [None, None]}
+    def test_returns_none_none_without_usable_data(self, req, response):
+        req.return_value = response
         assert energy_charts.check_carbon_intensity("IT", 200) == (None, None)
 
     @mock.patch("providers.energy_charts.request")
@@ -54,9 +56,9 @@ class TestForecast:
 
 
 class TestRouting:
-    def test_detect_provider_routes_eu_zones(self):
-        for zone in ("DE", "ES", "IT", "NL", "PL"):
-            assert providers.detect_provider(zone) == providers.PROVIDER_ENERGY_CHARTS
+    @pytest.mark.parametrize("zone", ["DE", "ES", "IT", "NL", "PL"])
+    def test_detect_provider_routes_eu_zones(self, zone):
+        assert providers.detect_provider(zone) == providers.PROVIDER_ENERGY_CHARTS
 
     def test_token_still_prefers_entsoe(self):
         assert providers.detect_provider("DE", entsoe_token="tok") == providers.PROVIDER_ENTSOE

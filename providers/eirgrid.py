@@ -19,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from providers.base import compute_trend, green_result, request
 
 API_BASE = "https://www.smartgriddashboard.com/DashboardService.svc/data"
-EIRGRID_ZONES = {"IE", "IE-ROI", "IE-NI", "IE-ALL"}
 _REGION = {"IE": "ROI", "IE-ROI": "ROI", "IE-NI": "NI", "IE-ALL": "ALL"}
 # The dashboard service replies only to browser-like requests
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}

@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import providers
 from providers import eirgrid
 
@@ -38,14 +40,14 @@ class TestCheckCarbonIntensity:
         _, intensity = eirgrid.check_carbon_intensity("IE", 200)
         assert intensity == 88  # last non-null
 
+    @pytest.mark.parametrize(
+        "response",
+        [None, {"Rows": [{"Value": None}]}],
+        ids=["no_data", "all_null"],
+    )
     @mock.patch("providers.eirgrid.request")
-    def test_no_data(self, req):
-        req.return_value = None
-        assert eirgrid.check_carbon_intensity("IE", 200) == (None, None)
-
-    @mock.patch("providers.eirgrid.request")
-    def test_all_null(self, req):
-        req.return_value = {"Rows": [{"Value": None}]}
+    def test_returns_none_none_without_usable_data(self, req, response):
+        req.return_value = response
         assert eirgrid.check_carbon_intensity("IE", 200) == (None, None)
 
     @mock.patch("providers.eirgrid.request")
@@ -57,6 +59,6 @@ class TestCheckCarbonIntensity:
 
 
 class TestRouting:
-    def test_detect_provider_routes_ireland(self):
-        for zone in ("IE", "IE-ROI", "IE-NI", "IE-ALL"):
-            assert providers.detect_provider(zone) == providers.PROVIDER_EIRGRID
+    @pytest.mark.parametrize("zone", ["IE", "IE-ROI", "IE-NI", "IE-ALL"])
+    def test_detect_provider_routes_ireland(self, zone):
+        assert providers.detect_provider(zone) == providers.PROVIDER_EIRGRID

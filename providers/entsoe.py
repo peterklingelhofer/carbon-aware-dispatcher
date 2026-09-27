@@ -14,6 +14,9 @@ from datetime import datetime, timedelta, timezone
 from providers.base import DEFAULT_FUEL_FACTOR, FUEL_FACTORS, ci_secret_hint, green_result, request
 
 ENTSOE_API_BASE = "https://web-api.tp.entsoe.eu/api"
+_REGISTER_URL = (
+    "https://transparency.entsoe.eu/ (Login -> Account Settings -> Web API Security Token)"
+)
 
 # Bidding zone EIC codes for major European countries/zones
 # Full list: https://transparency.entsoe.eu/content/static_content/Static%20content/web%20api/Guide.html
@@ -65,7 +68,6 @@ ENTSOE_AREA_CODES = {
     "LT": "10YLT-1001A0008Q",  # Lithuania
 }
 
-# ENTSO-E production type codes -> emission factors (gCO2eq/kWh)
 # ENTSO-E PSR type codes (B01-B20) mapped to canonical factors (see
 # providers.base.FUEL_FACTORS)
 ENTSOE_EMISSION_FACTORS = {
@@ -102,6 +104,50 @@ def _local_name(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+def _parse_xml(xml_text):
+    """Root element of an ENTSO-E document, or None when it is empty or malformed.
+
+    Wrapped in a synthetic root first so bare sibling <TimeSeries> elements
+    parse, with the plain document as the fallback for a real single-rooted one
+    """
+    if not xml_text or not xml_text.strip():
+        return None
+    try:
+        return ET.fromstring(f"<root>{xml_text}</root>")
+    except ET.ParseError:
+        pass
+    try:
+        return ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+
+def _psr_type(time_series):
+    """Production type code of a <TimeSeries>, or None."""
+    for el in time_series.iter():
+        if _local_name(el.tag) == "psrType" and el.text:
+            return el.text.strip()
+    return None
+
+
+def _point_values(point):
+    """(position, quantity) of a <Point>, each None when missing or non-numeric."""
+    position = quantity = None
+    for child in point:
+        cname = _local_name(child.tag)
+        if cname == "position" and child.text:
+            try:
+                position = int(child.text.strip())
+            except ValueError:
+                position = None
+        elif cname == "quantity" and child.text:
+            try:
+                quantity = float(child.text.strip())
+            except ValueError:
+                quantity = None
+    return position, quantity
+
+
 def _parse_generation_xml(xml_text):
     """Parse ENTSO-E generation XML response into a list of (psr_type, quantity) tuples.
 
@@ -110,29 +156,16 @@ def _parse_generation_xml(xml_text):
     across hours, so the result reflects current generation. Quantities of
     zero or less are excluded
     """
-    if not xml_text or not xml_text.strip():
+    root = _parse_xml(xml_text)
+    if root is None:
         return []
-    # Wrap in a synthetic root so bare sibling <TimeSeries> elements (and any
-    # real single-rooted document) both parse cleanly
-    wrapped = f"<root>{xml_text}</root>"
-    try:
-        root = ET.fromstring(wrapped)
-    except ET.ParseError:
-        try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError:
-            return []
 
     # per psr_type track the latest (period_end, position) and its quantity
     latest = {}
     for ts in root.iter():
         if _local_name(ts.tag) != "TimeSeries":
             continue
-        psr_type = None
-        for el in ts.iter():
-            if _local_name(el.tag) == "psrType" and el.text:
-                psr_type = el.text.strip()
-                break
+        psr_type = _psr_type(ts)
         if psr_type is None:
             continue
         for period in ts.iter():
@@ -145,20 +178,7 @@ def _parse_generation_xml(xml_text):
             for point in period.iter():
                 if _local_name(point.tag) != "Point":
                     continue
-                position = None
-                quantity = None
-                for child in point:
-                    cname = _local_name(child.tag)
-                    if cname == "position" and child.text:
-                        try:
-                            position = int(child.text.strip())
-                        except ValueError:
-                            position = None
-                    elif cname == "quantity" and child.text:
-                        try:
-                            quantity = float(child.text.strip())
-                        except ValueError:
-                            quantity = None
+                position, quantity = _point_values(point)
                 if quantity is None:
                     continue
                 key = (period_end, position if position is not None else -1)
@@ -179,16 +199,9 @@ def _parse_flow_latest(xml_text):
     A11 (cross-border physical flow) has one <quantity> per <Point> in time
     order. The last one is the current flow. Returns a float MW, or None.
     """
-    if not xml_text or not xml_text.strip():
+    root = _parse_xml(xml_text)
+    if root is None:
         return None
-    wrapped = f"<root>{xml_text}</root>"
-    try:
-        root = ET.fromstring(wrapped)
-    except ET.ParseError:
-        try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError:
-            return None
     latest = None
     for el in root.iter():
         if _local_name(el.tag) == "quantity" and el.text:
@@ -230,6 +243,25 @@ def _total_generation_mw(gen_data):
     return sum(q for psr, q in gen_data if psr not in ENTSOE_STORAGE_PSR)
 
 
+def _generation_response(area_code, entsoe_token):
+    """Raw response for the most recent hour of actual generation per type, or None.
+
+    parse="response" keeps ENTSO-E's tailored 401/429 messages and the raw XML text
+    """
+    now = datetime.now(timezone.utc)
+    period_start = (now - timedelta(hours=1)).strftime("%Y%m%d%H00")
+    period_end = now.strftime("%Y%m%d%H00")
+    url = (
+        f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
+        f"&documentType=A75"  # Actual generation per type
+        f"&processType=A16"  # Realised
+        f"&in_Domain={area_code}"
+        f"&periodStart={period_start}"
+        f"&periodEnd={period_end}"
+    )
+    return request(url, parse="response")
+
+
 def production_for_zone(zone, entsoe_token):
     """Fetch a zone's production intensity AND total generation MW.
 
@@ -243,15 +275,7 @@ def production_for_zone(zone, entsoe_token):
     if area_code is None:
         return None, None
 
-    now = datetime.now(timezone.utc)
-    period_start = (now - timedelta(hours=1)).strftime("%Y%m%d%H00")
-    period_end = now.strftime("%Y%m%d%H00")
-    url = (
-        f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
-        f"&documentType=A75&processType=A16&in_Domain={area_code}"
-        f"&periodStart={period_start}&periodEnd={period_end}"
-    )
-    response = request(url, parse="response")
+    response = _generation_response(area_code, entsoe_token)
     if response is None or response.status_code != 200:
         return None, None
     gen_data = _parse_generation_xml(response.text)
@@ -270,12 +294,9 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
     Returns (is_green, intensity) or (None, None) on error.
     """
     if not entsoe_token:
-        reg_url = (
-            "https://transparency.entsoe.eu/ (Login -> Account Settings -> Web API Security Token)"
-        )
         print(
             f"::error::ENTSO-E security token required for zone '{zone}'. "
-            f"Register free at {reg_url} "
+            f"Register free at {_REGISTER_URL} "
             f"and {ci_secret_hint('entsoe_token')}."
         )
         return None, None
@@ -285,36 +306,17 @@ def check_carbon_intensity(zone, max_carbon, entsoe_token):
         # Zone not in ENTSO-E: caller should try another provider
         return None, None
 
-    # Request the most recent hour of actual generation
-    now = datetime.now(timezone.utc)
-    period_start = (now - timedelta(hours=1)).strftime("%Y%m%d%H00")
-    period_end = now.strftime("%Y%m%d%H00")
-
-    url = (
-        f"{ENTSOE_API_BASE}?securityToken={entsoe_token}"
-        f"&documentType=A75"  # Actual generation per type
-        f"&processType=A16"  # Realised
-        f"&in_Domain={area_code}"
-        f"&periodStart={period_start}"
-        f"&periodEnd={period_end}"
-    )
-
     print(f"Checking carbon intensity for zone: {zone} (ENTSO-E)...")
-    # Route through base for retries/429 handling. parse="response" lets us
-    # keep ENTSO-E's tailored 401/429 messages and read the raw XML text
-    response = request(url, parse="response")
+    response = _generation_response(area_code, entsoe_token)
     if response is None:
         print("::warning::ENTSO-E API error: request failed")
         return None, None
 
     if response.status_code == 401:
-        reg_url = (
-            "https://transparency.entsoe.eu/ (Login -> Account Settings -> Web API Security Token)"
-        )
         print(
             "::error::ENTSO-E authentication failed. "
             f"{ci_secret_hint('entsoe_token').capitalize()}. "
-            f"Get a free token at {reg_url}."
+            f"Get a free token at {_REGISTER_URL}."
         )
         return None, None
 
@@ -357,29 +359,16 @@ def _forecast_series_by_hour(xml_text, psr_filter):
     for load documents. Sub-hourly resolutions are averaged within the hour, and
     multiple matching TimeSeries (e.g. wind + solar) are summed per hour.
     """
-    if not xml_text or not xml_text.strip():
+    root = _parse_xml(xml_text)
+    if root is None:
         return {}
-    wrapped = f"<root>{xml_text}</root>"
-    try:
-        root = ET.fromstring(wrapped)
-    except ET.ParseError:
-        try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError:
-            return {}
 
     totals = {}
     for ts in root.iter():
         if _local_name(ts.tag) != "TimeSeries":
             continue
-        if psr_filter is not None:
-            psr = None
-            for el in ts.iter():
-                if _local_name(el.tag) == "psrType" and el.text:
-                    psr = el.text.strip()
-                    break
-            if psr not in psr_filter:
-                continue
+        if psr_filter is not None and _psr_type(ts) not in psr_filter:
+            continue
         for period in ts.iter():
             if _local_name(period.tag) != "Period":
                 continue
@@ -402,19 +391,7 @@ def _forecast_series_by_hour(xml_text, psr_filter):
             for pt in period.iter():
                 if _local_name(pt.tag) != "Point":
                     continue
-                pos = qty = None
-                for child in pt:
-                    cname = _local_name(child.tag)
-                    if cname == "position" and child.text:
-                        try:
-                            pos = int(child.text.strip())
-                        except ValueError:
-                            pos = None
-                    elif cname == "quantity" and child.text:
-                        try:
-                            qty = float(child.text.strip())
-                        except ValueError:
-                            qty = None
+                pos, qty = _point_values(pt)
                 if pos is None or qty is None:
                     continue
                 dt = start + timedelta(minutes=(pos - 1) * step)
@@ -516,12 +493,8 @@ def get_forecast(zone, max_carbon, entsoe_token):
 
 
 def get_history_trend(zone, entsoe_token):
-    """Fetch recent generation history and compute trend.
+    """Not implemented: a trend would need per-<Period> intensities fed to compute_trend.
 
-    Per-period trend is not yet implemented, so short-circuit up front
-    instead of fetching and parsing XML only to discard it. A future
-    implementation would compute intensity per <Period> and feed compute_trend
-
-    Returns one of: "decreasing", "increasing", "stable", or None.
+    Returns None.
     """
-    return None
+    return

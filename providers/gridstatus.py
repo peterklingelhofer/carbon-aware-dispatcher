@@ -103,15 +103,17 @@ def _get_renewable_forecast(iso_config, api_key, start_time):
             results[ts]["solar_mw"] = float(solar)
             results[ts]["wind_mw"] = float(wind)
     else:
-        solar_dataset = iso_config.get("solar_dataset")
-        wind_dataset = iso_config.get("wind_dataset")
-
-        if solar_dataset:
-            for row in _query_dataset(solar_dataset, api_key, start_time):
+        # Separate solar and wind datasets, each feeding its own column
+        for source in ("solar", "wind"):
+            dataset = iso_config.get(f"{source}_dataset")
+            if not dataset:
+                continue
+            for row in _query_dataset(dataset, api_key, start_time):
                 ts = row.get("interval_start_utc")
                 if ts not in results:
                     results[ts] = {"solar_mw": 0, "wind_mw": 0}
                 if iso_config.get("sum_columns"):
+                    # Per-zone columns with no total, so sum every numeric forecast column
                     total = sum(
                         v
                         for k, v in row.items()
@@ -120,29 +122,10 @@ def _get_renewable_forecast(iso_config, api_key, start_time):
                         and isinstance(v, (int, float))
                         and v > 0
                     )
-                    results[ts]["solar_mw"] = float(total)
+                    results[ts][f"{source}_mw"] = float(total)
                 else:
-                    col = iso_config.get("solar_col", "solar_forecast")
-                    results[ts]["solar_mw"] = float(row.get(col, 0) or 0)
-
-        if wind_dataset:
-            for row in _query_dataset(wind_dataset, api_key, start_time):
-                ts = row.get("interval_start_utc")
-                if ts not in results:
-                    results[ts] = {"solar_mw": 0, "wind_mw": 0}
-                if iso_config.get("sum_columns"):
-                    total = sum(
-                        v
-                        for k, v in row.items()
-                        if not k.startswith("interval_")
-                        and not k.startswith("publish_")
-                        and isinstance(v, (int, float))
-                        and v > 0
-                    )
-                    results[ts]["wind_mw"] = float(total)
-                else:
-                    col = iso_config.get("wind_col", "wind_forecast")
-                    results[ts]["wind_mw"] = float(row.get(col, 0) or 0)
+                    col = iso_config.get(f"{source}_col", f"{source}_forecast")
+                    results[ts][f"{source}_mw"] = float(row.get(col, 0) or 0)
 
     return results
 
@@ -189,15 +172,11 @@ def get_forecast(zone, max_carbon, gridstatus_api_key):
         print(f"::warning::No GridStatus renewable forecast data for zone {zone}")
         return None, None
 
-    if iso_config.get("load_dataset"):
-        loads = _get_load_forecast(iso_config, gridstatus_api_key, start_time)
-    else:
-        loads = {}
-        for row in _query_dataset(iso_config["renewable_dataset"], gridstatus_api_key, start_time):
-            ts = row.get("interval_start_utc")
-            load = row.get(iso_config.get("load_col", "load_forecast"))
-            if load is not None and ts:
-                loads[ts] = float(load)
+    # ERCOT has no separate load dataset: its net-load forecast carries the load column
+    load_config = iso_config
+    if not iso_config.get("load_dataset"):
+        load_config = dict(iso_config, load_dataset=iso_config["renewable_dataset"])
+    loads = _get_load_forecast(load_config, gridstatus_api_key, start_time)
 
     if not loads:
         print(f"::warning::No GridStatus load forecast data for zone {zone}")

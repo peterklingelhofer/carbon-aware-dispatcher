@@ -2,9 +2,12 @@
 
 from unittest import mock
 
+import pytest
+
 from providers import azure_pricing
 
 
+@pytest.fixture(autouse=True)
 def _clear_cache():
     azure_pricing._cache.clear()
 
@@ -15,7 +18,6 @@ class TestGetRegionPrice:
 
     @mock.patch("providers.azure_pricing.base.request")
     def test_returns_retail_price(self, mock_request):
-        _clear_cache()
         mock_request.return_value = {
             "Items": [
                 {"retailPrice": 0.096, "productName": "Virtual Machines Dv5", "skuName": "D2s v5"}
@@ -25,7 +27,6 @@ class TestGetRegionPrice:
 
     @mock.patch("providers.azure_pricing.base.request")
     def test_skips_windows_and_spot(self, mock_request):
-        _clear_cache()
         mock_request.return_value = {
             "Items": [
                 {"retailPrice": 0.20, "productName": "Virtual Machines Windows", "skuName": "x"},
@@ -37,13 +38,11 @@ class TestGetRegionPrice:
 
     @mock.patch("providers.azure_pricing.base.request")
     def test_none_on_empty_items(self, mock_request):
-        _clear_cache()
         mock_request.return_value = {"Items": []}
         assert azure_pricing.get_region_price("nowhere") is None
 
     @mock.patch("providers.azure_pricing.base.request")
     def test_caches_per_region(self, mock_request):
-        _clear_cache()
         mock_request.return_value = {
             "Items": [{"retailPrice": 0.07, "productName": "Virtual Machines", "skuName": "z"}]
         }
