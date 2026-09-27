@@ -9,7 +9,7 @@ Usage:
     python setup_wizard.py --zone CISO              # Test a single zone
     python setup_wizard.py --zones "CISO,GB,DE"     # Test multiple zones
     python setup_wizard.py --auto-green             # Test the auto:green preset
-    python setup_wizard.py --auto-cleanest          # Test all free-provider zones
+    python setup_wizard.py --auto-cleanest          # Test the auto:cleanest curated zones
 
 Environment variables (alternative to flags):
     EIA_API_KEY, ELECTRICITY_MAPS_TOKEN, GRID_STATUS_API_KEY, ENTSOE_TOKEN
@@ -19,9 +19,7 @@ import argparse
 import os
 import sys
 
-# Add the repo root to the path so we can import providers
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+import check_grid
 from providers import (
     AUTO_CLEANEST_ZONES,
     AUTO_GREEN_ZONES,
@@ -60,7 +58,6 @@ from providers import (
     uk,
 )
 
-# Provider display names for the wizard
 _PROVIDER_NAMES = {
     PROVIDER_UK: "UK Carbon Intensity (free, no key)",
     PROVIDER_EIA: "EIA API (US, free)",
@@ -80,7 +77,6 @@ _PROVIDER_NAMES = {
     PROVIDER_ELECTRICITY_MAPS: "Electricity Maps (free token)",
 }
 
-# Provider modules and their auth argument needs
 _PROVIDER_MODULES = {
     PROVIDER_UK: uk,
     PROVIDER_EIA: eia,
@@ -100,12 +96,6 @@ _PROVIDER_MODULES = {
     PROVIDER_ELECTRICITY_MAPS: electricity_maps,
 }
 
-_PROVIDER_AUTH_ARGS = {
-    PROVIDER_EIA: lambda keys: [keys.get("eia_api_key", "")],
-    PROVIDER_ENTSOE: lambda keys: [keys.get("entsoe_token", "")],
-    PROVIDER_ELECTRICITY_MAPS: lambda keys: [keys.get("emaps_api_key", "")],
-}
-
 
 def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
     """Test connectivity and data retrieval for a single zone.
@@ -123,7 +113,6 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
         "error": None,
     }
 
-    # Check if API key is available for zones that need it
     if provider == PROVIDER_ELECTRICITY_MAPS and not emaps_api_key:
         result["status"] = "skipped"
         result["error"] = (
@@ -136,24 +125,16 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
         result["error"] = "No entsoe_token. Get free at https://transparency.entsoe.eu/"
         return result
 
-    # Test the API using the registry
     try:
-        module = _PROVIDER_MODULES.get(provider)
-        if module is None:
-            result["status"] = "error"
-            result["error"] = f"Unknown provider: {provider}"
-            return result
-
-        keys = {
-            "eia_api_key": eia_api_key,
-            "emaps_api_key": emaps_api_key,
-            "entsoe_token": entsoe_token,
-        }
-        resolver = _PROVIDER_AUTH_ARGS.get(provider)
-        extra = resolver(keys) if resolver else []
-
-        is_green, intensity = module.check_carbon_intensity(zone, 9999, *extra)
-
+        extra = check_grid._get_extra_args(
+            provider,
+            eia_api_key=eia_api_key,
+            emaps_api_key=emaps_api_key,
+            entsoe_token=entsoe_token,
+        )
+        _is_green, intensity = _PROVIDER_MODULES[provider].check_carbon_intensity(
+            zone, 9999, *extra
+        )
         if intensity is not None:
             result["status"] = "ok"
             result["intensity"] = intensity
@@ -180,11 +161,9 @@ def print_results(
     print("  Carbon-Aware Dispatcher: Setup Wizard")
     print("=" * 64)
 
-    # API key status
     print("\n  API Keys & Tokens:")
     print("  " + "-" * 60)
 
-    # Free providers (no key needed)
     print("    UK Carbon Intensity:   no key needed")
     print("    AEMO (Australia):      no key needed")
     print("    Grid India:            no key needed")
@@ -192,35 +171,30 @@ def print_results(
     print("    Eskom (South Africa):  no key needed")
     print("    Open-Meteo:            no key needed")
 
-    # EIA
     if eia_api_key and eia_api_key != "DEMO_KEY":
         print("    EIA (US):              custom key configured")
     else:
         print("    EIA (US):              using DEMO_KEY (rate limited)")
         print("      Register free: https://www.eia.gov/opendata/register.php")
 
-    # ENTSO-E
     if entsoe_token:
         print("    ENTSO-E (EU):          token configured")
     else:
         print("    ENTSO-E (EU):          not configured (36 EU countries unavailable)")
         print("      Register free: https://transparency.entsoe.eu/")
 
-    # Electricity Maps
     if emaps_api_key:
         print("    Electricity Maps:      token configured")
     else:
         print("    Electricity Maps:      not configured (200+ global zones unavailable)")
         print("      Register free: https://portal.electricitymaps.com/")
 
-    # GridStatus
     if gridstatus_api_key:
         print("    GridStatus.io:         key configured (US forecasts enabled)")
     else:
         print("    GridStatus.io:         not configured (US forecasts unavailable)")
         print("      Register free: https://www.gridstatus.io")
 
-    # Zone results
     print(f"\n  Zone Tests ({len(results)} zones):")
     print("  " + "-" * 60)
 
@@ -244,7 +218,6 @@ def print_results(
     print("  " + "-" * 60)
     print(f"    {ok_count} ok, {skip_count} skipped, {err_count} errors")
 
-    # Recommendations
     print("\n  Recommendations:")
     if err_count == 0 and skip_count == 0:
         print("    All zones working! Your configuration is ready to use.")
@@ -267,25 +240,22 @@ def print_results(
             if has_eia:
                 print("    - Register a free EIA API key for higher rate limits")
 
-    # Zero-config suggestion
     print("\n  Quick Start (zero config):")
     n_clean, n_green = len(AUTO_CLEANEST_ZONES), len(AUTO_GREEN_ZONES)
     print(f"    grid_zone: 'auto:cleanest'   # Tests {n_clean} zones across free providers")
     print(f"    grid_zone: 'auto:green'      # {n_green} curated green-energy zones")
 
-    # Example workflow snippet
-    zones_str = ",".join(r["zone"] for r in results if r["status"] == "ok")
-    if zones_str:
+    ok = [r for r in results if r["status"] == "ok"]
+    zones_str = ",".join(r["zone"] for r in ok)
+    if ok:
         print("\n  Custom config from your test:")
         print(f"    grid_zones: '{zones_str}'")
-        greenest = min((r for r in results if r["status"] == "ok"), key=lambda r: r["intensity"])
+        greenest = min(ok, key=lambda r: r["intensity"])
         print(
             f"    Greenest zone right now: {greenest['zone']} ({greenest['intensity']} gCO2eq/kWh)"
         )
 
-    # Routing-mode workflow snippet
-    ok_zones = [r["zone"] for r in results if r["status"] == "ok"]
-    zones_snippet = ",".join(ok_zones) if ok_zones else "CISO,GB"
+    zones_snippet = zones_str or "CISO,GB"
     print(f"\n  Routing mode: {routing}")
     print("  " + "-" * 60)
     if routing == "runner":
@@ -338,7 +308,6 @@ def print_results(
         print("          # - run: gcloud run deploy my-service ...")
         print("          # - run: az webapp up --name my-app")
     else:
-        # gate (default)
         print("    Use --routing=runner or --routing=deploy to see routing snippets.\n")
         print("    jobs:")
         print("      build:")
@@ -366,7 +335,7 @@ def main():
     parser.add_argument(
         "--auto-cleanest",
         action="store_true",
-        help="Test the auto:cleanest preset (all free providers)",
+        help=f"Test the auto:cleanest preset ({len(AUTO_CLEANEST_ZONES)} curated zones)",
     )
     parser.add_argument("--eia-api-key", default=os.environ.get("EIA_API_KEY", ""))
     parser.add_argument(
@@ -383,8 +352,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine zones to test
-    zones = []
     if args.auto_cleanest:
         zones = [z["zone"] for z in AUTO_CLEANEST_ZONES]
     elif args.auto_green:
@@ -394,7 +361,6 @@ def main():
     elif args.zone:
         zones = [args.zone]
     else:
-        # Default: test one zone from each free provider
         print("No zones specified. Testing one zone from each free provider...\n")
         zones = ["CISO", "GB", "AU-NSW", "IN-SO", "BR-S", "ZA"]
         if args.entsoe_token:
@@ -402,11 +368,15 @@ def main():
         if args.electricity_maps_token:
             zones.append("NO-NO1")
 
-    results = []
-    for zone in zones:
-        result = test_zone(zone, args.eia_api_key, args.electricity_maps_token, args.entsoe_token)
-        results.append(result)
-
+    results = [
+        test_zone(
+            zone,
+            eia_api_key=args.eia_api_key,
+            emaps_api_key=args.electricity_maps_token,
+            entsoe_token=args.entsoe_token,
+        )
+        for zone in zones
+    ]
     print_results(
         results,
         args.eia_api_key,
@@ -416,9 +386,7 @@ def main():
         args.routing,
     )
 
-    # Exit code: 1 if any errors
-    has_errors = any(r["status"] == "error" for r in results)
-    sys.exit(1 if has_errors else 0)
+    sys.exit(1 if any(r["status"] == "error" for r in results) else 0)
 
 
 if __name__ == "__main__":
