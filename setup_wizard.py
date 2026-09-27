@@ -180,13 +180,19 @@ def print_results(
     if entsoe_token:
         print("    ENTSO-E (EU):          token configured")
     else:
-        print("    ENTSO-E (EU):          not configured (36 EU countries unavailable)")
+        print(
+            "    ENTSO-E (EU):          not configured "
+            "(Nordic, Italian and Balkan zones lack measured data)"
+        )
         print("      Register free: https://transparency.entsoe.eu/")
 
     if emaps_api_key:
         print("    Electricity Maps:      token configured")
     else:
-        print("    Electricity Maps:      not configured (200+ global zones unavailable)")
+        print(
+            "    Electricity Maps:      not configured "
+            "(zones with no free feed fall back to estimates)"
+        )
         print("      Register free: https://portal.electricitymaps.com/")
 
     if gridstatus_api_key:
@@ -224,15 +230,18 @@ def print_results(
     else:
         if skip_count > 0:
             if not emaps_api_key:
-                print("    - Add electricity_maps_token to enable 200+ global zones")
+                print(
+                    "    - Add electricity_maps_token for measured data in one zone "
+                    "with no free feed"
+                )
             if not entsoe_token:
                 has_eu = any(
-                    detect_provider(r["zone"]) == PROVIDER_ENTSOE
+                    r["zone"] in entsoe.ENTSOE_AREA_CODES
                     for r in results
                     if r["status"] == "skipped"
                 )
                 if has_eu:
-                    print("    - Add entsoe_token to enable 36 EU country zones")
+                    print("    - Add entsoe_token for measured Nordic, Italian and Balkan zones")
         if err_count > 0:
             print("    - Check zone codes match your provider (see README)")
         if not eia_api_key or eia_api_key == "DEMO_KEY":
