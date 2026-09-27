@@ -1,0 +1,3 @@
+# The image installs only what pyproject.toml declares. Leaving out the dot-directories
+# (git, virtualenvs, local tooling, .env) keeps the build context small
+.*

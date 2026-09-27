@@ -47,3 +47,10 @@ jobs:
       # they're stale, mypy stops catching unknown citekeys
       - name: Citations up to date
         run: uv run python scripts/generate_citations.py --check
+
+      # The Docker image installs this wheel, so a runtime file missing from
+      # pyproject.toml's only-include list fails here instead of after a release
+      - name: Installed wheel runs
+        run: |
+          uv build --wheel -o dist
+          uv run --isolated --no-project --with dist/*.whl carbon-aware --help
