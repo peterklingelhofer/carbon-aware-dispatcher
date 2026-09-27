@@ -515,6 +515,10 @@ def record_savings(
         )
         return None
     current, owner = _gist_read(location, token)
+    if owner is None:
+        # Writing a fresh one-run ledger over a gist we failed to read would wipe the history
+        print("::warning::Could not read ledger gist, skipping ledger update")
+        return None
     data = _assemble(
         current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh, is_green
     )
