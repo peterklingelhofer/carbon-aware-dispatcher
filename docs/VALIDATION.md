@@ -152,7 +152,7 @@ persistence, the denominator, gets worse.
 
 Resolving this needs lead-time-stamped forecasts, which can only be collected
 going forward. [`scripts/capture_gb_forecast.py`](../scripts/capture_gb_forecast.py)
-and the `forecast-capture` workflow now log the 48-hour-ahead forecast every hour
+and the `forecast-capture` workflow log the 48-hour-ahead forecast every six hours
 into `data/validation/gb-fw48h-log.csv`, so a lead-time-stratified version of this
 table becomes computable once that log has accumulated. Until then, treat the
 published-forecast row as lead-time-agnostic.

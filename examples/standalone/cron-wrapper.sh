@@ -2,7 +2,7 @@
 # Carbon-aware cron / systemd-timer wrapper
 #
 # Gate any deferrable job on grid carbon intensity from plain cron. Because the
-# CLI uses exit codes, you compose it with && and need no glue code.
+# CLI uses exit codes, you compose it with && and need no glue code
 #
 # Install (run nightly, but only execute when the grid is clean within 6h):
 #   0 1 * * *  /path/to/cron-wrapper.sh >> /var/log/green-batch.log 2>&1

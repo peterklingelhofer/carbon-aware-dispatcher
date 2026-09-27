@@ -10,14 +10,9 @@ No Ray import is needed here: the gate runs on the driver before any Ray task is
 scheduled, so this module stays dependency-free and easy to test.
 """
 
-from integrations.gate import grid_is_clean, wait_until_clean
+from integrations.gate import carbon_gate, grid_is_clean, wait_until_clean
 
-__all__ = ["grid_is_clean", "wait_until_clean", "carbon_gate", "run_when_clean"]
-
-
-def carbon_gate(zones="auto:green", max_carbon=200.0, max_wait_s=6 * 3600, poll_s=900, tokens=None):
-    """Block until the grid is clean (or the max wait elapses). Returns True if clean."""
-    return wait_until_clean(zones, max_carbon, max_wait_s, poll_s, tokens=tokens)
+__all__ = ["carbon_gate", "grid_is_clean", "run_when_clean", "wait_until_clean"]
 
 
 def run_when_clean(func, *args, zones="auto:green", max_carbon=200.0, gate=None, **kwargs):

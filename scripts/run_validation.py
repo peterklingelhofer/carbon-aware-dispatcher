@@ -18,7 +18,6 @@ import os
 import re
 import statistics
 import sys
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,7 +77,7 @@ def load_gb():
 def load_eia(zone):
     """EIA hourly rows as [(dt, generation_mwh, weighted_gco2)], oldest first."""
     path = os.path.join(DATA_DIR, f"eia-{zone.lower()}-fuel-mix.csv")
-    periods = OrderedDict()
+    periods = {}
     with open(path) as fh:
         for row in csv.DictReader(fh):
             periods.setdefault(row["period"], []).append(
@@ -122,14 +121,14 @@ def analysis_nowcast(gb):
     for threshold in (100, 150, 200, 250):
         wrong = sum(1 for _, f, a in gb if (f <= threshold) != (a <= threshold))
         false_green = sum(1 for _, f, a in gb if f <= threshold and a > threshold)
-        flips[threshold] = {
+        flips[str(threshold)] = {
             "n": len(gb),
             "verdict_flips": wrong,
             "flip_pct": round(100.0 * wrong / len(gb), 2),
             "false_green": false_green,
             "false_green_pct": round(100.0 * false_green / len(gb), 2),
         }
-    stats["threshold_flips"] = {str(k): v for k, v in flips.items()}
+    stats["threshold_flips"] = flips
     stats["window"] = {"from": gb[0][0].isoformat(), "to": gb[-1][0].isoformat()}
     return stats
 
@@ -431,12 +430,7 @@ POWER_FILE = os.path.join(DATA_DIR, "power-assumption.json")
 
 
 def _power_block():
-    """The sourced power range, or an honest placeholder until one exists."""
-    if not os.path.exists(POWER_FILE):
-        return (
-            "> Not yet sourced. `CI_JOB_POWER_KW = 0.05` is currently an estimate "
-            "from a stated range with no citation behind it."
-        )
+    """The sourced power range as a table, followed by its conclusion paragraph."""
     with open(POWER_FILE) as fh:
         power = json.load(fh)
     lines = [
@@ -656,11 +650,8 @@ def main(argv=None):
     print(f"wrote {os.path.relpath(RESULTS, ROOT)}")
     if args.print:
         print(json.dumps(results, indent=2, sort_keys=True))
-    if os.path.exists(DOC):
-        substitute(render(results))
-        print(f"updated {os.path.relpath(DOC, ROOT)}")
-    else:
-        print(f"{os.path.relpath(DOC, ROOT)} doesn't exist yet, so only results were written")
+    substitute(render(results))
+    print(f"updated {os.path.relpath(DOC, ROOT)}")
     return 0
 
 

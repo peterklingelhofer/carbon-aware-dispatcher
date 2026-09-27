@@ -4,13 +4,13 @@
 # HPC training/simulation jobs are large and usually deferrable, prime
 # candidates for clean-window scheduling. This wrapper blocks until the grid is
 # clean, then submits the batch job with sbatch. Because the CLI uses exit codes,
-# it composes with && and needs no glue code.
+# it composes with && and needs no glue code
 #
 # Use:
 #   ./slurm-carbon-submit.sh my-training.sbatch
 #
 # Or gate from inside the batch script itself by running `carbon-aware
-# wait-for-green` as the first line before srun.
+# wait-for-green` as the first line before srun
 #
 # Requires either the installed console script (`pipx install carbon-aware-dispatcher`)
 # or the container (swap the CARBON_AWARE command below for a `docker run ...`)

@@ -11,7 +11,7 @@ transformers installed (the callback subclasses object as a fallback).
 
 from integrations.gate import grid_is_clean, wait_until_clean
 
-__all__ = ["grid_is_clean", "wait_until_clean", "CarbonAwareTrainerCallback"]
+__all__ = ["CarbonAwareTrainerCallback", "grid_is_clean", "wait_until_clean"]
 
 
 try:  # pragma: no cover - import shim depends on transformers being installed
