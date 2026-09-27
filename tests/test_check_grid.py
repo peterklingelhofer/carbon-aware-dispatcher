@@ -2,7 +2,6 @@
 
 import json
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -10,11 +9,15 @@ import pytest
 import requests
 
 import check_grid
+import ledger
+import setup_wizard
 from providers import (
     AUTO_CLEANEST_ZONES,
     AUTO_ESCAPE_COAL_ZONES,
     AUTO_GREEN_ZONES,
+    AUTO_GREEN_ZONES_FULL,
     ESCAPE_COAL_MAPPINGS,
+    NEAREST_ZONES_BY_OFFSET,
     PROVIDER_AEMO,
     PROVIDER_CANADA,
     PROVIDER_EIA,
@@ -28,7 +31,9 @@ from providers import (
     PROVIDER_RTE,
     PROVIDER_TAIWAN,
     PROVIDER_UK,
+    _haversine_km,
     _time_priority_score,
+    _zone_latlon,
     aemo,
     base,
     canada,
@@ -37,8 +42,10 @@ from providers import (
     electricity_maps,
     entsoe,
     eskom,
+    flow_tracing,
     grid_india,
     gridstatus,
+    nearest_clean_zones,
     ons_brazil,
     open_meteo,
     sort_auto_green_by_time,
@@ -112,138 +119,260 @@ def _clear_env():
             os.environ[k] = v
 
 
-class TestParseZonesInput:
-    def test_single_zone(self):
-        result = parse("CISO")
-        assert result == [{"zone": "CISO", "runner_label": None}]
+@pytest.fixture
+def github_output(tmp_path, monkeypatch):
+    """Point GITHUB_OUTPUT at an empty file and return its path."""
+    path = tmp_path / "output.txt"
+    path.touch()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(path))
+    return path
 
-    def test_multiple_zones(self):
-        result = parse("CISO, ERCO, PJM")
-        assert len(result) == 3
-        assert result[1]["zone"] == "ERCO"
 
-    def test_zones_with_labels(self):
-        result = parse("CISO:runner-cal, GB:runner-uk")
-        assert result[0] == {"zone": "CISO", "runner_label": "runner-cal"}
-        assert result[1] == {"zone": "GB", "runner_label": "runner-uk"}
+@pytest.fixture
+def step_summary(tmp_path, monkeypatch):
+    """Point GITHUB_STEP_SUMMARY at an empty file and return its path."""
+    path = tmp_path / "summary.md"
+    path.touch()
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(path))
+    return path
 
-    def test_mixed_labels(self):
-        result = parse("GB:runner-uk, CISO, ERCO:runner-tex")
-        assert result[0]["runner_label"] == "runner-uk"
-        assert result[1]["runner_label"] is None
-        assert result[2]["runner_label"] == "runner-tex"
 
-    def test_empty_string(self):
-        assert parse("") == []
+@pytest.fixture
+def ledger_path(tmp_path, monkeypatch):
+    """Configure a file ledger at a path that doesn't exist yet."""
+    path = tmp_path / "ledger.json"
+    monkeypatch.setenv("LEDGER", f"file:{path}")
+    return path
 
-    def test_trailing_commas(self):
-        result = parse("CISO,,ERCO,")
-        assert len(result) == 2
 
-    def test_auto_green(self):
-        result = parse("auto:green")
-        assert len(result) >= 5
-        # auto:green now only includes free-provider zones
-        zones = [z["zone"] for z in result]
-        assert "CISO" in zones  # US (EIA)
-        assert "GB-16" in zones  # UK (free)
-        assert "AU-TAS" in zones  # Australia (AEMO)
-        assert "BR-S" in zones  # Brazil (ONS)
+def _reset_once_flags():
+    check_grid._ledger_recorded = False
+    check_grid._budget_summary = None
+    check_grid._lifetime_summary = None
+    check_grid._sla_summary = None
+    check_grid._marginal_done = False
+    check_grid._marginal_summary = None
+    check_grid._status_badge_done = False
+    check_grid._pr_comment_done = False
+    check_grid._notify_done = False
 
-    def test_auto_green_full(self):
-        result = parse("auto:green:full")
-        zones = [z["zone"] for z in result]
-        assert "CISO" in zones  # Free
-        assert "NO-NO1" in zones  # Token-requiring
-        assert "CA-QC" in zones  # Token-requiring
 
-    def test_auto_green_case_insensitive(self):
-        result = parse("Auto:Green")
-        zones = {z["zone"] for z in result}
-        assert "CISO" in zones
-
-    def test_auto_green_with_whitespace(self):
-        result = parse("  auto:green  ")
-        zones = {z["zone"] for z in result}
-        assert "CISO" in zones
+@pytest.fixture
+def reset_once_flags():
+    """Clear the run-once guards and cached summaries before and after a test."""
+    _reset_once_flags()
+    yield
+    _reset_once_flags()
 
 
 def parse(s):
     return check_grid.parse_zones_input(s)
 
 
+def outputs_of(mock_output):
+    """Collect the set_output(name, value) calls made on a mock into a dict."""
+    return {c.args[0]: c.args[1] for c in mock_output.call_args_list}
+
+
+def main_exit_code():
+    """Run main() and return the code it exits with."""
+    with pytest.raises(SystemExit) as exc:
+        check_grid.main()
+    return exc.value.code
+
+
+def respond(mock_call, response):
+    """Make a mocked HTTP call return a response, or raise it when it's an exception."""
+    if isinstance(response, Exception):
+        mock_call.side_effect = response
+    else:
+        mock_call.return_value = response
+
+
+def assert_verdict(result, is_green, intensity):
+    """A (is_green, intensity) verdict: is_green is a bool or None, compared by identity."""
+    assert result[0] is is_green
+    assert result[1] == intensity
+
+
+_DECREASING = [400, 380, 360, 300, 280, 260]
+_SLOT = "2026-03-10T18:00:00+00:00"
+
+
+class TestParseZonesInput:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("CISO", [("CISO", None)], id="single_zone"),
+            pytest.param(
+                "CISO, ERCO, PJM",
+                [("CISO", None), ("ERCO", None), ("PJM", None)],
+                id="multiple_zones",
+            ),
+            pytest.param(
+                "CISO:runner-cal, GB:runner-uk",
+                [("CISO", "runner-cal"), ("GB", "runner-uk")],
+                id="zones_with_labels",
+            ),
+            pytest.param(
+                "GB:runner-uk, CISO, ERCO:runner-tex",
+                [("GB", "runner-uk"), ("CISO", None), ("ERCO", "runner-tex")],
+                id="mixed_labels",
+            ),
+            pytest.param("", [], id="empty_string"),
+            pytest.param("CISO,,ERCO,", [("CISO", None), ("ERCO", None)], id="trailing_commas"),
+        ],
+    )
+    def test_explicit_zones(self, raw, expected):
+        assert parse(raw) == [{"zone": z, "runner_label": label} for z, label in expected]
+
+    @pytest.mark.parametrize(
+        ("raw", "present"),
+        [
+            # auto:green only includes free-provider zones: US (EIA), UK, AEMO, ONS
+            pytest.param("auto:green", {"CISO", "GB-16", "AU-TAS", "BR-S"}, id="auto_green_free"),
+            # auto:green:full adds the token-requiring zones
+            pytest.param("auto:green:full", {"CISO", "NO-NO1", "CA-QC"}, id="auto_green_full"),
+            pytest.param("Auto:Green", {"CISO"}, id="case_insensitive"),
+            pytest.param("  auto:green  ", {"CISO"}, id="surrounding_whitespace"),
+        ],
+    )
+    def test_auto_green_presets(self, raw, present):
+        result = parse(raw)
+        assert len(result) >= 5
+        assert present <= {z["zone"] for z in result}
+
+
+# Free regional providers win over generic ones. DE and FR have keyless real
+# sources (Energy-Charts, RTE) preferred over the Open-Meteo estimate when no
+# ENTSO-E token is set. NO-NO1 has no national keyless source, so it estimates
+_DETECT_CASES = [
+    ("GB", "", PROVIDER_UK),
+    ("GB-13", "", PROVIDER_UK),
+    ("GB-national", "", PROVIDER_UK),
+    ("CISO", "", PROVIDER_EIA),
+    ("ERCO", "", PROVIDER_EIA),
+    ("XX-UNKNOWN", "", PROVIDER_ELECTRICITY_MAPS),
+    ("AU-NSW", "", PROVIDER_AEMO),
+    ("AU-TAS", "", PROVIDER_AEMO),
+    ("AU-VIC", "", PROVIDER_AEMO),
+    ("IN-NO", "", PROVIDER_GRID_INDIA),
+    ("IN-SO", "", PROVIDER_GRID_INDIA),
+    ("IN-EA", "", PROVIDER_GRID_INDIA),
+    ("IN-WE", "", PROVIDER_GRID_INDIA),
+    ("IN-NE", "", PROVIDER_GRID_INDIA),
+    ("BR-S", "", PROVIDER_ONS_BRAZIL),
+    ("BR-SE", "", PROVIDER_ONS_BRAZIL),
+    ("BR-CS", "", PROVIDER_ONS_BRAZIL),
+    ("BR-NE", "", PROVIDER_ONS_BRAZIL),
+    ("BR-N", "", PROVIDER_ONS_BRAZIL),
+    ("ZA", "", PROVIDER_ESKOM),
+    ("CA-ON", "", PROVIDER_CANADA),
+    ("CA-AB", "", PROVIDER_CANADA),
+    ("CA-QC", "", PROVIDER_CANADA),
+    ("TW", "", PROVIDER_TAIWAN),
+    ("DE", "", PROVIDER_ENERGY_CHARTS),
+    ("FR", "", PROVIDER_RTE),
+    ("NO-NO1", "", PROVIDER_OPEN_METEO),
+    ("DE", "my-token", PROVIDER_ENTSOE),
+    ("FR", "tok", PROVIDER_ENTSOE),
+    ("CISO", "tok", PROVIDER_EIA),
+]
+
+
 class TestDetectProvider:
-    def test_uk_national(self):
-        assert detect_provider("GB") == PROVIDER_UK
+    @pytest.mark.parametrize(
+        ("zone", "token", "provider"),
+        _DETECT_CASES,
+        ids=[f"{z}{'+entsoe_token' if t else ''}->{p}" for z, t, p in _DETECT_CASES],
+    )
+    def test_zone_routes_to_provider(self, zone, token, provider):
+        assert detect_provider(zone, entsoe_token=token) == provider
 
-    def test_uk_region(self):
-        assert detect_provider("GB-13") == PROVIDER_UK
-
-    def test_uk_national_alias(self):
-        assert detect_provider("GB-national") == PROVIDER_UK
-
-    def test_eia_zone(self):
-        assert detect_provider("CISO") == PROVIDER_EIA
-
-    def test_eia_us_zone(self):
-        assert detect_provider("ERCO") == PROVIDER_EIA
-
-    def test_unknown_zone_uses_electricity_maps(self):
-        assert detect_provider("XX-UNKNOWN") == PROVIDER_ELECTRICITY_MAPS
+    @pytest.mark.parametrize(
+        ("zone", "wrong"),
+        [("IN-NO", PROVIDER_UK), ("BR-S", PROVIDER_EIA)],
+        ids=["india_is_not_uk", "brazil_is_not_eia"],
+    )
+    def test_zone_not_misrouted(self, zone, wrong):
+        assert detect_provider(zone) != wrong
 
 
 class TestApiRequest:
+    @pytest.mark.parametrize("token", [None, "my-token"], ids=["no_auth", "auth_token_header"])
     @mock.patch("providers.base._SESSION.get")
-    def test_success_no_auth(self, mock_get):
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {"data": "value"},
-        )
-        result = api_request("https://example.com")
-        assert result == {"data": "value"}
-        call_headers = mock_get.call_args[1].get("headers", {})
-        assert "auth-token" not in call_headers
+    def test_success(self, mock_get, token):
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"ok": True})
+        assert api_request("https://example.com", token) == {"ok": True}
+        assert mock_get.call_args.kwargs.get("headers", {}).get("auth-token") == token
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_retries_on_500(self, mock_get):
+        fail = mock.Mock(status_code=500, text="Server Error")
+        success = mock.Mock(status_code=200, json=lambda: {"ok": True})
+        mock_get.side_effect = [fail, success]
+        assert api_request("https://example.com") == {"ok": True}
+        assert mock_get.call_count == 2
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_returns_none_on_all_failures(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
+        assert api_request("https://example.com") is None
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_429_honors_retry_after(self, mock_get):
+        limited = mock.Mock(status_code=429, text="slow", headers={"Retry-After": "7"})
+        success = mock.Mock(status_code=200, json=lambda: {"ok": True})
+        mock_get.side_effect = [limited, success]
+        with mock.patch("providers.base.time.sleep") as sleep:
+            assert api_request("https://example.com") == {"ok": True}
+        sleep.assert_called_once_with(7)
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_auth_error_no_retry(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=403, text="Forbidden")
+        assert api_request("https://example.com") is None
+        assert mock_get.call_count == 1
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_invalid_json(self, mock_get):
+        resp = mock.Mock(status_code=200, text="not json")
+        resp.json.side_effect = ValueError("bad")
+        mock_get.return_value = resp
+        assert api_request("https://example.com") is None
 
 
 class TestFailureReason:
     """request() classifies why a call failed, for actionable skip reasons."""
 
+    @pytest.mark.parametrize(
+        ("response", "reason"),
+        [
+            pytest.param(
+                mock.Mock(status_code=403, text="no"), "auth failed", id="403_auth_failed"
+            ),
+            pytest.param(
+                mock.Mock(status_code=429, text="slow", headers={}),
+                "rate limited",
+                id="429_rate_limited",
+            ),
+            pytest.param(requests.RequestException("boom"), "network error", id="network_error"),
+        ],
+    )
     @mock.patch("providers.base._SESSION.get")
-    def test_auth_failed(self, mock_get):
-        from providers import base
-
-        mock_get.return_value = mock.Mock(status_code=403, text="no")
+    def test_classifies_failure(self, mock_get, response, reason):
+        respond(mock_get, response)
         base.request("https://x")
-        assert base.last_failure_reason() == "auth failed"
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_rate_limited(self, mock_get):
-        from providers import base
-
-        mock_get.return_value = mock.Mock(status_code=429, text="slow", headers={})
-        base.request("https://x")
-        assert base.last_failure_reason() == "rate limited"
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_network_error(self, mock_get):
-        from providers import base
-
-        mock_get.side_effect = requests.RequestException("boom")
-        base.request("https://x")
-        assert base.last_failure_reason() == "network error"
+        assert base.last_failure_reason() == reason
 
     @mock.patch("providers.base._SESSION.get")
     def test_success_resets_reason(self, mock_get):
-        from providers import base
-
         mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"ok": 1})
         base.request("https://x")
         assert base.last_failure_reason() is None
 
     @mock.patch("check_grid.check_carbon_intensity")
     def test_dispatcher_surfaces_reason(self, mock_check):
-        from providers import base
-
         # check_carbon_intensity returns (None, None) and records the reason in
         # the same thread it ran on, exactly as the real request() does. The
         # dispatcher then reads it back thread-locally
@@ -257,144 +386,83 @@ class TestFailureReason:
         )
         assert skipped == [("CISO", "auth failed")]
 
-    @mock.patch("providers.base._SESSION.get")
-    def test_success_with_auth(self, mock_get):
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {"ok": True},
-        )
-        result = api_request("https://example.com", "my-token")
-        assert result == {"ok": True}
-        call_headers = mock_get.call_args[1].get("headers", {})
-        assert call_headers.get("auth-token") == "my-token"
 
-    @mock.patch("providers.base._SESSION.get")
-    def test_retries_on_500(self, mock_get):
-        fail = mock.Mock(status_code=500, text="Server Error")
-        success = mock.Mock(status_code=200, json=lambda: {"ok": True})
-        mock_get.side_effect = [fail, success]
-        result = api_request("https://example.com")
-        assert result == {"ok": True}
-        assert mock_get.call_count == 2
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_returns_none_on_all_failures(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
-        result = api_request("https://example.com")
-        assert result is None
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_auth_error_no_retry(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=403, text="Forbidden")
-        result = api_request("https://example.com")
-        assert result is None
-        assert mock_get.call_count == 1
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_invalid_json(self, mock_get):
-        resp = mock.Mock(status_code=200, text="not json")
-        resp.json.side_effect = ValueError("bad")
-        mock_get.return_value = resp
-        result = api_request("https://example.com")
-        assert result is None
-
-
+@pytest.mark.usefixtures("cache_env")
 class TestRequestCache:
     @pytest.fixture
-    def cache_env(self, tmp_path):
-        from providers import base
+    def cache_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CARBON_CACHE_DIR", str(tmp_path))
+        monkeypatch.setenv("CARBON_CACHE_TTL", "300")
 
-        prev_ttl = os.environ.get("CARBON_CACHE_TTL")
-        prev_dir = os.environ.get("CARBON_CACHE_DIR")
-        os.environ["CARBON_CACHE_DIR"] = str(tmp_path)
-        yield base
-        for key, prev in (("CARBON_CACHE_TTL", prev_ttl), ("CARBON_CACHE_DIR", prev_dir)):
-            if prev is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = prev
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_caches_get_json_within_ttl(self, mock_get, cache_env):
-        os.environ["CARBON_CACHE_TTL"] = "300"
-        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
-        first = cache_env.request("https://grid.example/intensity")
-        second = cache_env.request("https://grid.example/intensity")
-        assert first == second == {"v": 1}
-        assert mock_get.call_count == 1  # second served from cache
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_disabled_by_default(self, mock_get, cache_env):
-        os.environ.pop("CARBON_CACHE_TTL", None)
-        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
-        cache_env.request("https://grid.example/intensity")
-        cache_env.request("https://grid.example/intensity")
-        assert mock_get.call_count == 2  # no caching when TTL unset
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_expired_entry_refetched(self, mock_get, cache_env):
-        os.environ["CARBON_CACHE_TTL"] = "300"
-        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
-        cache_env.request("https://grid.example/intensity")
-        # Backdate the cached entry beyond the TTL
-        path = cache_env._cache_path("GET", "https://grid.example/intensity", "json")
+    @staticmethod
+    def _backdate(url):
+        """Age the cached GET entry past the TTL so the next call can't serve it fresh."""
+        path = base._cache_path("GET", url, "json")
         with open(path) as fh:
             entry = json.load(fh)
         entry["ts"] -= 10_000
         with open(path, "w") as fh:
             json.dump(entry, fh)
-        cache_env.request("https://grid.example/intensity")
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_caches_get_json_within_ttl(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        first = base.request("https://grid.example/intensity")
+        second = base.request("https://grid.example/intensity")
+        assert first == second == {"v": 1}
+        assert mock_get.call_count == 1  # second served from cache
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_disabled_by_default(self, mock_get, monkeypatch):
+        monkeypatch.delenv("CARBON_CACHE_TTL")
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        base.request("https://grid.example/intensity")
+        base.request("https://grid.example/intensity")
+        assert mock_get.call_count == 2  # no caching when TTL unset
+
+    @mock.patch("providers.base._SESSION.get")
+    def test_expired_entry_refetched(self, mock_get):
+        mock_get.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
+        base.request("https://grid.example/intensity")
+        self._backdate("https://grid.example/intensity")
+        base.request("https://grid.example/intensity")
         assert mock_get.call_count == 2
 
     @mock.patch("providers.base._SESSION.post")
-    def test_post_not_cached(self, mock_post, cache_env):
-        os.environ["CARBON_CACHE_TTL"] = "300"
+    def test_post_not_cached(self, mock_post):
         mock_post.return_value = mock.Mock(status_code=200, json=lambda: {"v": 1})
-        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
-        cache_env.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        base.request("https://grid.example/q", method="POST", json_body={"a": 1})
+        base.request("https://grid.example/q", method="POST", json_body={"a": 1})
         assert mock_post.call_count == 2  # writes are never cached
 
     @mock.patch("providers.base._SESSION.get")
-    def test_etag_revalidation_serves_cache_on_304(self, mock_get, cache_env):
-        os.environ["CARBON_CACHE_TTL"] = "300"
+    def test_etag_revalidation_serves_cache_on_304(self, mock_get):
         ok = mock.Mock(status_code=200, json=lambda: {"v": 1}, headers={"ETag": "abc"})
         not_modified = mock.Mock(status_code=304, headers={})
         mock_get.side_effect = [ok, not_modified]
         url = "https://grid.example/intensity"
 
-        assert cache_env.request(url) == {"v": 1}  # 200, cached with ETag
-        # Make the entry stale so the next call revalidates instead of using TTL
-        path = cache_env._cache_path("GET", url, "json")
-        with open(path) as fh:
-            entry = json.load(fh)
-        entry["ts"] -= 10_000
-        with open(path, "w") as fh:
-            json.dump(entry, fh)
+        assert base.request(url) == {"v": 1}  # 200, cached with ETag
+        self._backdate(url)  # stale, so the next call revalidates instead of using TTL
 
-        assert cache_env.request(url) == {"v": 1}  # 304 -> served from cache
+        assert base.request(url) == {"v": 1}  # 304 -> served from cache
         assert mock_get.call_count == 2
         sent = mock_get.call_args.kwargs["headers"]
         assert sent.get("If-None-Match") == "abc"  # conditional request was made
 
     @mock.patch("providers.base._SESSION.get")
-    def test_304_refreshes_freshness(self, mock_get, cache_env):
-        os.environ["CARBON_CACHE_TTL"] = "300"
+    def test_304_refreshes_freshness(self, mock_get):
         ok = mock.Mock(status_code=200, json=lambda: {"v": 9}, headers={"ETag": "z"})
         not_modified = mock.Mock(status_code=304, headers={})
         mock_get.side_effect = [ok, not_modified]
         url = "https://grid.example/x"
 
-        cache_env.request(url)
-        path = cache_env._cache_path("GET", url, "json")
-        with open(path) as fh:
-            entry = json.load(fh)
-        entry["ts"] -= 10_000
-        with open(path, "w") as fh:
-            json.dump(entry, fh)
+        base.request(url)
+        self._backdate(url)
 
-        cache_env.request(url)  # 304 -> bumps ts back to now
+        base.request(url)  # 304 -> bumps ts back to now
         # A third call is within TTL again, so it serves from cache (no 3rd GET)
-        assert cache_env.request(url) == {"v": 9}
+        assert base.request(url) == {"v": 9}
         assert mock_get.call_count == 2
 
 
@@ -403,160 +471,126 @@ class TestRequestCache:
 # ---------------------------------------------------------------------------
 
 
+def _uk_points(values, key="from"):
+    return [{key: t, "intensity": {"forecast": v}} for t, v in values]
+
+
 class TestUkCheckCarbonIntensity:
-    @mock.patch("providers.uk.api_request")
-    def test_national_green(self, mock_api):
-        mock_api.return_value = {
-            "data": [
+    @pytest.mark.parametrize(
+        ("zone", "response", "expected"),
+        [
+            pytest.param(
+                "GB",
                 {
-                    "from": "2026-03-10T00:00Z",
-                    "to": "2026-03-10T00:30Z",
-                    "intensity": {"forecast": 100, "actual": 95, "index": "low"},
-                }
-            ]
-        }
-        is_green, intensity = uk.check_carbon_intensity("GB", 250)
-        assert is_green is True
-        assert intensity == 100
-
+                    "data": [
+                        {
+                            "from": "2026-03-10T00:00Z",
+                            "to": "2026-03-10T00:30Z",
+                            "intensity": {"forecast": 100, "actual": 95, "index": "low"},
+                        }
+                    ]
+                },
+                (True, 100),
+                id="national_green",
+            ),
+            pytest.param(
+                "GB",
+                {"data": [{"intensity": {"forecast": 400, "actual": 410, "index": "high"}}]},
+                (False, 400),
+                id="national_dirty",
+            ),
+            pytest.param(
+                "GB-16",
+                {"data": [{"data": [{"intensity": {"forecast": 50, "index": "very low"}}]}]},
+                (True, 50),
+                id="regional_green",
+            ),
+            pytest.param("GB", None, (None, None), id="api_error"),
+            pytest.param("GB", {"data": [{}]}, (None, None), id="malformed_response"),
+        ],
+    )
     @mock.patch("providers.uk.api_request")
-    def test_national_dirty(self, mock_api):
-        mock_api.return_value = {
-            "data": [{"intensity": {"forecast": 400, "actual": 410, "index": "high"}}]
-        }
-        is_green, intensity = uk.check_carbon_intensity("GB", 250)
-        assert is_green is False
-        assert intensity == 400
-
-    @mock.patch("providers.uk.api_request")
-    def test_regional_green(self, mock_api):
-        mock_api.return_value = {
-            "data": [{"data": [{"intensity": {"forecast": 50, "index": "very low"}}]}]
-        }
-        is_green, intensity = uk.check_carbon_intensity("GB-16", 250)
-        assert is_green is True
-        assert intensity == 50
-
-    @mock.patch("providers.uk.api_request")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        is_green, intensity = uk.check_carbon_intensity("GB", 250)
-        assert is_green is None
-        assert intensity is None
+    def test_verdict(self, mock_api, zone, response, expected):
+        mock_api.return_value = response
+        assert_verdict(uk.check_carbon_intensity(zone, 250), *expected)
 
     @mock.patch("providers.uk.api_request")
     def test_unknown_zone(self, mock_api):
-        is_green, intensity = uk.check_carbon_intensity("GB-99", 250)
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(uk.check_carbon_intensity("GB-99", 250), None, None)
         mock_api.assert_not_called()
-
-    @mock.patch("providers.uk.api_request")
-    def test_malformed_response(self, mock_api):
-        mock_api.return_value = {"data": [{}]}
-        is_green, intensity = uk.check_carbon_intensity("GB", 250)
-        assert is_green is None
-        assert intensity is None
 
 
 class TestUkGetForecast:
+    @pytest.mark.parametrize(
+        ("zone", "response", "expected"),
+        [
+            pytest.param(
+                "GB",
+                {"data": _uk_points([("2026-03-10T00:00Z", 300), ("2026-03-10T06:00Z", 120)])},
+                ("2026-03-10T06:00Z", 120),
+                id="finds_green_window",
+            ),
+            pytest.param(
+                "GB",
+                {"data": _uk_points([("2026-03-10T00:00Z", 300), ("2026-03-10T06:00Z", 350)])},
+                ("none_in_forecast", None),
+                id="no_green_window",
+            ),
+            pytest.param("GB", None, (None, None), id="api_error"),
+            pytest.param(
+                "GB-16",
+                {
+                    "data": {
+                        "data": _uk_points([("2026-03-10T12:00Z", 300), ("2026-03-10T14:00Z", 90)])
+                    }
+                },
+                ("2026-03-10T14:00Z", 90),
+                id="regional_finds_window",
+            ),
+            pytest.param(
+                "GB-16",
+                {"data": {"data": [{"oops": True}]}},
+                (None, None),
+                id="regional_malformed_response",
+            ),
+        ],
+    )
     @mock.patch("providers.uk.api_request")
-    def test_finds_green_window(self, mock_api):
-        mock_api.return_value = {
-            "data": [
-                {"from": "2026-03-10T00:00Z", "intensity": {"forecast": 300}},
-                {"from": "2026-03-10T06:00Z", "intensity": {"forecast": 120}},
-            ]
-        }
-        dt, intensity = uk.get_forecast("GB", 200)
-        assert dt == "2026-03-10T06:00Z"
-        assert intensity == 120
+    def test_forecast(self, mock_api, zone, response, expected):
+        mock_api.return_value = response
+        assert uk.get_forecast(zone, 200) == expected
 
-    @mock.patch("providers.uk.api_request")
-    def test_no_green_window(self, mock_api):
-        mock_api.return_value = {
-            "data": [
-                {"from": "2026-03-10T00:00Z", "intensity": {"forecast": 300}},
-                {"from": "2026-03-10T06:00Z", "intensity": {"forecast": 350}},
-            ]
-        }
-        dt, intensity = uk.get_forecast("GB", 200)
-        assert dt == "none_in_forecast"
-        assert intensity is None
-
-    @mock.patch("providers.uk.api_request")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        dt, intensity = uk.get_forecast("GB", 200)
-        assert dt is None
-        assert intensity is None
+    def test_unknown_zone(self):
+        assert uk.get_forecast("GB-999", 200) == (None, None)
 
 
 class TestUkGetHistoryTrend:
+    @pytest.mark.parametrize(
+        ("zone", "response", "expected"),
+        [
+            pytest.param(
+                "GB",
+                {"data": [{"intensity": {"forecast": v}} for v in _DECREASING]},
+                "decreasing",
+                id="decreasing",
+            ),
+            pytest.param("GB", None, None, id="api_error"),
+            # Regional zones nest the points under data.data
+            pytest.param(
+                "GB-16",
+                {"data": {"data": [{"intensity": {"forecast": v}} for v in _DECREASING]}},
+                "decreasing",
+                id="regional_decreasing",
+            ),
+        ],
+    )
     @mock.patch("providers.uk.api_request")
-    def test_decreasing(self, mock_api):
-        mock_api.return_value = {
-            "data": [
-                {"intensity": {"forecast": 400}},
-                {"intensity": {"forecast": 380}},
-                {"intensity": {"forecast": 360}},
-                {"intensity": {"forecast": 300}},
-                {"intensity": {"forecast": 280}},
-                {"intensity": {"forecast": 260}},
-            ]
-        }
-        assert uk.get_history_trend("GB") == "decreasing"
+    def test_trend(self, mock_api, zone, response, expected):
+        mock_api.return_value = response
+        assert uk.get_history_trend(zone) == expected
 
-    @mock.patch("providers.uk.api_request")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        assert uk.get_history_trend("GB") is None
-
-    @mock.patch("providers.uk.api_request")
-    def test_regional_trend(self, mock_api):
-        # Regional zones nest the points under data.data
-        mock_api.return_value = {
-            "data": {
-                "data": [
-                    {"intensity": {"forecast": 400}},
-                    {"intensity": {"forecast": 380}},
-                    {"intensity": {"forecast": 360}},
-                    {"intensity": {"forecast": 300}},
-                    {"intensity": {"forecast": 280}},
-                    {"intensity": {"forecast": 260}},
-                ]
-            }
-        }
-        assert uk.get_history_trend("GB-16") == "decreasing"
-
-    def test_trend_unknown_zone(self):
+    def test_unknown_zone(self):
         assert uk.get_history_trend("GB-999") is None
-
-
-class TestUkRegionalForecast:
-    @mock.patch("providers.uk.api_request")
-    def test_regional_forecast_finds_window(self, mock_api):
-        mock_api.return_value = {
-            "data": {
-                "data": [
-                    {"from": "2026-03-10T12:00Z", "intensity": {"forecast": 300}},
-                    {"from": "2026-03-10T14:00Z", "intensity": {"forecast": 90}},
-                ]
-            }
-        }
-        dt, intensity = uk.get_forecast("GB-16", 200)
-        assert dt == "2026-03-10T14:00Z"
-        assert intensity == 90
-
-    def test_forecast_unknown_zone(self):
-        dt, intensity = uk.get_forecast("GB-999", 200)
-        assert dt is None and intensity is None
-
-    @mock.patch("providers.uk.api_request")
-    def test_forecast_malformed_response(self, mock_api):
-        mock_api.return_value = {"data": {"data": [{"oops": True}]}}
-        dt, intensity = uk.get_forecast("GB-16", 200)
-        assert dt is None and intensity is None
 
 
 # ---------------------------------------------------------------------------
@@ -564,66 +598,59 @@ class TestUkRegionalForecast:
 # ---------------------------------------------------------------------------
 
 
+def _eia_response(respondent, **mw):
+    rows = [
+        {"period": "2026-03-09T06", "respondent": respondent, "fueltype": fuel, "value": value}
+        for fuel, value in mw.items()
+    ]
+    return {"response": {"data": rows}}
+
+
 class TestEiaFuelMixToIntensity:
-    def test_all_gas(self):
-        data = [{"fueltype": "NG", "value": 100}]
-        assert eia._fuel_mix_to_intensity(data) == 490
-
-    def test_all_wind(self):
-        data = [{"fueltype": "WND", "value": 100}]
-        # IPCC AR5 wind onshore = 11, renewables are no longer treated as zero
-        assert eia._fuel_mix_to_intensity(data) == 11
-
-    def test_mixed(self):
-        data = [
-            {"fueltype": "NG", "value": 50},  # 50 * 490 = 24500
-            {"fueltype": "WND", "value": 50},  # 50 * 11 = 550
-        ]
-        # (24500 + 550) / 100 = 250.5 -> 250
-        assert eia._fuel_mix_to_intensity(data) == 250
-
-    def test_negative_values_ignored(self):
-        data = [
-            {"fueltype": "NG", "value": 100},
-            {"fueltype": "SUN", "value": -10},  # Negative (consuming), ignored
-        ]
-        assert eia._fuel_mix_to_intensity(data) == 490
-
-    def test_none_values_ignored(self):
-        data = [
-            {"fueltype": "NG", "value": 100},
-            {"fueltype": "SUN", "value": None},
-        ]
-        assert eia._fuel_mix_to_intensity(data) == 490
-
-    def test_empty_data(self):
-        assert eia._fuel_mix_to_intensity([]) is None
-
-    def test_all_zero(self):
-        data = [{"fueltype": "NG", "value": 0}]
-        assert eia._fuel_mix_to_intensity(data) is None
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            pytest.param([{"fueltype": "NG", "value": 100}], 490, id="all_gas"),
+            # IPCC AR5 wind onshore = 11, renewables are not treated as zero
+            pytest.param([{"fueltype": "WND", "value": 100}], 11, id="all_wind"),
+            # (50 * 490 + 50 * 11) / 100 = 250.5 -> 250
+            pytest.param(
+                [{"fueltype": "NG", "value": 50}, {"fueltype": "WND", "value": 50}],
+                250,
+                id="mixed",
+            ),
+            # Negative (consuming) values are ignored
+            pytest.param(
+                [{"fueltype": "NG", "value": 100}, {"fueltype": "SUN", "value": -10}],
+                490,
+                id="negative_values_ignored",
+            ),
+            pytest.param(
+                [{"fueltype": "NG", "value": 100}, {"fueltype": "SUN", "value": None}],
+                490,
+                id="none_values_ignored",
+            ),
+            pytest.param([], None, id="empty_data"),
+            pytest.param([{"fueltype": "NG", "value": 0}], None, id="all_zero"),
+            # Battery storage is excluded from the mix rather than counted as zero-carbon
+            pytest.param(
+                [{"fueltype": "COL", "value": 100}, {"fueltype": "BAT", "value": 100}],
+                820,
+                id="battery_storage_excluded",
+            ),
+        ],
+    )
+    def test_intensity(self, data, expected):
+        assert eia._fuel_mix_to_intensity(data) == expected
 
     def test_unknown_fuel_warns_and_falls_back(self, capsys):
         # an unknown EIA fuel code must warn and still apply the fallback
         # factor so the calc proceeds rather than silently using zero
-        from providers.base import DEFAULT_FUEL_FACTOR
-
         data = [{"fueltype": "XYZ", "value": 100}]
-        result = eia._fuel_mix_to_intensity(data)
-        assert result == DEFAULT_FUEL_FACTOR
+        assert eia._fuel_mix_to_intensity(data) == base.DEFAULT_FUEL_FACTOR
         out = capsys.readouterr().out
         assert "::warning::" in out
         assert "XYZ" in out
-
-    def test_battery_storage_excluded(self):
-        # battery storage must not be counted as zero-carbon generation,
-        # it is excluded from the mix entirely
-        data = [
-            {"fueltype": "COL", "value": 100},
-            {"fueltype": "BAT", "value": 100},
-        ]
-        # BAT excluded, so result is pure coal = 820
-        assert eia._fuel_mix_to_intensity(data) == 820
 
 
 class TestEiaFuelMixSeries:
@@ -652,91 +679,39 @@ class TestEiaFuelMixSeries:
 
 
 class TestEiaCheckCarbonIntensity:
+    @pytest.mark.parametrize(
+        ("zone", "response", "expected"),
+        [
+            # wind 11, solar 48, gas 490: (500*11 + 300*48 + 100*490) / 900
+            # = (5500 + 14400 + 49000) / 900 = 68900/900 = 76.6 -> 77
+            pytest.param(
+                "CISO", _eia_response("CISO", WND=500, SUN=300, NG=100), (True, 77), id="green_grid"
+            ),
+            # (500*820 + 500*490) / 1000 = 655
+            pytest.param(
+                "ERCO", _eia_response("ERCO", COL=500, NG=500), (False, 655), id="dirty_grid"
+            ),
+            pytest.param("CISO", None, (None, None), id="api_error"),
+            pytest.param("CISO", {"response": {"data": []}}, (None, None), id="empty_data"),
+        ],
+    )
     @mock.patch("providers.eia.api_request")
-    def test_green_grid(self, mock_api):
-        mock_api.return_value = {
-            "response": {
-                "data": [
-                    {
-                        "period": "2026-03-09T06",
-                        "respondent": "CISO",
-                        "fueltype": "WND",
-                        "value": 500,
-                    },
-                    {
-                        "period": "2026-03-09T06",
-                        "respondent": "CISO",
-                        "fueltype": "SUN",
-                        "value": 300,
-                    },
-                    {
-                        "period": "2026-03-09T06",
-                        "respondent": "CISO",
-                        "fueltype": "NG",
-                        "value": 100,
-                    },
-                ]
-            }
-        }
-        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
-        assert is_green is True
-        # wind 11, solar 48, gas 490: (500*11 + 300*48 + 100*490) / 900
-        # = (5500 + 14400 + 49000) / 900 = 68900/900 = 76.6 -> 77
-        assert intensity == 77
+    def test_verdict(self, mock_api, zone, response, expected):
+        mock_api.return_value = response
+        assert_verdict(eia.check_carbon_intensity(zone, 250), *expected)
 
+    @pytest.mark.parametrize(
+        ("key", "in_url", "not_in_url"),
+        [("", "DEMO_KEY", None), ("my-key", "my-key", "DEMO_KEY")],
+        ids=["demo_key_by_default", "custom_key"],
+    )
     @mock.patch("providers.eia.api_request")
-    def test_dirty_grid(self, mock_api):
-        mock_api.return_value = {
-            "response": {
-                "data": [
-                    {
-                        "period": "2026-03-09T06",
-                        "respondent": "ERCO",
-                        "fueltype": "COL",
-                        "value": 500,
-                    },
-                    {
-                        "period": "2026-03-09T06",
-                        "respondent": "ERCO",
-                        "fueltype": "NG",
-                        "value": 500,
-                    },
-                ]
-            }
-        }
-        is_green, intensity = eia.check_carbon_intensity("ERCO", 250)
-        assert is_green is False
-        # (500*820 + 500*490) / 1000 = 655
-        assert intensity == 655
-
-    @mock.patch("providers.eia.api_request")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.eia.api_request")
-    def test_empty_data(self, mock_api):
+    def test_api_key_in_url(self, mock_api, key, in_url, not_in_url):
         mock_api.return_value = {"response": {"data": []}}
-        is_green, intensity = eia.check_carbon_intensity("CISO", 250)
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.eia.api_request")
-    def test_uses_demo_key_by_default(self, mock_api):
-        mock_api.return_value = {"response": {"data": []}}
-        eia.check_carbon_intensity("CISO", 250)
+        eia.check_carbon_intensity("CISO", 250, eia_api_key=key)
         call_url = mock_api.call_args[0][0]
-        assert "DEMO_KEY" in call_url
-
-    @mock.patch("providers.eia.api_request")
-    def test_uses_custom_key(self, mock_api):
-        mock_api.return_value = {"response": {"data": []}}
-        eia.check_carbon_intensity("CISO", 250, eia_api_key="my-key")
-        call_url = mock_api.call_args[0][0]
-        assert "my-key" in call_url
-        assert "DEMO_KEY" not in call_url
+        assert in_url in call_url
+        assert not_in_url is None or not_in_url not in call_url
 
 
 class TestEiaGetHistoryTrend:
@@ -751,8 +726,7 @@ class TestEiaGetHistoryTrend:
             rows.append({"period": period, "fueltype": "WND", "value": wind_amounts[i]})
 
         mock_api.return_value = {"response": {"data": rows}}
-        result = eia.get_history_trend("CISO")
-        assert result == "decreasing"
+        assert eia.get_history_trend("CISO") == "decreasing"
 
     @mock.patch("providers.eia.api_request")
     def test_api_error(self, mock_api):
@@ -766,97 +740,76 @@ class TestEiaGetHistoryTrend:
 
 
 class TestElectricityMapsCheckCarbonIntensity:
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            pytest.param({"carbonIntensity": 85.3}, (True, 85), id="green"),
+            pytest.param({"carbonIntensity": 450.7}, (False, 451), id="dirty"),
+            pytest.param(None, (None, None), id="api_error"),
+            pytest.param({"zone": "DE"}, (None, None), id="no_intensity_in_response"),
+        ],
+    )
     @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_green(self, mock_api):
-        mock_api.return_value = {"carbonIntensity": 85.3}
-        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
-        assert is_green is True
-        assert intensity == 85
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_dirty(self, mock_api):
-        mock_api.return_value = {"carbonIntensity": 450.7}
-        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
-        assert is_green is False
-        assert intensity == 451
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
-        assert is_green is None
-        assert intensity is None
+    def test_verdict(self, mock_api, response, expected):
+        mock_api.return_value = response
+        assert_verdict(electricity_maps.check_carbon_intensity("DE", 200, "key"), *expected)
 
     def test_no_api_key(self):
-        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "")
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_no_intensity_in_response(self, mock_api):
-        mock_api.return_value = {"zone": "DE"}
-        is_green, intensity = electricity_maps.check_carbon_intensity("DE", 200, "key")
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(electricity_maps.check_carbon_intensity("DE", 200, ""), None, None)
 
 
 class TestElectricityMapsGetForecast:
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            pytest.param(
+                {
+                    "forecast": [
+                        {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
+                        {"carbonIntensity": 80, "datetime": "2026-03-10T14:00Z"},
+                    ]
+                },
+                ("2026-03-10T14:00Z", 80),
+                id="finds_green_window",
+            ),
+            pytest.param(
+                {
+                    "forecast": [
+                        {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
+                        {"carbonIntensity": 350, "datetime": "2026-03-10T14:00Z"},
+                    ]
+                },
+                ("none_in_forecast", None),
+                id="no_green_window",
+            ),
+            pytest.param(None, (None, None), id="api_error"),
+        ],
+    )
     @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_finds_green_window(self, mock_api):
-        mock_api.return_value = {
-            "forecast": [
-                {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
-                {"carbonIntensity": 80, "datetime": "2026-03-10T14:00Z"},
-            ]
-        }
-        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
-        assert dt == "2026-03-10T14:00Z"
-        assert intensity == 80
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_no_green_window(self, mock_api):
-        mock_api.return_value = {
-            "forecast": [
-                {"carbonIntensity": 300, "datetime": "2026-03-10T12:00Z"},
-                {"carbonIntensity": 350, "datetime": "2026-03-10T14:00Z"},
-            ]
-        }
-        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
-        assert dt == "none_in_forecast"
-        assert intensity is None
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        dt, intensity = electricity_maps.get_forecast("DE", 200, "key")
-        assert dt is None
-        assert intensity is None
+    def test_forecast(self, mock_api, response, expected):
+        mock_api.return_value = response
+        assert electricity_maps.get_forecast("DE", 200, "key") == expected
 
     def test_no_api_key(self):
-        dt, intensity = electricity_maps.get_forecast("DE", 200, "")
-        assert dt is None
-        assert intensity is None
+        assert electricity_maps.get_forecast("DE", 200, "") == (None, None)
 
 
 class TestElectricityMapsGetHistoryTrend:
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            pytest.param(
+                {"history": [{"carbonIntensity": v} for v in _DECREASING]},
+                "decreasing",
+                id="decreasing",
+            ),
+            pytest.param(None, None, id="api_error"),
+        ],
+    )
     @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_decreasing(self, mock_api):
-        mock_api.return_value = {
-            "history": [
-                {"carbonIntensity": 400},
-                {"carbonIntensity": 380},
-                {"carbonIntensity": 360},
-                {"carbonIntensity": 300},
-                {"carbonIntensity": 280},
-                {"carbonIntensity": 260},
-            ]
-        }
-        assert electricity_maps.get_history_trend("DE", "key") == "decreasing"
-
-    @mock.patch("providers.electricity_maps.api_request_with_header")
-    def test_api_error(self, mock_api):
-        mock_api.return_value = None
-        assert electricity_maps.get_history_trend("DE", "key") is None
+    def test_trend(self, mock_api, response, expected):
+        mock_api.return_value = response
+        assert electricity_maps.get_history_trend("DE", "key") == expected
 
     def test_no_api_key(self):
         assert electricity_maps.get_history_trend("DE", "") is None
@@ -895,63 +848,41 @@ class TestGridstatusGetForecast:
     def test_finds_green_window(self, mock_renew, mock_load):
         mock_renew.return_value = {
             "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
-            "2026-03-10T18:00:00+00:00": {"solar_mw": 8000, "wind_mw": 2000},
+            _SLOT: {"solar_mw": 8000, "wind_mw": 2000},
         }
-        mock_load.return_value = {
-            "2026-03-10T12:00:00+00:00": 10000,
-            "2026-03-10T18:00:00+00:00": 10000,
-        }
-        dt, intensity = gridstatus.get_forecast("CISO", 250, "key")
-        assert dt == "2026-03-10T18:00:00+00:00"
-        assert intensity == 0
+        mock_load.return_value = {"2026-03-10T12:00:00+00:00": 10000, _SLOT: 10000}
+        assert gridstatus.get_forecast("CISO", 250, "key") == (_SLOT, 0)
 
     @mock.patch("providers.gridstatus._get_load_forecast")
     @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_no_green_window(self, mock_renew, mock_load):
-        mock_renew.return_value = {
-            "2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50},
-        }
-        mock_load.return_value = {
-            "2026-03-10T12:00:00+00:00": 10000,
-        }
-        dt, intensity = gridstatus.get_forecast("CISO", 100, "key")
-        assert dt == "none_in_forecast"
-        assert intensity is None
+        mock_renew.return_value = {"2026-03-10T12:00:00+00:00": {"solar_mw": 100, "wind_mw": 50}}
+        mock_load.return_value = {"2026-03-10T12:00:00+00:00": 10000}
+        assert gridstatus.get_forecast("CISO", 100, "key") == ("none_in_forecast", None)
 
     @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_no_renewable_data(self, mock_renew):
         mock_renew.return_value = {}
-        dt, intensity = gridstatus.get_forecast("CISO", 250, "key")
-        assert dt is None
-        assert intensity is None
+        assert gridstatus.get_forecast("CISO", 250, "key") == (None, None)
 
     def test_unsupported_zone(self):
-        dt, intensity = gridstatus.get_forecast("BPAT", 250, "key")
-        assert dt is None
-        assert intensity is None
+        assert gridstatus.get_forecast("BPAT", 250, "key") == (None, None)
 
     @mock.patch("providers.gridstatus._get_load_forecast")
     @mock.patch("providers.gridstatus._get_renewable_forecast")
-    def test_no_key_returns_none(self, mock_renew, mock_load):
+    def test_no_key_returns_none(self, mock_renew, _mock_load):
         """get_forecast returns None for US zones without GridStatus key."""
-        dt, intensity = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "")
-        assert dt is None
-        assert intensity is None
+        assert check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "") == (None, None)
         mock_renew.assert_not_called()
 
     @mock.patch("providers.gridstatus._get_load_forecast")
     @mock.patch("providers.gridstatus._get_renewable_forecast")
     def test_get_forecast_with_key(self, mock_renew, mock_load):
         """get_forecast calls gridstatus when key is provided."""
-        mock_renew.return_value = {
-            "2026-03-10T18:00:00+00:00": {"solar_mw": 9000, "wind_mw": 1000},
-        }
-        mock_load.return_value = {
-            "2026-03-10T18:00:00+00:00": 10000,
-        }
-        dt, intensity = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "my-gridstatus-key")
-        assert dt == "2026-03-10T18:00:00+00:00"
-        assert intensity == 0
+        mock_renew.return_value = {_SLOT: {"solar_mw": 9000, "wind_mw": 1000}}
+        mock_load.return_value = {_SLOT: 10000}
+        result = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "my-gridstatus-key")
+        assert result == (_SLOT, 0)
 
 
 class TestGridstatusRenewableForecast:
@@ -959,63 +890,39 @@ class TestGridstatusRenewableForecast:
     def test_single_dataset_with_location_filter(self, mock_query):
         """CAISO-style: single dataset with location filter."""
         mock_query.return_value = [
-            {
-                "interval_start_utc": "2026-03-10T18:00:00+00:00",
-                "location": "CAISO",
-                "solar_mw": 8000,
-                "wind_mw": 1500,
-            },
-            {
-                "interval_start_utc": "2026-03-10T18:00:00+00:00",
-                "location": "NP15",
-                "solar_mw": 2000,
-                "wind_mw": 500,
-            },
+            {"interval_start_utc": _SLOT, "location": "CAISO", "solar_mw": 8000, "wind_mw": 1500},
+            {"interval_start_utc": _SLOT, "location": "NP15", "solar_mw": 2000, "wind_mw": 500},
         ]
         iso_config = gridstatus.GRIDSTATUS_ISO_MAP["CISO"]
         result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
-        assert "2026-03-10T18:00:00+00:00" in result
-        assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 8000
-        assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 1500
+        assert result[_SLOT] == {"solar_mw": 8000, "wind_mw": 1500}
 
     @mock.patch("providers.gridstatus._query_dataset")
     def test_separate_solar_wind_datasets(self, mock_query):
         """PJM-style: separate solar and wind datasets."""
         mock_query.side_effect = [
-            # solar
-            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "solar_forecast": 3000}],
-            # wind
-            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "wind_forecast": 2000}],
+            [{"interval_start_utc": _SLOT, "solar_forecast": 3000}],
+            [{"interval_start_utc": _SLOT, "wind_forecast": 2000}],
         ]
         iso_config = gridstatus.GRIDSTATUS_ISO_MAP["PJM"]
         result = gridstatus._get_renewable_forecast(iso_config, "key", "2026-03-10")
-        assert result["2026-03-10T18:00:00+00:00"]["solar_mw"] == 3000
-        assert result["2026-03-10T18:00:00+00:00"]["wind_mw"] == 2000
+        assert result[_SLOT]["solar_mw"] == 3000
+        assert result[_SLOT]["wind_mw"] == 2000
 
     @mock.patch("providers.gridstatus._query_dataset")
     def test_sum_columns_branch(self, mock_query):
         """ISNE-style sum_columns: sum all numeric forecast columns per row."""
-        iso = None
-        for cfg in gridstatus.GRIDSTATUS_ISO_MAP.values():
-            if cfg.get("sum_columns"):
-                iso = cfg
-                break
+        iso = next(
+            (cfg for cfg in gridstatus.GRIDSTATUS_ISO_MAP.values() if cfg.get("sum_columns")), None
+        )
         assert iso is not None, "expected at least one sum_columns ISO"
         mock_query.side_effect = [
             # solar dataset: two zones summed
-            [
-                {
-                    "interval_start_utc": "2026-03-10T18:00:00+00:00",
-                    "publish_time_utc": "x",
-                    "zone_a": 1000,
-                    "zone_b": 500,
-                }
-            ],
+            [{"interval_start_utc": _SLOT, "publish_time_utc": "x", "zone_a": 1000, "zone_b": 500}],
             # wind dataset
-            [{"interval_start_utc": "2026-03-10T18:00:00+00:00", "zone_a": 800}],
+            [{"interval_start_utc": _SLOT, "zone_a": 800}],
         ]
-        result = iso and gridstatus._get_renewable_forecast(iso, "key", "2026-03-10")
-        slot = result["2026-03-10T18:00:00+00:00"]
+        slot = gridstatus._get_renewable_forecast(iso, "key", "2026-03-10")[_SLOT]
         assert slot["solar_mw"] == 1500  # 1000 + 500, publish_/interval_ excluded
         assert slot["wind_mw"] == 800
 
@@ -1027,12 +934,11 @@ class TestGridstatusRenewableForecast:
     @mock.patch("providers.gridstatus._query_dataset")
     def test_load_forecast_parsing(self, mock_query):
         mock_query.return_value = [
-            {"interval_start_utc": "2026-03-10T18:00:00+00:00", "load_forecast": 12345},
+            {"interval_start_utc": _SLOT, "load_forecast": 12345},
             {"interval_start_utc": None, "load_forecast": 999},  # skipped (no ts)
         ]
         iso = gridstatus.GRIDSTATUS_ISO_MAP["CISO"]
-        result = gridstatus._get_load_forecast(iso, "key", "2026-03-10")
-        assert result == {"2026-03-10T18:00:00+00:00": 12345.0}
+        assert gridstatus._get_load_forecast(iso, "key", "2026-03-10") == {_SLOT: 12345.0}
 
     def test_load_forecast_no_dataset(self):
         # ERCO has load_dataset=None
@@ -1040,29 +946,33 @@ class TestGridstatusRenewableForecast:
         assert gridstatus._get_load_forecast(iso, "key", "2026-03-10") is None
 
 
-class TestOnsBrazilCheckAndForecast:
-    @mock.patch("providers.ons_brazil._fetch_energy_balance")
-    def test_check_api_unavailable(self, mock_fetch):
-        mock_fetch.return_value = None
-        assert ons_brazil.check_carbon_intensity("BR-S", 250) == (None, None)
+# ---------------------------------------------------------------------------
+# ONS Brazil provider tests
+# ---------------------------------------------------------------------------
 
-    @mock.patch("providers.ons_brazil._fetch_energy_balance")
-    def test_check_unparseable_response(self, mock_fetch):
-        mock_fetch.return_value = {"unexpected": "shape"}
-        assert ons_brazil.check_carbon_intensity("BR-S", 250) == (None, None)
 
+class TestOnsBrazilProvider:
+    @pytest.mark.parametrize(
+        ("balance", "expected"),
+        [
+            pytest.param(None, (None, None), id="api_unavailable"),
+            pytest.param({"unexpected": "shape"}, (None, None), id="unparseable_response"),
+            # hydro 5000*24 + thermal 1000*650 = 120000+650000 = 770000/6000 = 128
+            pytest.param(
+                {"sul": {"geracao": {"total": 6000, "hidraulica": 5000, "termica": 1000}}},
+                (True, 128),
+                id="success",
+            ),
+        ],
+    )
     @mock.patch("providers.ons_brazil._fetch_energy_balance")
-    def test_check_success(self, mock_fetch):
-        mock_fetch.return_value = {
-            "sul": {"geracao": {"total": 6000, "hidraulica": 5000, "termica": 1000}}
-        }
-        is_green, intensity = ons_brazil.check_carbon_intensity("BR-S", 250)
-        # hydro 5000*24 + thermal 1000*650 = 120000+650000 = 770000/6000 = 128
-        assert intensity == 128
-        assert is_green is True
+    def test_check(self, mock_fetch, balance, expected):
+        mock_fetch.return_value = balance
+        assert_verdict(ons_brazil.check_carbon_intensity("BR-S", 250), *expected)
 
-    def test_check_unknown_zone(self):
-        assert ons_brazil.check_carbon_intensity("BR-XX", 250) == (None, None)
+    @pytest.mark.parametrize("zone", ["BR-XX", "XX"])
+    def test_check_unknown_zone(self, zone):
+        assert_verdict(ons_brazil.check_carbon_intensity(zone, 250), None, None)
 
     def test_forecast_offpeak_already_green_returns_none(self):
         # Pin the clock to an off-peak hour (10:00 BRT = 13:00 UTC) so the test
@@ -1072,14 +982,44 @@ class TestOnsBrazilCheckAndForecast:
         with mock.patch("providers.ons_brazil.datetime") as mock_dt:
             # Only now() is pinned, so real datetime construction still works
             mock_dt.now.return_value = fixed
-            dt, intensity = ons_brazil.get_forecast("BR-S", 500)
-        assert dt is None and intensity is None
+            assert ons_brazil.get_forecast("BR-S", 500) == (None, None)
 
-    def test_forecast_finds_window_or_none(self):
-        # With a very low threshold the heuristic should return a string or
-        # the none sentinel, never crash, at any hour
-        dt, intensity = ons_brazil.get_forecast("BR-NE", 10)
-        assert dt is None or isinstance(dt, str)
+    def test_calculate_intensity_hydro_dominant(self):
+        gen = {"hidraulica": 7000, "termica": 1000, "eolica": 1500, "solar": 500}
+        intensity = base.mix_to_intensity(gen, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True)
+        assert intensity is not None
+        assert intensity < 200  # Hydro-dominant grid should be clean
+
+    def test_calculate_intensity_empty(self):
+        assert base.mix_to_intensity({}, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True) is None
+
+    def test_parse_energy_balance_nested(self):
+        # Real ONS shape: {region_key: {"geracao": {total, fuel: MW, ...}}}
+        data = {
+            "sul": {
+                "geracao": {
+                    "total": 7000.0,
+                    "hidraulica": 5000.0,
+                    "termica": 2000.0,
+                    "eolica": 0.0,
+                }
+            }
+        }
+        # the aggregate "total" and zero-valued sources are dropped
+        assert ons_brazil._parse_energy_balance(data, "sul") == {
+            "hidraulica": 5000.0,
+            "termica": 2000.0,
+        }
+
+    def test_parse_energy_balance_missing_region(self):
+        data = {"sul": {"geracao": {"hidraulica": 5000.0}}}
+        assert ons_brazil._parse_energy_balance(data, "nordeste") is None
+
+    def test_parse_energy_balance_none(self):
+        assert ons_brazil._parse_energy_balance(None, "sul") is None
+
+    def test_trend_returns_none(self):
+        assert ons_brazil.get_history_trend("BR-S") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1092,8 +1032,6 @@ class TestCanonicalFuelFactors:
     fuels must agree across providers and match the canonical table."""
 
     def test_shared_fuels_agree_across_providers(self):
-        from providers import aemo, base, canada, entsoe, eskom, grid_india, taiwan
-
         f = base.FUEL_FACTORS
         # Coal/hard-coal is the same everywhere it appears
         assert base.EIA_EMISSION_FACTORS["COL"] == f["coal"]
@@ -1116,18 +1054,14 @@ class TestCanonicalFuelFactors:
         assert taiwan.TAIWAN_EMISSION_FACTORS["hydro"] == f["hydro"]
 
     def test_default_factor_is_canonical(self):
-        from providers import base, entsoe
-
-        # The unknown-fuel fallback is centralized in base.mix_to_intensity now,
+        # The unknown-fuel fallback is centralized in base.mix_to_intensity,
         # so only base and the providers that still own a fallback expose it
-        assert base.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
-        assert entsoe.DEFAULT_FUEL_FACTOR == base.FUEL_FACTORS["other"]
+        assert base.FUEL_FACTORS["other"] == base.DEFAULT_FUEL_FACTOR
+        assert base.FUEL_FACTORS["other"] == entsoe.DEFAULT_FUEL_FACTOR
 
     def test_every_provider_value_is_in_canonical_table(self):
         """Every value in every provider's factor dict must come from the
         canonical FUEL_FACTORS, proving none reintroduced a bare number."""
-        from providers import aemo, base, canada, entsoe, eskom, grid_india, ons_brazil, taiwan
-
         canonical = set(base.FUEL_FACTORS.values())
         dicts = [
             base.EIA_EMISSION_FACTORS,
@@ -1145,20 +1079,17 @@ class TestCanonicalFuelFactors:
 
 
 class TestComputeTrend:
-    def test_decreasing(self):
-        points = [400, 380, 360, 300, 280, 260]
-        assert compute_trend(points) == "decreasing"
-
-    def test_increasing(self):
-        points = [100, 120, 130, 200, 250, 300]
-        assert compute_trend(points) == "increasing"
-
-    def test_stable(self):
-        points = [200, 200, 200, 200, 200, 200]
-        assert compute_trend(points) == "stable"
-
-    def test_insufficient_data(self):
-        assert compute_trend([100, 200]) is None
+    @pytest.mark.parametrize(
+        ("points", "trend"),
+        [
+            pytest.param(_DECREASING, "decreasing", id="decreasing"),
+            pytest.param([100, 120, 130, 200, 250, 300], "increasing", id="increasing"),
+            pytest.param([200] * 6, "stable", id="stable"),
+            pytest.param([100, 200], None, id="insufficient_data"),
+        ],
+    )
+    def test_trend(self, points, trend):
+        assert compute_trend(points) == trend
 
 
 class TestCheckMultipleZones:
@@ -1174,26 +1105,24 @@ class TestCheckMultipleZones:
             {"zone": "NYIS", "runner_label": "label-b"},
             {"zone": "ERCO", "runner_label": "label-c"},
         ]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
-        assert zone == "NYIS"
-        assert intensity == 50
-        assert label == "label-b"
-        assert skipped == []
+        assert check_grid.check_multiple_zones(zones, 250) == ("NYIS", 50, "label-b", [])
 
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_dirty(self, _mock_detect, mock_check):
         mock_check.return_value = (False, 400)
-        zones = [{"zone": "ERCO"}, {"zone": "PJM"}]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
+        zone, _intensity, _label, _skipped = check_grid.check_multiple_zones(
+            [{"zone": "ERCO"}, {"zone": "PJM"}], 250
+        )
         assert zone is None
 
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider", return_value=PROVIDER_EIA)
     def test_all_errors(self, _mock_detect, mock_check):
         mock_check.return_value = (None, None)
-        zones = [{"zone": "CISO"}, {"zone": "ERCO"}]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(zones, 250)
+        zone, _intensity, _label, skipped = check_grid.check_multiple_zones(
+            [{"zone": "CISO"}, {"zone": "ERCO"}], 250
+        )
         assert zone is None
         assert len(skipped) == 2
 
@@ -1201,23 +1130,24 @@ class TestCheckMultipleZones:
         """Zones needing Electricity Maps token with no Open-Meteo fallback are skipped."""
         # Use fake zones that have no coordinates and no free provider
         zones = [{"zone": "XX-FAKE1"}, {"zone": "XX-FAKE2"}]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+        zone, _intensity, _label, skipped = check_grid.check_multiple_zones(
             zones, 250, emaps_api_key=""
         )
         assert zone is None
-        assert len(skipped) == 2
-        assert skipped[0] == ("XX-FAKE1", "no electricity_maps_token")
-        assert skipped[1] == ("XX-FAKE2", "no electricity_maps_token")
+        assert skipped == [
+            ("XX-FAKE1", "no electricity_maps_token"),
+            ("XX-FAKE2", "no electricity_maps_token"),
+        ]
 
     @mock.patch("check_grid.check_carbon_intensity")
     def test_emaps_zones_fallback_to_open_meteo(self, mock_check):
         """Zones with Open-Meteo coordinates fall back instead of being skipped."""
         mock_check.return_value = (True, 200)
         zones = [{"zone": "DE", "runner_label": "eu"}]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+        zone, _intensity, _label, skipped = check_grid.check_multiple_zones(
             zones, 250, emaps_api_key=""
         )
-        # DE has Open-Meteo coordinates, so it should be checked (not skipped)
+        # DE has Open-Meteo coordinates, so it is checked rather than skipped
         assert zone == "DE"
         assert len(skipped) == 0
         assert mock_check.call_count == 1
@@ -1230,7 +1160,7 @@ class TestCheckMultipleZones:
             {"zone": "CISO", "runner_label": "us"},
             {"zone": "XX-NOPE", "runner_label": "eu"},
         ]
-        zone, intensity, label, skipped = check_grid.check_multiple_zones(
+        zone, intensity, _label, skipped = check_grid.check_multiple_zones(
             zones, 250, emaps_api_key=""
         )
         assert zone == "CISO"
@@ -1248,227 +1178,270 @@ class TestTriggerWorkflow:
         check_grid.trigger_workflow("owner/repo", "build.yml", "token", "main")
         mock_post.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(mock.Mock(status_code=422, text="Validation Failed"), id="http_422"),
+            pytest.param(check_grid.requests.RequestException("timeout"), id="network_error"),
+        ],
+    )
     @mock.patch("check_grid.requests.post")
-    def test_failure_exits(self, mock_post):
-        mock_post.return_value = mock.Mock(status_code=422, text="Validation Failed")
-        with pytest.raises(SystemExit) as exc_info:
-            check_grid.trigger_workflow("owner/repo", "build.yml", "token", "main")
-        assert exc_info.value.code == 1
-
-    @mock.patch("check_grid.requests.post")
-    def test_network_error_exits(self, mock_post):
-        mock_post.side_effect = check_grid.requests.RequestException("timeout")
+    def test_failure_exits(self, mock_post, failure):
+        respond(mock_post, failure)
         with pytest.raises(SystemExit) as exc_info:
             check_grid.trigger_workflow("owner/repo", "build.yml", "token", "main")
         assert exc_info.value.code == 1
 
 
 class TestSetOutput:
-    def test_writes_to_github_output(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            check_grid.set_output("grid_clean", "true")
-            with open(path) as f:
-                content = f.read()
-            assert "grid_clean=true" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_writes_to_github_output(self, github_output):
+        check_grid.set_output("grid_clean", "true")
+        assert "grid_clean=true" in github_output.read_text()
 
 
 class TestGetRequiredEnv:
-    def test_missing_var_exits(self):
-        os.environ.pop("NONEXISTENT_VAR_XYZ", None)
+    @pytest.mark.parametrize("value", [None, ""], ids=["missing", "empty"])
+    def test_missing_or_empty_var_exits(self, monkeypatch, value):
+        if value is None:
+            monkeypatch.delenv("REQUIRED_VAR_TEST", raising=False)
+        else:
+            monkeypatch.setenv("REQUIRED_VAR_TEST", value)
         with pytest.raises(SystemExit) as exc_info:
-            check_grid.get_required_env("NONEXISTENT_VAR_XYZ")
+            check_grid.get_required_env("REQUIRED_VAR_TEST")
         assert exc_info.value.code == 1
 
-    def test_empty_var_exits(self):
-        os.environ["EMPTY_VAR_TEST"] = ""
-        try:
-            with pytest.raises(SystemExit) as exc_info:
-                check_grid.get_required_env("EMPTY_VAR_TEST")
-            assert exc_info.value.code == 1
-        finally:
-            os.environ.pop("EMPTY_VAR_TEST", None)
-
-    def test_present_var_returns(self):
-        os.environ["PRESENT_VAR_TEST"] = "value123"
-        try:
-            assert check_grid.get_required_env("PRESENT_VAR_TEST") == "value123"
-        finally:
-            os.environ.pop("PRESENT_VAR_TEST", None)
+    def test_present_var_returns(self, monkeypatch):
+        monkeypatch.setenv("PRESENT_VAR_TEST", "value123")
+        assert check_grid.get_required_env("PRESENT_VAR_TEST") == "value123"
 
 
 class TestHandleDirtyGrid:
+    # get_forecast is called as (zone, max_carbon, provider, gridstatus_key, emaps_key,
+    # entsoe_token, eia_key). Free forecast providers (UK, Electricity Maps) are
+    # queried even without enable_forecast. EIA needs a GridStatus key
+    @pytest.mark.parametrize(
+        ("zone", "intensity", "kwargs", "trend", "forecast", "expected", "absent", "forecast_call"),
+        [
+            pytest.param(
+                "GB",
+                400,
+                {"enable_forecast": False},
+                "decreasing",
+                ("2026-03-10T06:00Z", 120),
+                {
+                    "grid_clean": "false",
+                    "carbon_intensity": "400",
+                    "intensity_trend": "decreasing",
+                    "forecast_green_at": "2026-03-10T06:00Z",
+                },
+                (),
+                ("GB", 250, PROVIDER_UK, "", "", "", ""),
+                id="uk_forecast_without_enable_forecast",
+            ),
+            pytest.param(
+                "CISO",
+                400,
+                {"enable_forecast": True},
+                "increasing",
+                (None, None),
+                {"grid_clean": "false", "intensity_trend": "increasing"},
+                ("forecast_green_at",),
+                None,
+                id="eia_no_forecast_without_key",
+            ),
+            pytest.param(
+                "CISO",
+                400,
+                {"enable_forecast": True, "gridstatus_api_key": "gs-key"},
+                "decreasing",
+                (_SLOT, 50),
+                {"forecast_green_at": _SLOT, "forecast_intensity": "50"},
+                (),
+                ("CISO", 250, PROVIDER_EIA, "gs-key", "", "", ""),
+                id="eia_forecast_with_gridstatus_key",
+            ),
+            pytest.param(
+                "GB",
+                None,
+                {"enable_forecast": False},
+                None,
+                (None, None),
+                {"carbon_intensity": "unknown"},
+                (),
+                None,
+                id="unknown_intensity",
+            ),
+            pytest.param(
+                "GB",
+                400,
+                {"enable_forecast": False},
+                "stable",
+                ("none_in_forecast", None),
+                {"forecast_green_at": "none_in_forecast"},
+                ("forecast_intensity",),
+                None,
+                id="no_green_in_forecast",
+            ),
+            pytest.param(
+                "JP",
+                400,
+                {"enable_forecast": False, "emaps_api_key": "em-key"},
+                "stable",
+                ("2026-03-10T14:00Z", 90),
+                {"forecast_green_at": "2026-03-10T14:00Z"},
+                (),
+                ("JP", 250, detect_provider("JP"), "", "em-key", "", ""),
+                id="electricity_maps_forecast_without_enable_forecast",
+            ),
+            pytest.param(
+                "GB",
+                400,
+                {"enable_forecast": False},
+                "decreasing",
+                ("2026-03-10T14:00Z", 90),
+                {},
+                (),
+                None,
+                id="returns_trend_and_forecast",
+            ),
+        ],
+    )
     @mock.patch("check_grid.get_forecast")
     @mock.patch("check_grid.get_history_trend")
     @mock.patch("check_grid.set_output")
-    def test_uk_always_gets_forecast(self, mock_output, mock_trend, mock_forecast):
-        """UK zones get forecast even without enable_forecast since it's free."""
-        mock_trend.return_value = "decreasing"
-        mock_forecast.return_value = ("2026-03-10T06:00Z", 120)
+    def test_outputs(
+        self,
+        mock_output,
+        mock_trend,
+        mock_forecast,
+        zone,
+        intensity,
+        kwargs,
+        trend,
+        forecast,
+        expected,
+        absent,
+        forecast_call,
+    ):
+        mock_trend.return_value = trend
+        mock_forecast.return_value = forecast
 
-        check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
+        result = check_grid.handle_dirty_grid(zone, 250, intensity, **kwargs)
 
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["grid_clean"] == "false"
-        assert output_calls["carbon_intensity"] == "400"
-        assert output_calls["intensity_trend"] == "decreasing"
-        assert output_calls["forecast_green_at"] == "2026-03-10T06:00Z"
-        mock_forecast.assert_called_once()
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_eia_no_forecast_without_key(self, mock_output, mock_trend, mock_forecast):
-        """EIA zones without GridStatus key don't have forecasts."""
-        mock_trend.return_value = "increasing"
-        mock_forecast.return_value = (None, None)
-
-        check_grid.handle_dirty_grid("CISO", 250, 400, enable_forecast=True)
-
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["grid_clean"] == "false"
-        assert output_calls["intensity_trend"] == "increasing"
-        assert "forecast_green_at" not in output_calls
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_eia_with_gridstatus_key_gets_forecast(self, mock_output, mock_trend, mock_forecast):
-        """EIA zones with GridStatus key get forecasts."""
-        mock_trend.return_value = "decreasing"
-        mock_forecast.return_value = ("2026-03-10T18:00:00+00:00", 50)
-
-        check_grid.handle_dirty_grid(
-            "CISO", 250, 400, enable_forecast=True, gridstatus_api_key="gs-key"
-        )
-
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["forecast_green_at"] == "2026-03-10T18:00:00+00:00"
-        assert output_calls["forecast_intensity"] == "50"
-        mock_forecast.assert_called_once_with("CISO", 250, PROVIDER_EIA, "gs-key", "", "", "")
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_unknown_intensity(self, mock_output, mock_trend, mock_forecast):
-        mock_trend.return_value = None
-        mock_forecast.return_value = (None, None)
-
-        check_grid.handle_dirty_grid("GB", 250, None, enable_forecast=False)
-
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["carbon_intensity"] == "unknown"
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_no_green_in_forecast(self, mock_output, mock_trend, mock_forecast):
-        mock_trend.return_value = "stable"
-        mock_forecast.return_value = ("none_in_forecast", None)
-
-        check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
-
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["forecast_green_at"] == "none_in_forecast"
-        assert "forecast_intensity" not in output_calls
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_electricity_maps_always_gets_forecast(self, mock_output, mock_trend, mock_forecast):
-        """Electricity Maps zones get forecast even without enable_forecast."""
-        mock_trend.return_value = "stable"
-        mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
-
-        check_grid.handle_dirty_grid("JP", 250, 400, enable_forecast=False, emaps_api_key="em-key")
-
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["forecast_green_at"] == "2026-03-10T14:00Z"
-        mock_forecast.assert_called_once()
-
-    @mock.patch("check_grid.get_forecast")
-    @mock.patch("check_grid.get_history_trend")
-    @mock.patch("check_grid.set_output")
-    def test_returns_trend_and_forecast(self, mock_output, mock_trend, mock_forecast):
-        """handle_dirty_grid returns (trend, forecast_at, forecast_intensity)."""
-        mock_trend.return_value = "decreasing"
-        mock_forecast.return_value = ("2026-03-10T14:00Z", 90)
-
-        result = check_grid.handle_dirty_grid("GB", 250, 400, enable_forecast=False)
-        assert result == ("decreasing", "2026-03-10T14:00Z", 90)
+        assert result == (trend, *forecast)
+        out = outputs_of(mock_output)
+        assert {k: out[k] for k in expected} == expected
+        for key in absent:
+            assert key not in out
+        if forecast_call is not None:
+            mock_forecast.assert_called_once_with(*forecast_call)
 
 
 class TestWriteJobSummary:
-    def test_writes_summary_green(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary("CISO", 45, True, 200)
-            with open(path) as f:
-                content = f.read()
-            assert "Carbon-Aware Dispatcher" in content
-            assert "CISO" in content
-            assert "45" in content
-            assert "clean" in content.lower()
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    def test_writes_summary_green(self, step_summary):
+        check_grid.write_job_summary("CISO", 45, True, 200)
+        content = step_summary.read_text()
+        assert "Carbon-Aware Dispatcher" in content
+        assert "CISO" in content
+        assert "45" in content
+        assert "clean" in content.lower()
 
-    def test_writes_summary_dirty_with_forecast(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary(
-                "PJM",
-                380,
-                False,
-                200,
-                trend="decreasing",
-                forecast_at="2026-03-10T14:00Z",
-                forecast_intensity=150,
-            )
-            with open(path) as f:
-                content = f.read()
-            assert "dirty" in content.lower()
-            assert "380" in content
-            assert "decreasing" in content
-            assert "2026-03-10T14:00Z" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    def test_writes_summary_dirty_with_forecast(self, step_summary):
+        check_grid.write_job_summary(
+            "PJM",
+            380,
+            False,
+            200,
+            trend="decreasing",
+            forecast_at="2026-03-10T14:00Z",
+            forecast_intensity=150,
+        )
+        content = step_summary.read_text()
+        assert "dirty" in content.lower()
+        assert "380" in content
+        assert "decreasing" in content
+        assert "2026-03-10T14:00Z" in content
 
-    def test_writes_summary_with_skipped_zones(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary(
-                "CISO",
-                100,
-                True,
-                200,
-                skipped=[("DE", "no electricity_maps_token")],
-            )
-            with open(path) as f:
-                content = f.read()
-            assert "DE" in content
-            assert "no electricity_maps_token" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    def test_writes_summary_with_skipped_zones(self, step_summary):
+        check_grid.write_job_summary(
+            "CISO", 100, True, 200, skipped=[("DE", "no electricity_maps_token")]
+        )
+        content = step_summary.read_text()
+        assert "DE" in content
+        assert "no electricity_maps_token" in content
 
     def test_no_summary_without_env(self):
         """Does nothing if GITHUB_STEP_SUMMARY is not set."""
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
         # Should not raise
         check_grid.write_job_summary("CISO", 45, True, 200)
+
+    def test_summary_dry_run_banner(self, step_summary):
+        check_grid.write_job_summary("AU-NSW", 400, False, 250, dry_run=True)
+        content = step_summary.read_text()
+        assert "Report-only" in content
+        assert "would defer" in content
+
+    def test_summary_includes_co2_saved(self, step_summary):
+        check_grid.write_job_summary("CISO", 50, True, 250, co2_saved=5.0)
+        content = step_summary.read_text()
+        assert "Saved vs global avg" in content
+        assert "5 g (benchmark)" in content
+
+    @pytest.mark.usefixtures("reset_once_flags")
+    def test_summary_includes_lifetime_budget_and_marginal(
+        self, step_summary, github_output, ledger_path, monkeypatch
+    ):
+        monkeypatch.setenv("MONTHLY_BUDGET_GRAMS", "1000")
+        check_grid.record_lifetime_savings(100, emitted_grams=100)
+        check_grid._marginal_summary = {
+            "region": "CAISO_NORTH",
+            "percentile": 20,
+            "clean": True,
+            "max_pct": 33,
+        }
+        check_grid.write_job_summary("CISO", 50, True, 250)
+        content = step_summary.read_text()
+        assert "Lifetime CO2 Saved" in content
+        assert "**Carbon Budget** | 100 / 1000 gCO2eq this month (10%, ok)" in content
+        assert "**Marginal (CAISO_NORTH)** | 20th percentile MOER (clean)" in content
+
+    def test_heuristic_forecast_is_labeled(self, step_summary):
+        check_grid.write_job_summary(
+            "ZA",
+            700,
+            False,
+            250,
+            forecast_at="2026-03-10T03:00Z",
+            forecast_intensity=650,
+            forecast_heuristic=True,
+        )
+        content = step_summary.read_text()
+        assert "Next Green Window (estimated)" in content
+        assert "650 gCO2eq/kWh (estimate)" in content
+
+    def test_real_forecast_is_not_labeled_estimate(self, step_summary):
+        check_grid.write_job_summary(
+            "GB",
+            300,
+            False,
+            250,
+            forecast_at="2026-03-10T14:00Z",
+            forecast_intensity=90,
+            forecast_heuristic=False,
+        )
+        content = step_summary.read_text()
+        assert "**Next Green Window**" in content
+        assert "(estimated)" not in content
+        assert "(estimate)" not in content
+
+    def test_summary_sets_tier_output(self, github_output, step_summary, monkeypatch):
+        monkeypatch.setenv("TIER_THRESHOLDS", "120,280")
+        check_grid.write_job_summary("CISO", 90, True, 250)
+        out = github_output.read_text()
+        assert "carbon_tier=green" in out
+        assert "carbon_tier_reason=" in out
+        assert "Carbon Tier" in step_summary.read_text()
 
 
 class TestSmartWaitSingle:
@@ -1480,7 +1453,7 @@ class TestSmartWaitSingle:
         mock_check.return_value = (True, 100)
         mock_forecast.return_value = (None, None)
 
-        is_green, intensity, waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
+        is_green, intensity, _waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
         assert is_green is True
         assert intensity == 100
         mock_sleep.assert_called_once()
@@ -1489,19 +1462,14 @@ class TestSmartWaitSingle:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid._time.sleep")
     @mock.patch("check_grid._time.time")
-    def test_stays_dirty_after_max_wait(self, mock_time, mock_sleep, mock_check, mock_forecast):
+    def test_stays_dirty_after_max_wait(self, mock_time, _mock_sleep, mock_check, mock_forecast):
         """Grid stays dirty, so the wait gives up once max_wait is exceeded."""
-        # Simulate time passing: start at 0, then exceed deadline
-        mock_time.side_effect = [
-            0,
-            0,
-            601,
-            601,
-        ]  # start, loop check, loop check (past deadline), final
+        # start, loop check, loop check (past deadline), final
+        mock_time.side_effect = [0, 0, 601, 601]
         mock_check.return_value = (False, 400)
         mock_forecast.return_value = (None, None)
 
-        is_green, intensity, waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
+        is_green, intensity, _waited = check_grid.smart_wait_single("CISO", 250, 10, PROVIDER_EIA)
         assert is_green is False
         assert intensity == 400
 
@@ -1513,7 +1481,7 @@ class TestSmartWaitMulti:
         """A zone becomes green during wait."""
         mock_multi.return_value = ("CISO", 50, "us-west", [])
 
-        zone, intensity, label, waited, skipped = check_grid.smart_wait_multi(
+        zone, intensity, _label, _waited, _skipped = check_grid.smart_wait_multi(
             [{"zone": "CISO"}, {"zone": "ERCO"}], 250, 10
         )
         assert zone == "CISO"
@@ -1527,112 +1495,76 @@ class TestInlineMode:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.set_output")
     @mock.patch("check_grid.write_job_summary")
-    def test_inline_mode_green(self, mock_summary, mock_output, mock_check):
+    def test_inline_mode_green(self, _mock_summary, mock_output, mock_check):
         """Inline mode sets outputs but doesn't dispatch."""
         mock_check.return_value = (True, 50)
 
-        os.environ["GRID_ZONE"] = "GB"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="GB", WORKFLOW_ID="")
         os.environ.pop("GITHUB_TOKEN", None)
         os.environ.pop("TARGET_REPO", None)
 
         # Should not raise (no required env check for token/repo)
         check_grid.main()
 
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["grid_clean"] == "true"
-        assert output_calls["carbon_intensity"] == "50"
+        out = outputs_of(mock_output)
+        assert out["grid_clean"] == "true"
+        assert out["carbon_intensity"] == "50"
 
 
+@mock.patch("check_grid.check_carbon_intensity")
+@mock.patch("check_grid.set_output")
+@mock.patch("check_grid.write_job_summary")
 class TestDryRun:
     """Report-only mode never gates the build but reports the real verdict."""
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_dirty_grid_does_not_gate(self, mock_summary, mock_output, mock_check):
+    def test_dirty_grid_does_not_gate(self, _mock_summary, mock_output, mock_check):
         # Single dirty zone, but dry_run must keep grid_clean true and exit 0
         mock_check.return_value = (False, 400)
-        os.environ["GRID_ZONES"] = "AU-NSW"
-        os.environ["MAX_CARBON"] = "250"
-        os.environ["DRY_RUN"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONES="AU-NSW", MAX_CARBON="250", DRY_RUN="true", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
+        assert main_exit_code() == 0
 
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        out = outputs_of(mock_output)
         assert out["grid_clean"] == "true"  # build is never blocked
         assert out["would_defer"] == "true"  # but the verdict is exposed
         assert out["dry_run"] == "true"
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_clean_grid_reports_dispatch(self, mock_summary, mock_output, mock_check):
+    def test_clean_grid_reports_dispatch(self, _mock_summary, mock_output, mock_check):
         mock_check.return_value = (True, 80)
-        os.environ["GRID_ZONES"] = "GB"
-        os.environ["MAX_CARBON"] = "250"
-        os.environ["DRY_RUN"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONES="GB", MAX_CARBON="250", DRY_RUN="true", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
+        assert main_exit_code() == 0
 
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        out = outputs_of(mock_output)
         assert out["grid_clean"] == "true"
         assert out["would_defer"] == "false"
 
     @mock.patch("check_grid.trigger_workflow")
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_never_dispatches(self, mock_summary, mock_output, mock_check, mock_trigger):
+    def test_never_dispatches(self, mock_trigger, _mock_summary, _mock_output, mock_check):
         # Even in dispatch mode (workflow_id set), dry_run must not trigger
         mock_check.return_value = (True, 80)
-        os.environ["GRID_ZONES"] = "GB"
-        os.environ["DRY_RUN"] = "true"
-        os.environ["WORKFLOW_ID"] = "heavy.yml"
-        os.environ["GITHUB_TOKEN"] = "tok"
-        os.environ["TARGET_REPO"] = "owner/repo"
+        os.environ.update(
+            GRID_ZONES="GB",
+            DRY_RUN="true",
+            WORKFLOW_ID="heavy.yml",
+            GITHUB_TOKEN="tok",
+            TARGET_REPO="owner/repo",
+        )
 
-        with pytest.raises(SystemExit):
-            check_grid.main()
+        main_exit_code()
         mock_trigger.assert_not_called()
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
     def test_never_fails_build_even_with_fail_on_api_error(
-        self, mock_summary, mock_output, mock_check
+        self, _mock_summary, _mock_output, mock_check
     ):
         # dry_run must exit 0 even when every zone errors AND fail_on_api_error
         # is set: report-only never breaks the build
         mock_check.return_value = (None, None)
-        os.environ["GRID_ZONES"] = "GB,AU-NSW"
-        os.environ["DRY_RUN"] = "true"
-        os.environ["FAIL_ON_API_ERROR"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(
+            GRID_ZONES="GB,AU-NSW", DRY_RUN="true", FAIL_ON_API_ERROR="true", WORKFLOW_ID=""
+        )
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
-
-    def test_summary_dry_run_banner(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary("AU-NSW", 400, False, 250, dry_run=True)
-            with open(path) as f:
-                content = f.read()
-            assert "Report-only" in content
-            assert "would defer" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        assert main_exit_code() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1640,176 +1572,215 @@ class TestDryRun:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCloudRegion:
-    def test_us_zones(self):
-        assert get_cloud_region("CISO") == "us-west-1"
-        assert get_cloud_region("BPAT") == "us-west-2"
-        assert get_cloud_region("PJM") == "us-east-1"
-        assert get_cloud_region("ERCO") == "us-east-2"
+class TestCloudRegionMapping:
+    @pytest.mark.parametrize(
+        ("zone", "region"),
+        [
+            ("CISO", "us-west-1"),
+            ("BPAT", "us-west-2"),
+            ("PJM", "us-east-1"),
+            ("ERCO", "us-east-2"),
+            ("GB", "eu-west-2"),
+            ("GB-16", "eu-west-2"),
+            ("NO-NO1", "eu-north-1"),
+            ("FR", "eu-west-3"),
+            ("DE", "eu-central-1"),
+            ("CA-QC", "ca-central-1"),
+            ("JP-TK", "ap-northeast-1"),
+            ("AU-NSW", "ap-southeast-2"),
+            ("SG", "ap-southeast-1"),
+            ("BR-CS", "sa-east-1"),
+            ("UNKNOWN-ZONE", "us-east-1"),  # default
+        ],
+    )
+    def test_aws(self, zone, region):
+        assert get_cloud_region(zone) == region
 
-    def test_uk_zones(self):
-        assert get_cloud_region("GB") == "eu-west-2"
-        assert get_cloud_region("GB-16") == "eu-west-2"
+    @pytest.mark.parametrize(
+        ("zone", "region"),
+        [
+            ("CISO", "us-west1"),
+            ("PJM", "us-east4"),
+            ("ERCO", "us-south1"),
+            ("DE", "europe-west3"),
+            ("FR", "europe-west9"),
+            ("NO-NO1", "europe-north1"),
+            ("JP-TK", "asia-northeast1"),
+            ("AU-NSW", "australia-southeast1"),
+            ("IN-NO", "asia-south1"),
+            ("BR-S", "southamerica-east1"),
+            ("UNKNOWN-ZONE", "us-central1"),  # default
+        ],
+    )
+    def test_gcp(self, zone, region):
+        assert get_gcp_region(zone) == region
 
-    def test_europe_zones(self):
-        assert get_cloud_region("NO-NO1") == "eu-north-1"
-        assert get_cloud_region("FR") == "eu-west-3"
-        assert get_cloud_region("DE") == "eu-central-1"
-
-    def test_canada_zones(self):
-        assert get_cloud_region("CA-QC") == "ca-central-1"
-
-    def test_asia_pacific(self):
-        assert get_cloud_region("JP-TK") == "ap-northeast-1"
-        assert get_cloud_region("AU-NSW") == "ap-southeast-2"
-        assert get_cloud_region("SG") == "ap-southeast-1"
-
-    def test_latin_america(self):
-        assert get_cloud_region("BR-CS") == "sa-east-1"
-
-    def test_unknown_zone_returns_default(self):
-        assert get_cloud_region("UNKNOWN-ZONE") == "us-east-1"
+    @pytest.mark.parametrize(
+        ("zone", "region"),
+        [
+            ("CISO", "westus2"),
+            ("PJM", "eastus"),
+            ("ERCO", "southcentralus"),
+            ("DE", "germanywestcentral"),
+            ("FR", "francecentral"),
+            ("NO-NO1", "norwayeast"),
+            ("SE-SE2", "swedencentral"),
+            ("JP-TK", "japaneast"),
+            ("AU-NSW", "australiaeast"),
+            ("IN-NO", "centralindia"),
+            ("ZA", "southafricanorth"),
+            ("UNKNOWN-ZONE", "eastus"),  # default
+        ],
+    )
+    def test_azure(self, zone, region):
+        assert get_azure_region(zone) == region
 
 
 class TestFormatRunsonLabel:
-    def test_basic(self):
-        label = format_runson_label("CISO", "12345")
-        assert label == "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1"
-
-    def test_custom_spec(self):
-        label = format_runson_label("GB", "99999", "4cpu-linux-arm64")
-        assert label == "runs-on=99999/runner=4cpu-linux-arm64/region=eu-west-2"
-
-    def test_europe_region(self):
-        label = format_runson_label("NO-NO1", "111")
-        assert "region=eu-north-1" in label
+    @pytest.mark.parametrize(
+        ("args", "label"),
+        [
+            pytest.param(
+                ("CISO", "12345"),
+                "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1",
+                id="basic",
+            ),
+            pytest.param(
+                ("GB", "99999", "4cpu-linux-arm64"),
+                "runs-on=99999/runner=4cpu-linux-arm64/region=eu-west-2",
+                id="custom_spec",
+            ),
+            pytest.param(
+                ("NO-NO1", "111"),
+                "runs-on=111/runner=2cpu-linux-x64/region=eu-north-1",
+                id="europe_region",
+            ),
+        ],
+    )
+    def test_label(self, args, label):
+        assert format_runson_label(*args) == label
 
 
 class TestFormatRunnerLabel:
-    def test_runson_provider(self):
-        label = format_runner_label("CISO", "runson", "12345")
-        assert label == "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1"
+    @pytest.mark.parametrize(
+        ("args", "label"),
+        [
+            pytest.param(
+                ("CISO", "runson", "12345"),
+                "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1",
+                id="runson_provider",
+            ),
+            pytest.param(
+                ("DE", "runson", "12345", "8cpu-linux-x64"),
+                "runs-on=12345/runner=8cpu-linux-x64/region=eu-central-1",
+                id="runson_with_custom_spec",
+            ),
+            pytest.param(("CISO", "runson", ""), None, id="runson_without_run_id"),
+            pytest.param(("CISO", "unknown-provider", "12345"), None, id="unknown_provider"),
+            pytest.param(("CISO", "", "12345"), None, id="empty_provider"),
+            pytest.param(
+                ("CISO", "RunsOn", "12345"),
+                "runs-on=12345/runner=2cpu-linux-x64/region=us-west-1",
+                id="case_insensitive",
+            ),
+        ],
+    )
+    def test_label(self, args, label):
+        assert format_runner_label(*args) == label
 
-    def test_runson_with_custom_spec(self):
-        label = format_runner_label("DE", "runson", "12345", "8cpu-linux-x64")
-        assert label == "runs-on=12345/runner=8cpu-linux-x64/region=eu-central-1"
 
-    def test_runson_without_run_id_returns_none(self):
-        label = format_runner_label("CISO", "runson", "")
-        assert label is None
-
-    def test_unknown_provider_returns_none(self):
-        label = format_runner_label("CISO", "unknown-provider", "12345")
-        assert label is None
-
-    def test_empty_provider_returns_none(self):
-        label = format_runner_label("CISO", "", "12345")
-        assert label is None
-
-    def test_case_insensitive(self):
-        label = format_runner_label("CISO", "RunsOn", "12345")
-        assert "region=us-west-1" in label
-
-
+@mock.patch("check_grid.set_output")
 class TestSetRunnerOutputs:
-    @mock.patch("check_grid.set_output")
     def test_no_provider_with_user_label(self, mock_output):
         check_grid.set_runner_outputs("CISO", "my-runner", "", "", "")
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["cloud_region"] == "us-west-1"
-        assert output_calls["runner_label"] == "my-runner"
+        out = outputs_of(mock_output)
+        assert out["cloud_region"] == "us-west-1"
+        assert out["runner_label"] == "my-runner"
 
-    @mock.patch("check_grid.set_output")
     def test_no_provider_no_label(self, mock_output):
         check_grid.set_runner_outputs("CISO", None, "", "", "")
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["cloud_region"] == "us-west-1"
-        assert "runner_label" not in output_calls
+        out = outputs_of(mock_output)
+        assert out["cloud_region"] == "us-west-1"
+        assert "runner_label" not in out
 
-    @mock.patch("check_grid.set_output")
     def test_runson_provider(self, mock_output):
         check_grid.set_runner_outputs("DE", None, "runson", "", "12345")
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["cloud_region"] == "eu-central-1"
-        assert "runs-on=12345" in output_calls["runner_label"]
-        assert "region=eu-central-1" in output_calls["runner_label"]
+        out = outputs_of(mock_output)
+        assert out["cloud_region"] == "eu-central-1"
+        assert "runs-on=12345" in out["runner_label"]
+        assert "region=eu-central-1" in out["runner_label"]
 
-    @mock.patch("check_grid.set_output")
     def test_runson_overrides_user_label(self, mock_output):
         """Provider-formatted label takes precedence over user label."""
         check_grid.set_runner_outputs("CISO", "my-label", "runson", "", "12345")
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert "runs-on=12345" in output_calls["runner_label"]
-        assert output_calls["runner_label"] != "my-label"
+        out = outputs_of(mock_output)
+        assert "runs-on=12345" in out["runner_label"]
+        assert out["runner_label"] != "my-label"
 
-    @mock.patch("check_grid.set_output")
     def test_runson_fallback_to_user_label_without_run_id(self, mock_output):
         """Falls back to user label if RunsOn can't format (no run_id)."""
         check_grid.set_runner_outputs("CISO", "my-label", "runson", "", "")
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["runner_label"] == "my-label"
+        assert outputs_of(mock_output)["runner_label"] == "my-label"
 
 
+class TestCloudRegionRecommender:
+    def test_set_runner_outputs_includes_all_clouds(self, github_output):
+        """set_runner_outputs should set gcp_region and azure_region."""
+        check_grid.set_runner_outputs("CISO", None, "", "", "")
+        content = github_output.read_text()
+        assert "cloud_region=us-west-1" in content
+        assert "gcp_region=us-west1" in content
+        assert "azure_region=westus2" in content
+
+
+@mock.patch("check_grid.check_carbon_intensity")
+@mock.patch("check_grid.set_output")
+@mock.patch("check_grid.write_job_summary")
 class TestRoutingIntegration:
     """Integration tests: main() sets cloud_region and provider-formatted labels."""
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_single_zone_with_runson_provider(self, mock_summary, mock_output, mock_check):
+    def test_single_zone_with_runson_provider(self, _mock_summary, mock_output, mock_check):
         mock_check.return_value = (True, 50)
-
-        os.environ["GRID_ZONE"] = "CISO"
-        os.environ["WORKFLOW_ID"] = ""
-        os.environ["RUNNER_PROVIDER"] = "runson"
-        os.environ["RUNNER_SPEC"] = "4cpu-linux-x64"
-        os.environ["GITHUB_RUN_ID"] = "98765"
+        os.environ.update(
+            GRID_ZONE="CISO",
+            WORKFLOW_ID="",
+            RUNNER_PROVIDER="runson",
+            RUNNER_SPEC="4cpu-linux-x64",
+            GITHUB_RUN_ID="98765",
+        )
 
         check_grid.main()
 
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["grid_clean"] == "true"
-        assert output_calls["cloud_region"] == "us-west-1"
-        assert (
-            output_calls["runner_label"] == "runs-on=98765/runner=4cpu-linux-x64/region=us-west-1"
-        )
+        out = outputs_of(mock_output)
+        assert out["grid_clean"] == "true"
+        assert out["cloud_region"] == "us-west-1"
+        assert out["runner_label"] == "runs-on=98765/runner=4cpu-linux-x64/region=us-west-1"
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_multi_zone_with_runson_provider(self, mock_summary, mock_output, mock_check):
+    def test_multi_zone_with_runson_provider(self, _mock_summary, mock_output, mock_check):
         mock_check.side_effect = [
             (False, 400),  # ERCO dirty
             (True, 80),  # GB green
         ]
-
-        os.environ["GRID_ZONES"] = "ERCO,GB"
-        os.environ["WORKFLOW_ID"] = ""
-        os.environ["RUNNER_PROVIDER"] = "runson"
-        os.environ["GITHUB_RUN_ID"] = "11111"
+        os.environ.update(
+            GRID_ZONES="ERCO,GB", WORKFLOW_ID="", RUNNER_PROVIDER="runson", GITHUB_RUN_ID="11111"
+        )
 
         check_grid.main()
 
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["grid_zone"] == "GB"
-        assert output_calls["cloud_region"] == "eu-west-2"
-        assert "region=eu-west-2" in output_calls["runner_label"]
+        out = outputs_of(mock_output)
+        assert out["grid_zone"] == "GB"
+        assert out["cloud_region"] == "eu-west-2"
+        assert "region=eu-west-2" in out["runner_label"]
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_cloud_region_output_without_provider(self, mock_summary, mock_output, mock_check):
+    def test_cloud_region_output_without_provider(self, _mock_summary, mock_output, mock_check):
         """cloud_region is always set even without a runner_provider."""
         mock_check.return_value = (True, 100)
-
-        os.environ["GRID_ZONE"] = "NO-NO1"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="NO-NO1", WORKFLOW_ID="")
         os.environ.pop("RUNNER_PROVIDER", None)
 
         check_grid.main()
 
-        output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-        assert output_calls["cloud_region"] == "eu-north-1"
+        assert outputs_of(mock_output)["cloud_region"] == "eu-north-1"
 
 
 # ---------------------------------------------------------------------------
@@ -1817,100 +1788,73 @@ class TestRoutingIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestAemoDetectProvider:
-    def test_au_nsw(self):
-        assert detect_provider("AU-NSW") == PROVIDER_AEMO
-
-    def test_au_tas(self):
-        assert detect_provider("AU-TAS") == PROVIDER_AEMO
-
-    def test_au_vic(self):
-        assert detect_provider("AU-VIC") == PROVIDER_AEMO
+def _aemo_rows(*rows):
+    return [{"REGIONID": region, "FUELTYPE": fuel, "GEN_MW": mw} for region, fuel, mw in rows]
 
 
 class TestAemoFuelMixToIntensity:
-    @staticmethod
-    def _intensity(data, region):
-        mix = aemo._region_fuel_mix(data, region)
-        return base.mix_to_intensity(mix, aemo.AEMO_EMISSION_FACTORS, aemo.AEMO_STORAGE_FUELS)
-
-    def test_all_coal(self):
-        data = [{"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 1000}]
-        assert self._intensity(data, "NSW1") == 820
-
-    def test_all_wind(self):
-        data = [{"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 500}]
-        # IPCC AR5 wind onshore = 11, renewables are no longer treated as zero
-        assert self._intensity(data, "NSW1") == 11
-
-    def test_mixed(self):
-        data = [
-            {"REGIONID": "NSW1", "FUELTYPE": "Black Coal", "GEN_MW": 500},
-            {"REGIONID": "NSW1", "FUELTYPE": "Solar", "GEN_MW": 500},
-        ]
-        # coal 820, solar 48: (500*820 + 500*48) / 1000 = 434.0 -> 434
-        assert self._intensity(data, "NSW1") == 434
-
-    def test_filters_by_region(self):
-        data = [
-            {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 1000},
-            {"REGIONID": "QLD1", "FUELTYPE": "Black Coal", "GEN_MW": 1000},
-        ]
-        # only NSW wind is counted, wind = 11
-        assert self._intensity(data, "NSW1") == 11
-
-    def test_empty_data(self):
-        assert self._intensity([], "NSW1") is None
-
-    def test_negative_gen_ignored(self):
-        data = [
-            {"REGIONID": "NSW1", "FUELTYPE": "Wind", "GEN_MW": 100},
-            {"REGIONID": "NSW1", "FUELTYPE": "Battery", "GEN_MW": -50},
-        ]
-        # wind = 11, battery is storage and excluded anyway
-        assert self._intensity(data, "NSW1") == 11
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            pytest.param(_aemo_rows(("NSW1", "Black Coal", 1000)), 820, id="all_coal"),
+            # IPCC AR5 wind onshore = 11, renewables are not treated as zero
+            pytest.param(_aemo_rows(("NSW1", "Wind", 500)), 11, id="all_wind"),
+            # coal 820, solar 48: (500*820 + 500*48) / 1000 = 434.0 -> 434
+            pytest.param(
+                _aemo_rows(("NSW1", "Black Coal", 500), ("NSW1", "Solar", 500)), 434, id="mixed"
+            ),
+            # only NSW wind is counted, wind = 11
+            pytest.param(
+                _aemo_rows(("NSW1", "Wind", 1000), ("QLD1", "Black Coal", 1000)),
+                11,
+                id="filters_by_region",
+            ),
+            pytest.param([], None, id="empty_data"),
+            # wind = 11, battery is storage and excluded anyway
+            pytest.param(
+                _aemo_rows(("NSW1", "Wind", 100), ("NSW1", "Battery", -50)),
+                11,
+                id="negative_gen_ignored",
+            ),
+        ],
+    )
+    def test_intensity(self, data, expected):
+        mix = aemo._region_fuel_mix(data, "NSW1")
+        intensity = base.mix_to_intensity(mix, aemo.AEMO_EMISSION_FACTORS, aemo.AEMO_STORAGE_FUELS)
+        assert intensity == expected
 
 
 class TestAemoCheckCarbonIntensity:
+    @pytest.mark.parametrize(
+        ("zone", "fetched", "expected"),
+        [
+            # hydro 24, wind 12: (900*24 + 100*12) / 1000 = 22.8 -> 23
+            pytest.param(
+                "AU-TAS",
+                _aemo_rows(("TAS1", "Hydro", 900), ("TAS1", "Wind", 100)),
+                (True, 23),
+                id="green",
+            ),
+            # brown coal/lignite 1050, wind 12: (800*1050 + 200*12) / 1000 = 842.4 -> 842
+            pytest.param(
+                "AU-VIC",
+                _aemo_rows(("VIC1", "Brown Coal", 800), ("VIC1", "Wind", 200)),
+                (False, 842),
+                id="dirty",
+            ),
+            pytest.param("AU-NSW", None, (None, None), id="api_error"),
+        ],
+    )
     @mock.patch("providers.aemo._fetch_fuel_data")
-    def test_green(self, mock_fetch):
-        mock_fetch.return_value = [
-            {"REGIONID": "TAS1", "FUELTYPE": "Hydro", "GEN_MW": 900},
-            {"REGIONID": "TAS1", "FUELTYPE": "Wind", "GEN_MW": 100},
-        ]
-        is_green, intensity = aemo.check_carbon_intensity("AU-TAS", 250)
-        assert is_green is True
-        # hydro 24, wind 12: (900*24 + 100*12) / 1000 = 22.8 -> 23
-        assert intensity == 23
-
-    @mock.patch("providers.aemo._fetch_fuel_data")
-    def test_dirty(self, mock_fetch):
-        mock_fetch.return_value = [
-            {"REGIONID": "VIC1", "FUELTYPE": "Brown Coal", "GEN_MW": 800},
-            {"REGIONID": "VIC1", "FUELTYPE": "Wind", "GEN_MW": 200},
-        ]
-        is_green, intensity = aemo.check_carbon_intensity("AU-VIC", 250)
-        assert is_green is False
-        # brown coal/lignite 1050, wind 12: (800*1050 + 200*12) / 1000
-        # = 842.4 -> 842
-        assert intensity == 842
-
-    @mock.patch("providers.aemo._fetch_fuel_data")
-    def test_api_error(self, mock_fetch):
-        mock_fetch.return_value = None
-        is_green, intensity = aemo.check_carbon_intensity("AU-NSW", 250)
-        assert is_green is None
-        assert intensity is None
+    def test_verdict(self, mock_fetch, zone, fetched, expected):
+        mock_fetch.return_value = fetched
+        assert_verdict(aemo.check_carbon_intensity(zone, 250), *expected)
 
     def test_unknown_zone(self):
-        is_green, intensity = aemo.check_carbon_intensity("AU-UNKNOWN", 250)
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(aemo.check_carbon_intensity("AU-UNKNOWN", 250), None, None)
 
     def test_forecast_not_available(self):
-        dt, intensity = aemo.get_forecast("AU-NSW", 250)
-        assert dt is None
-        assert intensity is None
+        assert aemo.get_forecast("AU-NSW", 250) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1918,52 +1862,31 @@ class TestAemoCheckCarbonIntensity:
 # ---------------------------------------------------------------------------
 
 
-class TestEntsoeDetectProvider:
-    def test_de_with_token(self):
-        assert detect_provider("DE", entsoe_token="my-token") == PROVIDER_ENTSOE
-
-    def test_de_without_token(self):
-        # DE now has a keyless real source (Energy-Charts), preferred over estimates
-        assert detect_provider("DE") == PROVIDER_ENERGY_CHARTS
-
-    def test_fr_with_token(self):
-        assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
-
-    def test_non_eu_zone_with_token(self):
-        """Non-EU zone should not use ENTSO-E even with token."""
-        assert detect_provider("CISO", entsoe_token="tok") == PROVIDER_EIA
+def _entsoe_xml(*series):
+    """TimeSeries fragments with one Point each, as (psrType, quantity) pairs."""
+    return "\n".join(
+        f"""
+        <TimeSeries>
+            <MktPSRType><psrType>{psr}</psrType></MktPSRType>
+            <Period><Point><quantity>{qty}</quantity></Point></Period>
+        </TimeSeries>
+        """
+        for psr, qty in series
+    )
 
 
 class TestEntsoeParseGenerationXml:
     def test_basic_parse(self):
-        xml = """
-        <TimeSeries>
-            <MktPSRType><psrType>B16</psrType></MktPSRType>
-            <Period><Point><quantity>500.0</quantity></Point></Period>
-        </TimeSeries>
-        <TimeSeries>
-            <MktPSRType><psrType>B04</psrType></MktPSRType>
-            <Period><Point><quantity>300.0</quantity></Point></Period>
-        </TimeSeries>
-        """
-        result = entsoe._parse_generation_xml(xml)
+        result = entsoe._parse_generation_xml(_entsoe_xml(("B16", "500.0"), ("B04", "300.0")))
         assert len(result) == 2
         assert ("B16", 500.0) in result
         assert ("B04", 300.0) in result
 
     def test_zero_quantity_excluded(self):
-        xml = """
-        <TimeSeries>
-            <MktPSRType><psrType>B16</psrType></MktPSRType>
-            <Period><Point><quantity>0</quantity></Point></Period>
-        </TimeSeries>
-        """
-        result = entsoe._parse_generation_xml(xml)
-        assert len(result) == 0
+        assert entsoe._parse_generation_xml(_entsoe_xml(("B16", "0"))) == []
 
     def test_empty_xml(self):
-        result = entsoe._parse_generation_xml("")
-        assert result == []
+        assert entsoe._parse_generation_xml("") == []
 
     def test_uses_latest_period_not_blend(self):
         # two periods for the same production type, the parser must use only
@@ -1982,106 +1905,65 @@ class TestEntsoeParseGenerationXml:
             </Period>
         </TimeSeries>
         """
-        result = entsoe._parse_generation_xml(xml)
         # latest period end is 02:00 with quantity 500 (a sum would give 800)
-        assert result == [("B05", 500.0)]
+        assert entsoe._parse_generation_xml(xml) == [("B05", 500.0)]
 
     def test_pumped_storage_excluded_from_intensity(self):
-        # B10 Hydro Pumped Storage must be excluded from the weighted mix
-        gen_data = [("B05", 100.0), ("B10", 100.0)]
-        # B10 excluded, so result is pure hard coal = 820
-        assert entsoe._intensity_from_gen_data(gen_data) == 820
+        # B10 Hydro Pumped Storage must be excluded from the weighted mix,
+        # so the result is pure hard coal = 820
+        assert entsoe._intensity_from_gen_data([("B05", 100.0), ("B10", 100.0)]) == 820
 
     def test_unknown_psr_warns_and_falls_back(self, capsys):
-        from providers.entsoe import DEFAULT_FUEL_FACTOR
-
-        gen_data = [("B99", 100.0)]
-        result = entsoe._intensity_from_gen_data(gen_data)
-        assert result == DEFAULT_FUEL_FACTOR
+        assert entsoe._intensity_from_gen_data([("B99", 100.0)]) == entsoe.DEFAULT_FUEL_FACTOR
         out = capsys.readouterr().out
         assert "::warning::" in out
         assert "B99" in out
 
 
 class TestEntsoeCheckCarbonIntensity:
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            # wind B19 = 11, gas B04 = 490: (800*11 + 200*490) / 1000
+            # = (8800 + 98000) / 1000 = 106.8 -> 107
+            pytest.param(
+                mock.Mock(status_code=200, text=_entsoe_xml(("B19", 800), ("B04", 200))),
+                (True, 107),
+                id="green",
+            ),
+            # (700*820 + 300*490) / 1000 = 721
+            pytest.param(
+                mock.Mock(status_code=200, text=_entsoe_xml(("B05", 700), ("B04", 300))),
+                (False, 721),
+                id="dirty",
+            ),
+            pytest.param(
+                mock.Mock(status_code=401, text="Unauthorized"), (None, None), id="auth_failure"
+            ),
+            pytest.param(
+                mock.Mock(status_code=429, text="Too Many Requests"), (None, None), id="rate_limit"
+            ),
+            pytest.param(requests.RequestException("timeout"), (None, None), id="network_error"),
+        ],
+    )
     @mock.patch("providers.base._SESSION.get")
-    def test_green(self, mock_get):
-        xml = """
-        <TimeSeries>
-            <MktPSRType><psrType>B19</psrType></MktPSRType>
-            <Period><Point><quantity>800</quantity></Point></Period>
-        </TimeSeries>
-        <TimeSeries>
-            <MktPSRType><psrType>B04</psrType></MktPSRType>
-            <Period><Point><quantity>200</quantity></Point></Period>
-        </TimeSeries>
-        """
-        mock_get.return_value = mock.Mock(status_code=200, text=xml)
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
-        assert is_green is True
-        # wind B19 = 11, gas B04 = 490: (800*11 + 200*490) / 1000
-        # = (8800 + 98000) / 1000 = 106.8 -> 107
-        assert intensity == 107
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_dirty(self, mock_get):
-        xml = """
-        <TimeSeries>
-            <MktPSRType><psrType>B05</psrType></MktPSRType>
-            <Period><Point><quantity>700</quantity></Point></Period>
-        </TimeSeries>
-        <TimeSeries>
-            <MktPSRType><psrType>B04</psrType></MktPSRType>
-            <Period><Point><quantity>300</quantity></Point></Period>
-        </TimeSeries>
-        """
-        mock_get.return_value = mock.Mock(status_code=200, text=xml)
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
-        assert is_green is False
-        # (700*820 + 300*490) / 1000 = 721
-        assert intensity == 721
+    def test_verdict(self, mock_get, response, expected):
+        respond(mock_get, response)
+        assert_verdict(entsoe.check_carbon_intensity("DE", 250, "token"), *expected)
 
     def test_no_token(self):
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "")
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(entsoe.check_carbon_intensity("DE", 250, ""), None, None)
 
     def test_unknown_zone(self):
-        is_green, intensity = entsoe.check_carbon_intensity("XX-UNKNOWN", 250, "token")
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_auth_failure(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=401, text="Unauthorized")
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "bad-token")
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_rate_limit(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=429, text="Too Many Requests")
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_network_error(self, mock_get):
-        mock_get.side_effect = requests.RequestException("timeout")
-        is_green, intensity = entsoe.check_carbon_intensity("DE", 250, "token")
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(entsoe.check_carbon_intensity("XX-UNKNOWN", 250, "token"), None, None)
 
 
 class TestEntsoeForecast:
     def test_no_token(self):
-        dt, intensity = entsoe.get_forecast("DE", 250, "")
-        assert dt is None
-        assert intensity is None
+        assert entsoe.get_forecast("DE", 250, "") == (None, None)
 
     def test_unknown_zone(self):
-        dt, intensity = entsoe.get_forecast("XX-FAKE", 250, "token")
-        assert dt is None and intensity is None
+        assert entsoe.get_forecast("XX-FAKE", 250, "token") == (None, None)
 
     def test_series_parser_averages_subhourly(self):
         # Two 15-min points in the same hour are averaged, matching TimeSeries summed
@@ -2095,8 +1977,7 @@ class TestEntsoeForecast:
         """
         series = entsoe._forecast_series_by_hour(xml, entsoe._VRE_PSR)
         # positions 1 and 2 are both in hour 00:00 (15-min steps): avg(100,300)=200
-        hour = list(series)[0]
-        assert series[hour] == 200.0
+        assert series[next(iter(series))] == 200.0
 
     def test_series_parser_psr_filter(self):
         # A non-VRE psrType is excluded when a VRE filter is applied
@@ -2114,8 +1995,6 @@ class TestEntsoeForecast:
     @mock.patch("providers.entsoe.production_for_zone")
     @mock.patch("providers.entsoe._vre_fraction_curve")
     def test_forecast_finds_greener_hour(self, mock_curve, mock_prod):
-        from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         mock_prod.return_value = (400, 50000)  # dirty now, 20% VRE
         # now: 20% renewable. +3h: 80% renewable -> much cleaner
@@ -2132,14 +2011,10 @@ class TestEntsoeForecast:
     @mock.patch("providers.entsoe.production_for_zone")
     @mock.patch("providers.entsoe._vre_fraction_curve")
     def test_forecast_no_green_window(self, mock_curve, mock_prod):
-        from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        mock_prod.return_value = (800, 50000)  # very dirty, low VRE throughout
+        mock_prod.return_value = (800, 50000)  # dirty with low VRE throughout
         mock_curve.return_value = {now: 0.05, now + timedelta(hours=1): 0.06}
-        dt, intensity = entsoe.get_forecast("DE", 50, "token")
-        assert dt == "none_in_forecast"
-        assert intensity is None
+        assert entsoe.get_forecast("DE", 50, "token") == ("none_in_forecast", None)
 
     @mock.patch("providers.entsoe.production_for_zone")
     @mock.patch("providers.entsoe._vre_fraction_curve")
@@ -2154,106 +2029,72 @@ class TestEntsoeForecast:
 # ---------------------------------------------------------------------------
 
 
+def _weather(irradiance, wind):
+    return mock.Mock(
+        status_code=200,
+        json=lambda: {"current": {"global_tilted_irradiance": irradiance, "wind_speed_10m": wind}},
+    )
+
+
 class TestOpenMeteoEstimateIntensity:
-    def test_high_solar_high_wind(self):
-        # 40% solar reduction * 25% wind reduction = 0.60 * 0.75 = 0.45
-        # 550 * 0.60 * 0.75 = 247.5 -> 248 (above the renewable floor)
-        intensity = open_meteo._estimate_intensity_from_weather(700, 10)
-        assert intensity == 248
-
-    def test_no_solar_no_wind(self):
-        # Night, calm: full base intensity
-        intensity = open_meteo._estimate_intensity_from_weather(0, 1)
-        assert intensity == 550
-
-    def test_medium_solar_only(self):
-        intensity = open_meteo._estimate_intensity_from_weather(400, 1)
-        assert intensity == round(550 * 0.80 * 1.0)
-
-    def test_high_wind_only(self):
-        # 25% wind reduction only: 550 * 1.0 * 0.75 = 412.5 -> 412
-        intensity = open_meteo._estimate_intensity_from_weather(0, 9)
-        assert intensity == 412
+    @pytest.mark.parametrize(
+        ("irradiance", "wind", "expected"),
+        [
+            # 40% solar reduction * 25% wind reduction: 550 * 0.60 * 0.75 = 247.5 -> 248
+            # (above the renewable floor)
+            pytest.param(700, 10, 248, id="high_solar_high_wind"),
+            # Night, calm: full base intensity
+            pytest.param(0, 1, 550, id="no_solar_no_wind"),
+            pytest.param(400, 1, round(550 * 0.80 * 1.0), id="medium_solar_only"),
+            # 25% wind reduction only: 550 * 1.0 * 0.75 = 412.5 -> 412
+            pytest.param(0, 9, 412, id="high_wind_only"),
+        ],
+    )
+    def test_estimate(self, irradiance, wind, expected):
+        assert open_meteo._estimate_intensity_from_weather(irradiance, wind) == expected
 
 
 class TestOpenMeteoCheckCarbonIntensity:
+    @pytest.mark.parametrize(
+        ("zone", "threshold", "response", "expected"),
+        [
+            # A clean grid (France ~56 prior) reads clean even modulated by weather
+            pytest.param(
+                "FR", 300, _weather(700, 10), (True, round(56 * 0.60 * 0.75)), id="green_zone"
+            ),
+            # A coal grid (South Africa ~700 prior) sits at its prior when calm/dark
+            pytest.param("ZA", 300, _weather(0, 1), (False, 700), id="dirty_zone"),
+            # Regression: before per-zone priors, nuclear France read ~550 at night
+            # (about 7x too high) and would be wrongly skipped as dirty. It tracks
+            # its ~56 prior even with zero sun and no wind
+            pytest.param(
+                "FR", 100, _weather(0, 0), (True, 56), id="clean_zone_not_misread_as_dirty"
+            ),
+            pytest.param(
+                "ZA", 300, requests.RequestException("timeout"), (None, None), id="api_error"
+            ),
+            pytest.param(
+                "ZA",
+                300,
+                mock.Mock(status_code=500, text="Server Error"),
+                (None, None),
+                id="non_200",
+            ),
+        ],
+    )
     @mock.patch("providers.base._SESSION.get")
-    def test_green_zone(self, mock_get):
-        # A clean grid (France ~56 prior) reads clean even modulated by weather
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {
-                "current": {
-                    "global_tilted_irradiance": 700,
-                    "wind_speed_10m": 10,
-                }
-            },
-        )
-        is_green, intensity = open_meteo.check_carbon_intensity("FR", 300)
-        assert is_green is True
-        assert intensity == round(56 * 0.60 * 0.75)
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_dirty_zone(self, mock_get):
-        # A coal grid (South Africa ~700 prior) sits at its prior when calm/dark
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {
-                "current": {
-                    "global_tilted_irradiance": 0,
-                    "wind_speed_10m": 1,
-                }
-            },
-        )
-        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
-        assert is_green is False
-        assert intensity == 700
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_clean_zone_not_misread_as_dirty(self, mock_get):
-        # Regression: before per-zone priors, nuclear France read ~550 at night
-        # (≈7x too high) and would be wrongly skipped as dirty. Now it tracks
-        # its ~56 prior even with zero sun and no wind
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {"current": {"global_tilted_irradiance": 0, "wind_speed_10m": 0}},
-        )
-        is_green, intensity = open_meteo.check_carbon_intensity("FR", 100)
-        assert is_green is True
-        assert intensity == 56
+    def test_verdict(self, mock_get, zone, threshold, response, expected):
+        respond(mock_get, response)
+        assert_verdict(open_meteo.check_carbon_intensity(zone, threshold), *expected)
 
     def test_unknown_zone_no_coords(self):
-        is_green, intensity = open_meteo.check_carbon_intensity("XX-NONE", 300)
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(open_meteo.check_carbon_intensity("XX-NONE", 300), None, None)
 
     @mock.patch("providers.base._SESSION.get")
     def test_with_explicit_lat_lon(self, mock_get):
-        mock_get.return_value = mock.Mock(
-            status_code=200,
-            json=lambda: {
-                "current": {
-                    "global_tilted_irradiance": 600,
-                    "wind_speed_10m": 5,
-                }
-            },
-        )
-        is_green, intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
+        mock_get.return_value = _weather(600, 5)
+        is_green, _intensity = open_meteo.check_carbon_intensity("CUSTOM", 500, lat=40.0, lon=-74.0)
         assert is_green is True
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_api_error(self, mock_get):
-        mock_get.side_effect = requests.RequestException("timeout")
-        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
-        assert is_green is None
-        assert intensity is None
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_non_200_response(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=500, text="Server Error")
-        is_green, intensity = open_meteo.check_carbon_intensity("ZA", 300)
-        assert is_green is None
-        assert intensity is None
 
 
 class TestOpenMeteoForecast:
@@ -2271,7 +2112,7 @@ class TestOpenMeteoForecast:
         )
         # ZA prior ~700: the dark 06:00 hour stays dirty. Midday sun+wind
         # (700*0.45=315) crosses a 350 threshold, so the green window is 12:00
-        dt, intensity = open_meteo.get_forecast("ZA", 350)
+        dt, _intensity = open_meteo.get_forecast("ZA", 350)
         assert dt is not None
         assert "12:00" in dt
 
@@ -2287,9 +2128,7 @@ class TestOpenMeteoForecast:
                 }
             },
         )
-        dt, intensity = open_meteo.get_forecast("ZA", 100)
-        assert dt == "none_in_forecast"
-        assert intensity is None
+        assert open_meteo.get_forecast("ZA", 100) == ("none_in_forecast", None)
 
     def test_history_trend_returns_none(self):
         assert open_meteo.get_history_trend("ZA") is None
@@ -2301,24 +2140,22 @@ class TestOpenMeteoForecast:
 
 
 class TestTimePriorityScore:
-    def test_solar_peak(self):
+    @pytest.mark.parametrize(
+        ("utc_hour", "score"),
+        [
+            pytest.param(20, 100, id="solar_peak_noon_local"),
+            pytest.param(10, 10, id="solar_night_2am_local"),
+        ],
+    )
+    def test_solar_follows_local_sun(self, utc_hour, score):
         zone = {"zone": "CISO", "utc_offset": -8, "type": "solar"}
-        # 12pm local = 20 UTC
-        score = _time_priority_score(zone, 20)
-        assert score == 100
-
-    def test_solar_night(self):
-        zone = {"zone": "CISO", "utc_offset": -8, "type": "solar"}
-        # 2am local = 10 UTC
-        score = _time_priority_score(zone, 10)
-        assert score == 10
+        assert _time_priority_score(zone, utc_hour) == score
 
     def test_hydro_always_high(self):
         zone = {"zone": "NO-NO1", "utc_offset": 1, "type": "hydro"}
         # Any hour, hydro should be consistently high
         for utc_hour in [0, 6, 12, 18]:
-            score = _time_priority_score(zone, utc_hour)
-            assert score >= 80
+            assert _time_priority_score(zone, utc_hour) >= 80
 
     def test_wind_higher_at_night(self):
         zone = {"zone": "GB-16", "utc_offset": 0, "type": "wind"}
@@ -2329,18 +2166,14 @@ class TestTimePriorityScore:
 
 class TestSortAutoGreenByTime:
     def test_solar_ranked_high_at_noon(self):
-        zones = list(AUTO_GREEN_ZONES)
         # 20 UTC = noon in California (UTC-8)
-        sorted_zones = sort_auto_green_by_time(zones, 20)
-        zone_names = [z["zone"] for z in sorted_zones]
+        zone_names = [z["zone"] for z in sort_auto_green_by_time(list(AUTO_GREEN_ZONES), 20)]
         # CISO (solar, UTC-8) should be near the top at noon local time
         assert zone_names.index("CISO") < 5
 
     def test_solar_ranked_low_at_night(self):
-        zones = list(AUTO_GREEN_ZONES)
         # 10 UTC = 2am in California (UTC-8)
-        sorted_zones = sort_auto_green_by_time(zones, 10)
-        zone_names = [z["zone"] for z in sorted_zones]
+        zone_names = [z["zone"] for z in sort_auto_green_by_time(list(AUTO_GREEN_ZONES), 10)]
         # CISO should be near the bottom at 2am local time
         assert zone_names.index("CISO") > len(zone_names) // 2
 
@@ -2360,15 +2193,8 @@ class TestExpandedAutoGreen:
     def test_has_global_coverage(self):
         """auto:green includes free-provider zones across multiple continents."""
         zones = {z["zone"] for z in AUTO_GREEN_ZONES}
-        # Americas (EIA, free)
-        assert "CISO" in zones
-        assert "BPAT" in zones
-        # UK (free)
-        assert "GB-16" in zones
-        # Australia (AEMO, free)
-        assert "AU-TAS" in zones
-        # Brazil (ONS, free)
-        assert "BR-S" in zones
+        # Americas (EIA), UK, Australia (AEMO) and Brazil (ONS) are all free
+        assert {"CISO", "BPAT", "GB-16", "AU-TAS", "BR-S"} <= zones
 
     def test_auto_green_excludes_geowalled_india(self):
         """Grid India zones are geo-walled (Indian IPs only), so curated
@@ -2382,30 +2208,23 @@ class TestExpandedAutoGreen:
         """auto:green is the curated free set. The token-only extras live in
         auto:green:full."""
         zones = {z["zone"] for z in AUTO_GREEN_ZONES}
-        full = {z["zone"] for z in __import__("providers").AUTO_GREEN_ZONES_FULL}
+        full = {z["zone"] for z in AUTO_GREEN_ZONES_FULL}
         # Token-tier zones are reserved for auto:green:full
-        assert "NO-NO1" not in zones and "NO-NO1" in full
-        assert "FR" not in zones and "FR" in full
-        assert "NZ-NZN" not in zones and "NZ-NZN" in full
+        for token_zone in ("NO-NO1", "FR", "NZ-NZN"):
+            assert token_zone not in zones
+            assert token_zone in full
         # Canada is keyless (IESO / Hydro-Quebec), so CA-QC belongs in auto:green
         assert "CA-QC" in zones
 
     def test_auto_green_full_includes_token_zones(self):
         """auto:green:full includes both free and token-requiring zones."""
-        from providers import AUTO_GREEN_ZONES_FULL
-
         zones = {z["zone"] for z in AUTO_GREEN_ZONES_FULL}
         assert "CISO" in zones  # Free
-        assert "NO-NO1" in zones  # Token-requiring
-        assert "CA-QC" in zones  # Token-requiring
-        assert "NZ-NZN" in zones  # Token-requiring
+        assert {"NO-NO1", "CA-QC", "NZ-NZN"} <= zones  # Token-requiring
 
     def test_all_zones_have_required_fields(self):
         for zone in AUTO_GREEN_ZONES:
-            assert "zone" in zone
-            assert "runner_label" in zone
-            assert "utc_offset" in zone
-            assert "type" in zone
+            assert {"zone", "runner_label", "utc_offset", "type"} <= set(zone)
             assert zone["type"] in ("solar", "hydro", "wind", "nuclear")
 
 
@@ -2424,13 +2243,11 @@ class TestEstimateCarbonSavings:
 
     def test_dirty_grid_no_savings(self):
         # 500 gCO2eq/kWh, worse than 450 baseline
-        saved, badge_url = check_grid.estimate_carbon_savings(500)
+        saved, _badge_url = check_grid.estimate_carbon_savings(500)
         assert saved == 0
 
     def test_none_intensity(self):
-        saved, badge_url = check_grid.estimate_carbon_savings(None)
-        assert saved == 0
-        assert badge_url is None
+        assert check_grid.estimate_carbon_savings(None) == (0, None)
 
     def test_custom_job_minutes(self):
         saved_short, _ = check_grid.estimate_carbon_savings(100, job_minutes=15)
@@ -2444,12 +2261,12 @@ class TestEstimateCarbonSavings:
 
 
 class TestCarbonEquivalents:
-    def test_zero_and_none_have_empty_phrase(self):
-        for grams in (0, None, -5):
-            eq = check_grid.carbon_equivalents(grams)
-            assert eq["phrase"] == ""
-            assert eq["km_driven"] == 0
-            assert eq["phone_charges"] == 0
+    @pytest.mark.parametrize("grams", [0, None, -5])
+    def test_zero_and_none_have_empty_phrase(self, grams):
+        eq = check_grid.carbon_equivalents(grams)
+        assert eq["phrase"] == ""
+        assert eq["km_driven"] == 0
+        assert eq["phone_charges"] == 0
 
     def test_small_amount_uses_phone_charges(self):
         # 50 g is under a km of driving, so the phrase should be phone charges
@@ -2475,104 +2292,67 @@ class TestCarbonEquivalents:
 
 
 class TestSetSavingsOutputs:
-    def test_emits_equivalent_output(self):
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            check_grid.set_savings_outputs(1000, "https://img.shields.io/badge/x")
-            with open(path) as f:
-                content = f.read()
-            assert "co2_saved_grams=1000" in content
-            assert "co2_saved_equivalent=" in content
-            assert "km not driven" in content
-            assert "carbon_badge_url=" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_emits_equivalent_output(self, github_output):
+        check_grid.set_savings_outputs(1000, "https://img.shields.io/badge/x")
+        content = github_output.read_text()
+        assert "co2_saved_grams=1000" in content
+        assert "co2_saved_equivalent=" in content
+        assert "km not driven" in content
+        assert "carbon_badge_url=" in content
 
-    def test_no_savings_emits_nothing(self):
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            check_grid.set_savings_outputs(0, None)
-            with open(path) as f:
-                content = f.read()
-            assert "co2_saved_grams" not in content
-            assert "co2_saved_equivalent" not in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_no_savings_emits_nothing(self, github_output):
+        check_grid.set_savings_outputs(0, None)
+        content = github_output.read_text()
+        assert "co2_saved_grams" not in content
+        assert "co2_saved_equivalent" not in content
 
-    def test_emits_honest_emitted_and_basis(self):
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            # measured intensity -> per-run emissions + basis are set
-            check_grid.set_savings_outputs(500, None, intensity=120)
-            content = open(path).read()
-            assert "co2_emitted_grams=" in content
-            assert "co2_saved_basis=" in content
-            assert "benchmark" in content  # the basis is stated in the output
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_emits_honest_emitted_and_basis(self, github_output):
+        # measured intensity -> per-run emissions + basis are set
+        check_grid.set_savings_outputs(500, None, intensity=120)
+        content = github_output.read_text()
+        assert "co2_emitted_grams=" in content
+        assert "co2_saved_basis=" in content
+        assert "benchmark" in content  # the basis is stated in the output
 
-    def test_no_emitted_output_when_intensity_unknown(self):
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            check_grid.set_savings_outputs(0, None, intensity=None)
-            content = open(path).read()
-            assert "co2_emitted_grams" not in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_no_emitted_output_when_intensity_unknown(self, github_output):
+        check_grid.set_savings_outputs(0, None, intensity=None)
+        assert "co2_emitted_grams" not in github_output.read_text()
 
 
 class TestCarbonTier:
-    def test_parse_defaults_on_empty(self):
-        assert check_grid.parse_tier_thresholds("") == check_grid.DEFAULT_TIER_THRESHOLDS
+    @pytest.mark.parametrize(
+        ("raw", "thresholds"),
+        [
+            pytest.param("", check_grid.DEFAULT_TIER_THRESHOLDS, id="defaults_on_empty"),
+            pytest.param("120,280", (120.0, 280.0), id="valid"),
+            pytest.param("300,100", check_grid.DEFAULT_TIER_THRESHOLDS, id="bad_order_falls_back"),
+            pytest.param("abc", check_grid.DEFAULT_TIER_THRESHOLDS, id="garbage_falls_back"),
+            pytest.param("100", check_grid.DEFAULT_TIER_THRESHOLDS, id="wrong_count_falls_back"),
+        ],
+    )
+    def test_parse_thresholds(self, raw, thresholds):
+        assert check_grid.parse_tier_thresholds(raw) == thresholds
 
-    def test_parse_valid(self):
-        assert check_grid.parse_tier_thresholds("120,280") == (120.0, 280.0)
+    @pytest.mark.parametrize(
+        ("intensity", "tier"),
+        [
+            pytest.param(80, "green", id="green"),
+            pytest.param(200, "amber", id="amber"),
+            pytest.param(500, "red", id="red"),
+            pytest.param(150, "green", id="green_boundary_inclusive"),
+            pytest.param(300, "amber", id="amber_boundary_inclusive"),
+            pytest.param(None, "unknown", id="unknown_on_none"),
+            # Negative intensity should not crash, treated as cleanest (green)
+            pytest.param(-10, "green", id="negative_is_green"),
+        ],
+    )
+    def test_classify(self, intensity, tier):
+        assert check_grid.classify_tier(intensity, (150, 300))[0] == tier
 
-    def test_parse_bad_order_falls_back(self):
-        assert check_grid.parse_tier_thresholds("300,100") == check_grid.DEFAULT_TIER_THRESHOLDS
-
-    def test_parse_garbage_falls_back(self):
-        assert check_grid.parse_tier_thresholds("abc") == check_grid.DEFAULT_TIER_THRESHOLDS
-
-    def test_parse_wrong_count_falls_back(self):
-        assert check_grid.parse_tier_thresholds("100") == check_grid.DEFAULT_TIER_THRESHOLDS
-
-    def test_classify_green(self):
+    def test_classify_green_reason(self):
         tier, reason = check_grid.classify_tier(80, (150, 300))
         assert tier == "green"
         assert "full" in reason
-
-    def test_classify_amber(self):
-        tier, _ = check_grid.classify_tier(200, (150, 300))
-        assert tier == "amber"
-
-    def test_classify_red(self):
-        tier, _ = check_grid.classify_tier(500, (150, 300))
-        assert tier == "red"
-
-    def test_classify_boundary_is_inclusive(self):
-        assert check_grid.classify_tier(150, (150, 300))[0] == "green"
-        assert check_grid.classify_tier(300, (150, 300))[0] == "amber"
-
-    def test_classify_unknown_on_none(self):
-        tier, _ = check_grid.classify_tier(None, (150, 300))
-        assert tier == "unknown"
-
-    def test_classify_negative_intensity_is_green(self):
-        # Negative intensity should not crash, treated as cleanest (green)
-        assert check_grid.classify_tier(-10, (150, 300))[0] == "green"
 
 
 class TestWorthWaiting:
@@ -2586,7 +2366,7 @@ class TestWorthWaiting:
 
     def test_runs_now_when_idle_dominates(self):
         # Tiny improvement (300 -> 290) but a 20h wait on a small job: idle wins
-        should, saved, idle = check_grid.worth_waiting(300, 290, 20.0, 0.1)
+        should, _saved, _idle = check_grid.worth_waiting(300, 290, 20.0, 0.1)
         assert should is False
 
     def test_future_dirtier_never_waits(self):
@@ -2594,10 +2374,13 @@ class TestWorthWaiting:
         assert should is False
         assert saved == 0.0
 
-    def test_missing_inputs_fail_to_run_now(self):
-        assert check_grid.worth_waiting(None, 50, 1.0, 1.0)[0] is False
-        assert check_grid.worth_waiting(300, 50, 0, 1.0)[0] is False
-        assert check_grid.worth_waiting(300, 50, 1.0, 0)[0] is False
+    @pytest.mark.parametrize(
+        "args",
+        [(None, 50, 1.0, 1.0), (300, 50, 0, 1.0), (300, 50, 1.0, 0)],
+        ids=["no_current_intensity", "zero_wait_hours", "zero_energy"],
+    )
+    def test_missing_inputs_fail_to_run_now(self, args):
+        assert check_grid.worth_waiting(*args)[0] is False
 
 
 class TestAllocateShards:
@@ -2643,98 +2426,71 @@ class TestAllocateShards:
 
 
 class TestComputeCarbonScale:
-    def test_clean_returns_max(self):
-        assert check_grid.compute_carbon_scale(100, (150, 300)) == 1.0
-
-    def test_dirty_returns_min(self):
-        assert check_grid.compute_carbon_scale(400, (150, 300)) == 0.25
-
-    def test_boundaries_inclusive(self):
-        assert check_grid.compute_carbon_scale(150, (150, 300)) == 1.0
-        assert check_grid.compute_carbon_scale(300, (150, 300)) == 0.25
-
-    def test_linear_interpolation_midpoint(self):
-        # Halfway between 150 and 300 -> halfway between 1.0 and 0.25 = 0.625
-        assert check_grid.compute_carbon_scale(225, (150, 300)) == 0.625
-
-    def test_unknown_fails_open_to_max(self):
-        assert check_grid.compute_carbon_scale(None, (150, 300)) == 1.0
+    @pytest.mark.parametrize(
+        ("intensity", "scale"),
+        [
+            pytest.param(100, 1.0, id="clean_returns_max"),
+            pytest.param(400, 0.25, id="dirty_returns_min"),
+            pytest.param(150, 1.0, id="lower_boundary_inclusive"),
+            pytest.param(300, 0.25, id="upper_boundary_inclusive"),
+            # Halfway between 150 and 300 -> halfway between 1.0 and 0.25 = 0.625
+            pytest.param(225, 0.625, id="linear_interpolation_midpoint"),
+            pytest.param(None, 1.0, id="unknown_fails_open_to_max"),
+        ],
+    )
+    def test_scale(self, intensity, scale):
+        assert check_grid.compute_carbon_scale(intensity, (150, 300)) == scale
 
     def test_custom_bounds(self):
         # Floor of 0.5, ceiling of 2.0, dirty -> floor
         assert check_grid.compute_carbon_scale(400, (150, 300), 0.5, 2.0) == 0.5
         assert check_grid.compute_carbon_scale(100, (150, 300), 0.5, 2.0) == 2.0
 
-    def test_scale_bounds_from_env(self):
-        with mock.patch.dict(os.environ, {"SCALE_MIN": "0.1", "SCALE_MAX": "3"}):
-            assert check_grid._scale_bounds() == (0.1, 3.0)
+    def test_scale_bounds_from_env(self, monkeypatch):
+        monkeypatch.setenv("SCALE_MIN", "0.1")
+        monkeypatch.setenv("SCALE_MAX", "3")
+        assert check_grid._scale_bounds() == (0.1, 3.0)
 
-    def test_scale_bounds_rejects_inverted(self):
-        with mock.patch.dict(os.environ, {"SCALE_MIN": "2", "SCALE_MAX": "1"}):
-            assert check_grid._scale_bounds() == (
-                check_grid.DEFAULT_SCALE_MIN,
-                check_grid.DEFAULT_SCALE_MAX,
-            )
-
-    def test_summary_sets_tier_output(self):
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            out_path = f.name
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            sum_path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = out_path
-            os.environ["GITHUB_STEP_SUMMARY"] = sum_path
-            os.environ["TIER_THRESHOLDS"] = "120,280"
-            check_grid.write_job_summary("CISO", 90, True, 250)
-            with open(out_path) as f:
-                out = f.read()
-            with open(sum_path) as f:
-                summary = f.read()
-            assert "carbon_tier=green" in out
-            assert "carbon_tier_reason=" in out
-            assert "Carbon Tier" in summary
-        finally:
-            for p in (out_path, sum_path):
-                os.unlink(p)
-            for k in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "TIER_THRESHOLDS"):
-                os.environ.pop(k, None)
+    def test_scale_bounds_rejects_inverted(self, monkeypatch):
+        monkeypatch.setenv("SCALE_MIN", "2")
+        monkeypatch.setenv("SCALE_MAX", "1")
+        assert check_grid._scale_bounds() == (
+            check_grid.DEFAULT_SCALE_MIN,
+            check_grid.DEFAULT_SCALE_MAX,
+        )
 
 
 class TestCostCarbonRanking:
-    def test_cost_weight_default_zero(self):
-        os.environ.pop("COST_WEIGHT", None)
+    def test_cost_weight_default_zero(self, monkeypatch):
+        monkeypatch.delenv("COST_WEIGHT", raising=False)
         assert check_grid._cost_weight() == 0.0
 
-    def test_cost_weight_clamped(self):
-        try:
-            os.environ["COST_WEIGHT"] = "1.7"
-            assert check_grid._cost_weight() == 1.0
-            os.environ["COST_WEIGHT"] = "-3"
-            assert check_grid._cost_weight() == 0.0
-        finally:
-            os.environ.pop("COST_WEIGHT", None)
+    @pytest.mark.parametrize(
+        ("raw", "weight"),
+        [
+            pytest.param("1.7", 1.0, id="clamped_to_one"),
+            pytest.param("-3", 0.0, id="clamped_to_zero"),
+            pytest.param("abc", 0.0, id="garbage_is_zero"),
+        ],
+    )
+    def test_cost_weight_parsing(self, monkeypatch, raw, weight):
+        monkeypatch.setenv("COST_WEIGHT", raw)
+        assert check_grid._cost_weight() == weight
 
-    def test_cost_weight_garbage(self):
-        try:
-            os.environ["COST_WEIGHT"] = "abc"
-            assert check_grid._cost_weight() == 0.0
-        finally:
-            os.environ.pop("COST_WEIGHT", None)
-
+    @pytest.mark.parametrize(
+        ("cost_weight", "winner"),
+        [
+            pytest.param(1.0, "FR", id="pure_cost_picks_cheapest"),
+            pytest.param(0.0, "CISO", id="pure_carbon_picks_cleanest"),
+        ],
+    )
     @mock.patch("check_grid.azure_pricing.get_region_price")
-    def test_pure_cost_picks_cheapest(self, price):
+    def test_ranking_extremes(self, price, cost_weight, winner):
         # CISO cleaner (50) but pricier (0.10). FR dirtier (100) but cheaper (0.05)
         candidates = [("CISO", 50, "l1"), ("FR", 100, "l2")]
         price.side_effect = [0.10, 0.05]
-        zone, intensity, label = check_grid.rank_by_cost_carbon(candidates, 1.0)
-        assert zone == "FR"
-
-    @mock.patch("check_grid.azure_pricing.get_region_price")
-    def test_pure_carbon_picks_cleanest(self, price):
-        candidates = [("CISO", 50, "l1"), ("FR", 100, "l2")]
-        price.side_effect = [0.10, 0.05]
-        zone, _, _ = check_grid.rank_by_cost_carbon(candidates, 0.0)
-        assert zone == "CISO"
+        zone, _intensity, _label = check_grid.rank_by_cost_carbon(candidates, cost_weight)
+        assert zone == winner
 
     @mock.patch("check_grid.azure_pricing.get_region_price")
     def test_missing_price_falls_back(self, price):
@@ -2742,29 +2498,27 @@ class TestCostCarbonRanking:
         price.side_effect = [0.10, None]
         assert check_grid.rank_by_cost_carbon(candidates, 0.5) is None
 
-    def test_load_price_map_empty(self):
-        os.environ.pop("COST_PRICE_MAP", None)
-        assert check_grid._load_price_map() == {}
-
-    def test_load_price_map_parses_json(self):
-        try:
-            os.environ["COST_PRICE_MAP"] = '{"CISO": "0.09", "GB": "0.11"}'
-            assert check_grid._load_price_map() == {"CISO": "0.09", "GB": "0.11"}
-        finally:
-            os.environ.pop("COST_PRICE_MAP", None)
-
-    def test_load_price_map_bad_json(self):
-        try:
-            os.environ["COST_PRICE_MAP"] = "{not json"
-            assert check_grid._load_price_map() == {}
-        finally:
-            os.environ.pop("COST_PRICE_MAP", None)
+    @pytest.mark.parametrize(
+        ("raw", "price_map"),
+        [
+            pytest.param(None, {}, id="unset_is_empty"),
+            pytest.param(
+                '{"CISO": "0.09", "GB": "0.11"}', {"CISO": "0.09", "GB": "0.11"}, id="parses_json"
+            ),
+            pytest.param("{not json", {}, id="bad_json_is_empty"),
+        ],
+    )
+    def test_load_price_map(self, monkeypatch, raw, price_map):
+        if raw is None:
+            monkeypatch.delenv("COST_PRICE_MAP", raising=False)
+        else:
+            monkeypatch.setenv("COST_PRICE_MAP", raw)
+        assert check_grid._load_price_map() == price_map
 
     @mock.patch("check_grid.azure_pricing.get_region_price")
     def test_price_map_used_before_azure(self, azure):
         azure.return_value = 99.0  # should not be consulted for mapped zones
-        zone_price = check_grid._zone_price("CISO", {"CISO": "0.07"})
-        assert zone_price == 0.07
+        assert check_grid._zone_price("CISO", {"CISO": "0.07"}) == 0.07
         azure.assert_not_called()
 
     @mock.patch("check_grid.azure_pricing.get_region_price")
@@ -2773,88 +2527,52 @@ class TestCostCarbonRanking:
         assert check_grid._zone_price("GB", {"CISO": "0.07"}) == 0.12
 
     @mock.patch("check_grid.azure_pricing.get_region_price")
-    def test_multi_cloud_price_map_ranking(self, azure):
+    def test_multi_cloud_price_map_ranking(self, azure, monkeypatch):
         # All prices from the map (any cloud), cheapest wins at cost_weight=1
-        try:
-            os.environ["COST_PRICE_MAP"] = '{"CISO": "0.20", "GB": "0.05"}'
-            zone, _, _ = check_grid.rank_by_cost_carbon([("CISO", 50, "l1"), ("GB", 60, "l2")], 1.0)
-            assert zone == "GB"
-            azure.assert_not_called()
-        finally:
-            os.environ.pop("COST_PRICE_MAP", None)
+        monkeypatch.setenv("COST_PRICE_MAP", '{"CISO": "0.20", "GB": "0.05"}')
+        zone, _, _ = check_grid.rank_by_cost_carbon([("CISO", 50, "l1"), ("GB", 60, "l2")], 1.0)
+        assert zone == "GB"
+        azure.assert_not_called()
 
     @mock.patch("check_grid.azure_pricing.get_region_price")
     def test_single_candidate_zero_span(self, price):
         # One candidate: price and carbon spans are both zero, so must not divide by 0
         price.side_effect = [0.10]
-        zone, intensity, label = check_grid.rank_by_cost_carbon([("CISO", 50, "l1")], 0.5)
+        zone, _intensity, _label = check_grid.rank_by_cost_carbon([("CISO", 50, "l1")], 0.5)
         assert zone == "CISO"
 
     def test_empty_candidates(self):
         assert check_grid.rank_by_cost_carbon([], 0.5) is None
 
 
+@pytest.mark.usefixtures("reset_once_flags")
 class TestEmitRunSignalsIntegration:
     """End-to-end coverage of the composed signal-emission path."""
 
-    def _reset(self):
-        check_grid._ledger_recorded = False
-        check_grid._budget_summary = None
-        check_grid._lifetime_summary = None
-        check_grid._marginal_done = False
-        check_grid._marginal_summary = None
-        check_grid._status_badge_done = False
-        check_grid._pr_comment_done = False
-        check_grid._notify_done = False
-
-    def test_file_ledger_budget_and_tier(self):
-        self._reset()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        try:
-            os.environ["GITHUB_OUTPUT"] = out.name
-            os.environ["LEDGER"] = f"file:{ledger_path}"
-            os.environ["MONTHLY_BUDGET_GRAMS"] = "2000"
-            os.environ["TIER_THRESHOLDS"] = "150,300"
-            tier, _ = check_grid.emit_run_signals("GB", 192, True, 250)
-            assert tier == "amber"
-            content = open(out.name).read()
-            assert "carbon_tier=amber" in content
-            assert "budget_state=ok" in content
-            assert "budget_exceeded=false" in content
-            assert os.path.exists(ledger_path)  # ledger actually written
-        finally:
-            for p in (out.name, ledger_path):
-                if os.path.exists(p):
-                    os.unlink(p)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS", "TIER_THRESHOLDS"):
-                os.environ.pop(k, None)
-            self._reset()
+    def test_file_ledger_budget_and_tier(self, github_output, ledger_path, monkeypatch):
+        monkeypatch.setenv("MONTHLY_BUDGET_GRAMS", "2000")
+        monkeypatch.setenv("TIER_THRESHOLDS", "150,300")
+        tier, _ = check_grid.emit_run_signals("GB", 192, True, 250)
+        assert tier == "amber"
+        content = github_output.read_text()
+        assert "carbon_tier=amber" in content
+        assert "budget_state=ok" in content
+        assert "budget_exceeded=false" in content
+        assert ledger_path.exists()  # ledger actually written
 
 
 class TestDoctor:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.detect_provider")
-    def test_run_doctor_end_to_end(self, detect, check):
+    def test_run_doctor_end_to_end(self, detect, check, step_summary, monkeypatch):
         detect.return_value = "uk_carbon_intensity"
         check.return_value = (True, 120)
-        sumf = tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False)
-        sumf.close()
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = sumf.name
-            os.environ["GRID_ZONES"] = "GB"
-            check_grid.run_doctor()
-            written = open(sumf.name).read()
-            assert "Zone connectivity" in written
-            assert "`GB`" in written
-            assert "OK" in written
-        finally:
-            os.unlink(sumf.name)
-            for k in ("GITHUB_STEP_SUMMARY", "GRID_ZONES"):
-                os.environ.pop(k, None)
+        monkeypatch.setenv("GRID_ZONES", "GB")
+        check_grid.run_doctor()
+        written = step_summary.read_text()
+        assert "Zone connectivity" in written
+        assert "`GB`" in written
+        assert "OK" in written
 
     def test_render_report_contains_sections(self):
         results = [
@@ -2906,72 +2624,51 @@ class TestDoctor:
         assert r["token"] == "MISSING"
 
 
+@pytest.mark.usefixtures("reset_once_flags")
 class TestMarginalOutputs:
-    def _reset(self):
-        check_grid._marginal_done = False
-        check_grid._marginal_summary = None
-
-    def test_noop_without_creds(self):
-        self._reset()
-        os.environ.pop("WATTTIME_USERNAME", None)
-        os.environ.pop("WATTTIME_PASSWORD", None)
+    def test_noop_without_creds(self, monkeypatch):
+        monkeypatch.delenv("WATTTIME_USERNAME", raising=False)
+        monkeypatch.delenv("WATTTIME_PASSWORD", raising=False)
         check_grid.emit_marginal_outputs()
         assert check_grid._marginal_summary is None
 
+    @pytest.mark.parametrize(
+        ("percentile", "max_pct", "clean"),
+        [
+            pytest.param(20, "33", True, id="clean_below_threshold"),
+            pytest.param(90, None, False, id="dirty_above_threshold"),
+        ],
+    )
     @mock.patch("check_grid.watttime.get_marginal_index")
     @mock.patch("check_grid.watttime.login")
-    def test_clean_when_below_threshold(self, login, idx):
-        self._reset()
+    def test_verdict(self, login, idx, github_output, monkeypatch, percentile, max_pct, clean):
         login.return_value = "tok"
-        idx.return_value = 20
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        try:
-            os.environ["GITHUB_OUTPUT"] = out.name
-            os.environ["WATTTIME_USERNAME"] = "u"
-            os.environ["WATTTIME_PASSWORD"] = "p"
-            os.environ["MARGINAL_MAX_PERCENTILE"] = "33"
-            check_grid.emit_marginal_outputs()
-            with open(out.name) as f:
-                content = f.read()
-            assert "marginal_percentile=20" in content
-            assert "marginal_clean=true" in content
-            assert check_grid._marginal_summary["clean"] is True
-        finally:
-            os.unlink(out.name)
-            for k in (
-                "GITHUB_OUTPUT",
-                "WATTTIME_USERNAME",
-                "WATTTIME_PASSWORD",
-                "MARGINAL_MAX_PERCENTILE",
-            ):
-                os.environ.pop(k, None)
-
-    @mock.patch("check_grid.watttime.get_marginal_index")
-    @mock.patch("check_grid.watttime.login")
-    def test_dirty_when_above_threshold(self, login, idx):
-        self._reset()
-        login.return_value = "tok"
-        idx.return_value = 90
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        try:
-            os.environ["GITHUB_OUTPUT"] = out.name
-            os.environ["WATTTIME_USERNAME"] = "u"
-            os.environ["WATTTIME_PASSWORD"] = "p"
-            check_grid.emit_marginal_outputs()
-            with open(out.name) as f:
-                content = f.read()
-            assert "marginal_clean=false" in content
-        finally:
-            os.unlink(out.name)
-            for k in ("GITHUB_OUTPUT", "WATTTIME_USERNAME", "WATTTIME_PASSWORD"):
-                os.environ.pop(k, None)
+        idx.return_value = percentile
+        monkeypatch.setenv("WATTTIME_USERNAME", "u")
+        monkeypatch.setenv("WATTTIME_PASSWORD", "p")
+        if max_pct is not None:
+            monkeypatch.setenv("MARGINAL_MAX_PERCENTILE", max_pct)
+        check_grid.emit_marginal_outputs()
+        content = github_output.read_text()
+        assert f"marginal_percentile={percentile}" in content
+        assert f"marginal_clean={str(clean).lower()}" in content
+        assert check_grid._marginal_summary["clean"] is clean
+        # A second call is a no-op: the once-guard skips even the login
+        check_grid.emit_marginal_outputs()
+        login.assert_called_once()
 
 
 class TestEstimateEmissions:
-    def test_none_intensity_zero(self):
-        assert check_grid.estimate_emissions(None) == 0.0
+    @pytest.mark.parametrize(
+        ("intensity", "kwargs"),
+        [
+            pytest.param(None, {}, id="none_intensity"),
+            pytest.param(-50, {}, id="negative_intensity_clamped"),
+            pytest.param(100, {"job_minutes": -5}, id="negative_job_minutes_clamped"),
+        ],
+    )
+    def test_zero_emissions(self, intensity, kwargs):
+        assert check_grid.estimate_emissions(intensity, **kwargs) == 0.0
 
     def test_proportional_to_intensity(self):
         # Chosen so both products land exactly on a tenth: the default job is
@@ -2986,104 +2683,75 @@ class TestEstimateEmissions:
             100, job_minutes=15
         )
 
-    def test_negative_intensity_clamped(self):
-        assert check_grid.estimate_emissions(-50) == 0.0
-
-    def test_negative_job_minutes_clamped(self):
-        assert check_grid.estimate_emissions(100, job_minutes=-5) == 0.0
-
 
 class TestResolveEnergy:
-    def _clear(self):
+    @pytest.fixture(autouse=True)
+    def _clear_energy_env(self, monkeypatch):
         for k in ("JOB_ENERGY_KWH", "JOB_POWER_WATTS", "JOB_DURATION_MINUTES"):
-            os.environ.pop(k, None)
+            monkeypatch.delenv(k, raising=False)
 
     def test_default_ci_estimate(self):
-        self._clear()
         # 13 W x 0.25 h = 0.00325 kWh
         assert check_grid.resolve_energy_kwh() == pytest.approx(0.00325, rel=1e-6)
 
     def test_bounds_bracket_the_point_estimate(self):
-        self._clear()
         low, high = check_grid.energy_bounds_kwh()
         assert low < check_grid.resolve_energy_kwh() < high
 
-    def test_measured_energy_collapses_the_bounds(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "12"
-            assert check_grid.energy_bounds_kwh() == (12.0, 12.0)
-            assert check_grid.emissions_bounds(400) is None
-        finally:
-            self._clear()
+    def test_measured_energy_collapses_the_bounds(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "12")
+        assert check_grid.energy_bounds_kwh() == (12.0, 12.0)
+        assert check_grid.emissions_bounds(400) is None
 
     def test_emissions_bounds_bracket_the_estimate(self):
-        self._clear()
         low, high = check_grid.emissions_bounds(400)
         assert low < check_grid.estimate_emissions(400) < high
         assert check_grid.emissions_bounds(None) is None
 
-    def test_explicit_energy_wins(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "12"
-            os.environ["JOB_POWER_WATTS"] = "999999"  # must be ignored
-            assert check_grid.resolve_energy_kwh() == 12.0
-        finally:
-            self._clear()
+    def test_explicit_energy_wins(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "12")
+        monkeypatch.setenv("JOB_POWER_WATTS", "999999")  # must be ignored
+        assert check_grid.resolve_energy_kwh() == 12.0
 
-    def test_power_and_duration(self):
-        try:
-            os.environ["JOB_POWER_WATTS"] = "300"  # 0.3 kW
-            os.environ["JOB_DURATION_MINUTES"] = "120"  # 2 h
-            assert check_grid.resolve_energy_kwh() == pytest.approx(0.6, rel=1e-6)
-        finally:
-            self._clear()
+    def test_power_and_duration(self, monkeypatch):
+        monkeypatch.setenv("JOB_POWER_WATTS", "300")  # 0.3 kW
+        monkeypatch.setenv("JOB_DURATION_MINUTES", "120")  # 2 h
+        assert check_grid.resolve_energy_kwh() == pytest.approx(0.6, rel=1e-6)
 
-    def test_emissions_use_resolved_energy(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "10"  # 10 kWh
-            # 400 gCO2/kWh x 10 kWh = 4000 g
-            assert check_grid.estimate_emissions(400) == 4000.0
-        finally:
-            self._clear()
+    def test_emissions_use_resolved_energy(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "10")  # 10 kWh
+        # 400 gCO2/kWh x 10 kWh = 4000 g
+        assert check_grid.estimate_emissions(400) == 4000.0
 
 
 class TestPueAndEmbodied:
-    def _clear(self):
+    @pytest.fixture(autouse=True)
+    def _clear_energy_env(self, monkeypatch):
         for k in ("JOB_ENERGY_KWH", "PUE", "EMBODIED_GRAMS"):
-            os.environ.pop(k, None)
+            monkeypatch.delenv(k, raising=False)
 
     def test_defaults_pue_1_embodied_0(self):
-        self._clear()
         assert check_grid._pue() == 1.0
         assert check_grid._embodied_grams() == 0.0
 
-    def test_pue_scales_emissions(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "10"
-            os.environ["PUE"] = "1.2"
-            # 400 x 10 x 1.2 = 4800
-            assert check_grid.estimate_emissions(400) == 4800.0
-        finally:
-            self._clear()
+    def test_pue_scales_emissions(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "10")
+        monkeypatch.setenv("PUE", "1.2")
+        # 400 x 10 x 1.2 = 4800
+        assert check_grid.estimate_emissions(400) == 4800.0
 
-    def test_embodied_added(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "10"
-            os.environ["EMBODIED_GRAMS"] = "500"
-            # 400 x 10 x 1.0 + 500 = 4500
-            assert check_grid.estimate_emissions(400) == 4500.0
-        finally:
-            self._clear()
+    def test_embodied_added(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "10")
+        monkeypatch.setenv("EMBODIED_GRAMS", "500")
+        # 400 x 10 x 1.0 + 500 = 4500
+        assert check_grid.estimate_emissions(400) == 4500.0
 
-    def test_pue_scales_savings_benchmark(self):
-        try:
-            os.environ["JOB_ENERGY_KWH"] = "10"
-            os.environ["PUE"] = "2.0"
-            # saved = (458 - 50) x 10 x 2.0 = 8160
-            saved, _ = check_grid.estimate_carbon_savings(50)
-            assert saved == 8160.0
-        finally:
-            self._clear()
+    def test_pue_scales_savings_benchmark(self, monkeypatch):
+        monkeypatch.setenv("JOB_ENERGY_KWH", "10")
+        monkeypatch.setenv("PUE", "2.0")
+        # saved = (458 - 50) x 10 x 2.0 = 8160
+        saved, _ = check_grid.estimate_carbon_savings(50)
+        assert saved == 8160.0
 
 
 class TestDataSource:
@@ -3097,8 +2765,8 @@ class TestDataSource:
 
     def test_falls_back_to_detect_when_unrecorded(self):
         check_grid._provider_used.pop("GB", None)
-        source, confidence = check_grid.data_source_for("GB")  # GB routes to UK
-        assert source == check_grid.PROVIDER_UK and confidence == "measured"
+        # GB routes to UK
+        assert check_grid.data_source_for("GB") == (check_grid.PROVIDER_UK, "measured")
 
     @mock.patch("check_grid.uk.check_carbon_intensity", return_value=(True, 100))
     def test_check_records_actual_provider(self, _mock):
@@ -3107,312 +2775,132 @@ class TestDataSource:
         assert check_grid._provider_used["GB"] == check_grid.PROVIDER_UK
 
 
+@pytest.mark.usefixtures("reset_once_flags")
 class TestGreenSLA:
-    def _reset(self):
-        check_grid._ledger_recorded = False
-        check_grid._lifetime_summary = None
-        check_grid._sla_summary = None
-
-    def _run(self, target, green, dirty):
-        """Seed a ledger with `green` green runs + `dirty` dirty runs, then emit SLA."""
-        import json
-
-        import ledger
-
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
+    @pytest.mark.parametrize(
+        ("green", "dirty", "status", "breached"),
+        [
+            # 9 green + this run green = 10 green, 0 dirty -> 100% >= 95
+            pytest.param(9, 0, "compliant", "false", id="compliant"),
+            # 1 green + this run green = 2 green of 10 total -> 20% < 95
+            pytest.param(1, 8, "breached", "true", id="breached"),
+            # only 3 runs total (<5) -> unknown
+            pytest.param(2, 0, "unknown", None, id="unknown_too_few_runs"),
+        ],
+    )
+    def test_status(self, github_output, ledger_path, monkeypatch, green, dirty, status, breached):
+        # Seed a ledger with `green` green runs + `dirty` dirty runs, then emit SLA
         data = ledger.empty_ledger()
         seed_date = datetime.now(timezone.utc).strftime("%Y-%m-01")
         for _ in range(green):
             data = ledger.merge_entry(data, 0, seed_date, is_green=True)
         for _ in range(dirty):
             data = ledger.merge_entry(data, 0, seed_date, is_green=False)
-        with open(ledger_path, "w") as f:
-            json.dump(data, f)
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        self._reset()
-        try:
-            os.environ["GITHUB_OUTPUT"] = out.name
-            os.environ["LEDGER"] = f"file:{ledger_path}"
-            os.environ["GREEN_SLA_TARGET"] = str(target)
-            check_grid.record_lifetime_savings(0, 0, is_green=True)  # records one more green run
-            return open(out.name).read()
-        finally:
-            for p in (out.name, ledger_path):
-                if os.path.exists(p):
-                    os.unlink(p)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "GREEN_SLA_TARGET"):
-                os.environ.pop(k, None)
-            self._reset()
+        ledger_path.write_text(json.dumps(data))
+        monkeypatch.setenv("GREEN_SLA_TARGET", "95")
 
-    def test_compliant(self):
-        # 9 green + this run green = 10 green, 0 dirty -> 100% >= 95
-        content = self._run(target=95, green=9, dirty=0)
-        assert "sla_status=compliant" in content
-        assert "sla_breached=false" in content
+        check_grid.record_lifetime_savings(0, 0, is_green=True)  # records one more green run
 
-    def test_breached(self):
-        # 1 green + this run green = 2 green of 10 total -> 20% < 95
-        content = self._run(target=95, green=1, dirty=8)
-        assert "sla_status=breached" in content
-        assert "sla_breached=true" in content
-
-    def test_unknown_too_few_runs(self):
-        # only 3 runs total (<5) -> unknown
-        content = self._run(target=95, green=2, dirty=0)
-        assert "sla_status=unknown" in content
+        content = github_output.read_text()
+        assert f"sla_status={status}" in content
+        if breached is not None:
+            assert f"sla_breached={breached}" in content
 
 
+@pytest.mark.usefixtures("reset_once_flags")
 class TestCarbonBudget:
-    def _reset(self):
-        check_grid._ledger_recorded = False
-        check_grid._lifetime_summary = None
-        check_grid._budget_summary = None
-
-    def _run(self, ledger_path, budget, emitted):
-        # Seed the ledger with prior emissions this month via a direct record,
-        # then drive the budget output computation
-        self._reset()
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        os.environ["GITHUB_OUTPUT"] = out.name
-        os.environ["LEDGER"] = f"file:{ledger_path}"
-        os.environ["MONTHLY_BUDGET_GRAMS"] = str(budget)
-        # emitted comes from intensity via estimate_emissions in production code. This
-        # helper skips that and passes the emitted grams directly
-        check_grid.record_lifetime_savings(0, emitted_grams=emitted)
-        with open(out.name) as f:
-            content = f.read()
-        os.unlink(out.name)
-        return content
-
-    def test_under_budget_state_ok(self):
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        try:
-            content = self._run(ledger_path, budget=1000, emitted=100)
-            assert "budget_used_pct=10.0" in content
-            assert "budget_exceeded=false" in content
-            assert "budget_state=ok" in content
-        finally:
-            if os.path.exists(ledger_path):
-                os.unlink(ledger_path)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
-                os.environ.pop(k, None)
-
-    def test_over_budget_exceeded(self):
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        try:
-            content = self._run(ledger_path, budget=50, emitted=80)
-            assert "budget_exceeded=true" in content
-            assert "budget_state=exceeded" in content
-            assert check_grid._budget_summary["exceeded"] is True
+    @pytest.mark.parametrize(
+        ("budget", "emitted", "exceeded", "expected"),
+        [
+            pytest.param(
+                1000,
+                100,
+                False,
+                ["budget_used_pct=10.0", "budget_exceeded=false", "budget_state=ok"],
+                id="under_budget_state_ok",
+            ),
             # remaining is clamped to 0, never negative
-            assert "budget_remaining_grams=0" in content
-        finally:
-            if os.path.exists(ledger_path):
-                os.unlink(ledger_path)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
-                os.environ.pop(k, None)
+            pytest.param(
+                50,
+                80,
+                True,
+                ["budget_exceeded=true", "budget_state=exceeded", "budget_remaining_grams=0"],
+                id="over_budget_exceeded",
+            ),
+            pytest.param(
+                1000,
+                800,
+                False,
+                ["budget_state=warning", "budget_exceeded=false"],
+                id="warning_at_80_percent",
+            ),
+        ],
+    )
+    def test_budget_outputs(
+        self, github_output, ledger_path, monkeypatch, budget, emitted, exceeded, expected
+    ):
+        monkeypatch.setenv("MONTHLY_BUDGET_GRAMS", str(budget))
+        # emitted comes from intensity via estimate_emissions in production code,
+        # so passing the grams directly drives the budget computation without it
+        check_grid.record_lifetime_savings(0, emitted_grams=emitted)
+        content = github_output.read_text()
+        for line in expected:
+            assert line in content
+        assert check_grid._budget_summary["exceeded"] is exceeded
 
-    def test_warning_at_80_percent(self):
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        try:
-            content = self._run(ledger_path, budget=1000, emitted=800)
-            assert "budget_state=warning" in content
-            assert "budget_exceeded=false" in content
-        finally:
-            if os.path.exists(ledger_path):
-                os.unlink(ledger_path)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
-                os.environ.pop(k, None)
-
-    def test_budget_emitted_on_dirty_path(self):
+    def test_budget_emitted_on_dirty_path(self, github_output, ledger_path, monkeypatch):
         # On a dirty grid (no savings recorded), budget gating must still work:
         # write_job_summary force-records so budget_exceeded is emitted
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        out = tempfile.NamedTemporaryFile(mode="w+", delete=False)
-        out.close()
-        self._reset()
-        try:
-            os.environ["GITHUB_OUTPUT"] = out.name
-            os.environ["LEDGER"] = f"file:{ledger_path}"
-            os.environ["MONTHLY_BUDGET_GRAMS"] = "1000"
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
-            # dirty grid: is_green False, no set_savings_outputs call beforehand
-            check_grid.write_job_summary("PL", 600, False, 250)
-            with open(out.name) as f:
-                content = f.read()
-            assert "budget_exceeded=" in content
-            assert "budget_state=" in content
-        finally:
-            for p in (out.name, ledger_path):
-                if os.path.exists(p):
-                    os.unlink(p)
-            for k in ("GITHUB_OUTPUT", "LEDGER", "MONTHLY_BUDGET_GRAMS"):
-                os.environ.pop(k, None)
+        monkeypatch.setenv("MONTHLY_BUDGET_GRAMS", "1000")
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        # dirty grid: is_green False, no set_savings_outputs call beforehand
+        check_grid.write_job_summary("PL", 600, False, 250)
+        content = github_output.read_text()
+        assert "budget_exceeded=" in content
+        assert "budget_state=" in content
 
 
+@pytest.mark.usefixtures("reset_once_flags")
 class TestRecordLifetimeSavings:
-    def _reset(self):
-        check_grid._ledger_recorded = False
-        check_grid._lifetime_summary = None
+    def test_no_ledger_config_is_noop(self, github_output, monkeypatch):
+        monkeypatch.delenv("LEDGER", raising=False)
+        check_grid.record_lifetime_savings(100)
+        assert "co2_saved_total_grams" not in github_output.read_text()
+        assert check_grid._lifetime_summary is None
 
-    def test_no_ledger_config_is_noop(self):
-        self._reset()
-        os.environ.pop("LEDGER", None)
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = path
-            check_grid.record_lifetime_savings(100)
-            with open(path) as f:
-                assert "co2_saved_total_grams" not in f.read()
-            assert check_grid._lifetime_summary is None
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_OUTPUT", None)
+    def test_file_ledger_sets_outputs_and_summary(self, github_output, ledger_path):
+        check_grid.record_lifetime_savings(100)
+        content = github_output.read_text()
+        assert "co2_saved_total_grams=100" in content
+        assert "co2_saved_total_equivalent=" in content
+        assert check_grid._lifetime_summary["total_runs"] == 1
 
-    def test_file_ledger_sets_outputs_and_summary(self):
-        self._reset()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
-            out_path = f.name
-        try:
-            os.environ["GITHUB_OUTPUT"] = out_path
-            os.environ["LEDGER"] = f"file:{ledger_path}"
-            check_grid.record_lifetime_savings(100)
-            with open(out_path) as f:
-                content = f.read()
-            assert "co2_saved_total_grams=100" in content
-            assert "co2_saved_total_equivalent=" in content
-            assert check_grid._lifetime_summary["total_runs"] == 1
-        finally:
-            for p in (ledger_path, out_path):
-                if os.path.exists(p):
-                    os.unlink(p)
-            os.environ.pop("GITHUB_OUTPUT", None)
-            os.environ.pop("LEDGER", None)
-
-    def test_records_at_most_once_per_process(self):
-        self._reset()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as lf:
-            ledger_path = lf.name
-        os.unlink(ledger_path)
-        try:
-            os.environ["LEDGER"] = f"file:{ledger_path}"
-            check_grid.record_lifetime_savings(100)
-            check_grid.record_lifetime_savings(100)  # second call must be ignored
-            assert check_grid._lifetime_summary["total_runs"] == 1
-        finally:
-            if os.path.exists(ledger_path):
-                os.unlink(ledger_path)
-            os.environ.pop("LEDGER", None)
+    def test_records_at_most_once_per_process(self, ledger_path):
+        check_grid.record_lifetime_savings(100)
+        check_grid.record_lifetime_savings(100)  # second call must be ignored
+        assert check_grid._lifetime_summary["total_runs"] == 1
 
 
+@pytest.mark.usefixtures("reset_once_flags")
+@mock.patch("check_grid.pr_comment.post_comment")
 class TestPostPrCommentOnce:
-    def _reset(self):
-        check_grid._pr_comment_done = False
+    def test_noop_when_disabled(self, posted, monkeypatch):
+        monkeypatch.delenv("PR_COMMENT", raising=False)
+        check_grid.post_pr_comment_once("CISO", 80, True, 250)
+        posted.assert_not_called()
 
-    def test_noop_when_disabled(self):
-        self._reset()
-        os.environ.pop("PR_COMMENT", None)
-        with mock.patch("check_grid.pr_comment.post_comment") as posted:
-            check_grid.post_pr_comment_once("CISO", 80, True, 250)
-            posted.assert_not_called()
+    def test_posts_when_enabled(self, posted, monkeypatch):
+        monkeypatch.setenv("PR_COMMENT", "true")
+        check_grid.post_pr_comment_once("CISO", 80, True, 250, co2_saved=1500)
+        posted.assert_called_once()
+        # body is the 5th positional arg
+        assert "CISO" in posted.call_args.args[4]
 
-    def test_posts_when_enabled(self):
-        self._reset()
-        try:
-            os.environ["PR_COMMENT"] = "true"
-            with mock.patch("check_grid.pr_comment.post_comment") as posted:
-                check_grid.post_pr_comment_once("CISO", 80, True, 250, co2_saved=1500)
-                posted.assert_called_once()
-                # body is the 5th positional arg
-                body = posted.call_args.args[4]
-                assert "CISO" in body
-        finally:
-            os.environ.pop("PR_COMMENT", None)
-
-    def test_only_once(self):
-        self._reset()
-        try:
-            os.environ["PR_COMMENT"] = "true"
-            with mock.patch("check_grid.pr_comment.post_comment") as posted:
-                check_grid.post_pr_comment_once("CISO", 80, True, 250)
-                check_grid.post_pr_comment_once("CISO", 80, True, 250)
-                assert posted.call_count == 1
-        finally:
-            os.environ.pop("PR_COMMENT", None)
-
-
-class TestWriteJobSummaryWithCo2:
-    def test_summary_includes_co2_saved(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary("CISO", 50, True, 250, co2_saved=5.0)
-            with open(path) as f:
-                content = f.read()
-            assert "CO2 Saved" in content
-            assert "5" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
-
-    def test_heuristic_forecast_is_labeled(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary(
-                "ZA",
-                700,
-                False,
-                250,
-                forecast_at="2026-03-10T03:00Z",
-                forecast_intensity=650,
-                forecast_heuristic=True,
-            )
-            content = open(path).read()
-            assert "Next Green Window (estimated)" in content
-            assert "650 gCO2eq/kWh (estimate)" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
-
-    def test_real_forecast_is_not_labeled_estimate(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary(
-                "GB",
-                300,
-                False,
-                250,
-                forecast_at="2026-03-10T14:00Z",
-                forecast_intensity=90,
-                forecast_heuristic=False,
-            )
-            content = open(path).read()
-            assert "**Next Green Window**" in content
-            assert "(estimated)" not in content
-            assert "(estimate)" not in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    def test_only_once(self, posted, monkeypatch):
+        monkeypatch.setenv("PR_COMMENT", "true")
+        check_grid.post_pr_comment_once("CISO", 80, True, 250)
+        check_grid.post_pr_comment_once("CISO", 80, True, 250)
+        assert posted.call_count == 1
 
 
 class TestRoutingComparison:
@@ -3442,153 +2930,146 @@ class TestRoutingComparison:
         assert check_grid.render_routing_comparison([("A", 100)], "A") is None
         assert check_grid.render_routing_comparison([], None) is None
 
-    def test_summary_includes_comparison(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as f:
-            path = f.name
-        try:
-            os.environ["GITHUB_STEP_SUMMARY"] = path
-            check_grid.write_job_summary(
-                "GB", 169, True, 250, comparison=[("GB", 169), ("AU-NSW", 501)]
-            )
-            with open(path) as f:
-                content = f.read()
-            assert "Carbon-aware routing" in content
-            assert "routed here" in content
-        finally:
-            os.unlink(path)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    def test_summary_includes_comparison(self, step_summary):
+        check_grid.write_job_summary(
+            "GB", 169, True, 250, comparison=[("GB", 169), ("AU-NSW", 501)]
+        )
+        content = step_summary.read_text()
+        assert "Carbon-aware routing" in content
+        assert "routed here" in content
 
 
 # ---------------------------------------------------------------------------
-# check_grid.py dispatch routing tests for new providers
+# check_grid.py dispatch routing tests
 # ---------------------------------------------------------------------------
 
 
 class TestCheckGridDispatchRouting:
-    @mock.patch("providers.aemo.check_carbon_intensity")
-    def test_routes_to_aemo(self, mock_aemo):
-        mock_aemo.return_value = (True, 100)
-        is_green, intensity = check_grid.check_carbon_intensity("AU-NSW", 250, PROVIDER_AEMO)
-        assert is_green is True
-        mock_aemo.assert_called_once_with("AU-NSW", 250)
+    @pytest.mark.parametrize(
+        ("module_name", "zone", "max_carbon", "provider", "kwargs", "call_args", "verdict"),
+        [
+            pytest.param(
+                "aemo", "AU-NSW", 250, PROVIDER_AEMO, {}, ("AU-NSW", 250), (True, 100), id="aemo"
+            ),
+            pytest.param(
+                "entsoe",
+                "DE",
+                250,
+                PROVIDER_ENTSOE,
+                {"entsoe_token": "token"},
+                ("DE", 250, "token"),
+                (True, 80),
+                id="entsoe_with_token",
+            ),
+            pytest.param(
+                "open_meteo",
+                "ZA",
+                250,
+                PROVIDER_OPEN_METEO,
+                {},
+                ("ZA", 250),
+                (True, 200),
+                id="open_meteo",
+            ),
+            pytest.param(
+                "grid_india",
+                "IN-NO",
+                500,
+                PROVIDER_GRID_INDIA,
+                {},
+                ("IN-NO", 500),
+                (True, 300),
+                id="grid_india",
+            ),
+            pytest.param(
+                "ons_brazil",
+                "BR-S",
+                250,
+                PROVIDER_ONS_BRAZIL,
+                {},
+                ("BR-S", 250),
+                (True, 100),
+                id="ons_brazil",
+            ),
+            pytest.param(
+                "eskom", "ZA", 250, PROVIDER_ESKOM, {}, ("ZA", 250), (False, 750), id="eskom"
+            ),
+        ],
+    )
+    def test_check_routes_to_provider(
+        self, module_name, zone, max_carbon, provider, kwargs, call_args, verdict
+    ):
+        target = f"providers.{module_name}.check_carbon_intensity"
+        with mock.patch(target, return_value=verdict) as mock_check:
+            result = check_grid.check_carbon_intensity(zone, max_carbon, provider, **kwargs)
+        assert result[0] is verdict[0]
+        mock_check.assert_called_once_with(*call_args)
 
-    @mock.patch("providers.entsoe.check_carbon_intensity")
-    def test_routes_to_entsoe(self, mock_entsoe):
-        mock_entsoe.return_value = (True, 80)
-        is_green, intensity = check_grid.check_carbon_intensity(
-            "DE", 250, PROVIDER_ENTSOE, entsoe_token="token"
-        )
-        assert is_green is True
-        mock_entsoe.assert_called_once_with("DE", 250, "token")
+    @pytest.mark.parametrize(
+        ("module_name", "zone", "provider", "kwargs", "call_args", "forecast"),
+        [
+            pytest.param(
+                "aemo", "AU-NSW", PROVIDER_AEMO, {}, ("AU-NSW", 250), (None, None), id="aemo"
+            ),
+            pytest.param(
+                "entsoe",
+                "DE",
+                PROVIDER_ENTSOE,
+                {"entsoe_token": "tok"},
+                ("DE", 250, "tok"),
+                ("2026-03-10T12:00Z", 90),
+                id="entsoe_with_token",
+            ),
+            pytest.param(
+                "open_meteo",
+                "ZA",
+                PROVIDER_OPEN_METEO,
+                {},
+                ("ZA", 250),
+                ("2026-03-10T12:00Z", 200),
+                id="open_meteo",
+            ),
+            pytest.param(
+                "grid_india",
+                "IN-SO",
+                PROVIDER_GRID_INDIA,
+                {},
+                ("IN-SO", 250),
+                (None, None),
+                id="grid_india",
+            ),
+            pytest.param(
+                "ons_brazil",
+                "BR-NE",
+                PROVIDER_ONS_BRAZIL,
+                {},
+                ("BR-NE", 250),
+                (None, None),
+                id="ons_brazil",
+            ),
+            pytest.param("eskom", "ZA", PROVIDER_ESKOM, {}, ("ZA", 250), (None, None), id="eskom"),
+        ],
+    )
+    def test_forecast_routes_to_provider(
+        self, module_name, zone, provider, kwargs, call_args, forecast
+    ):
+        with mock.patch(f"providers.{module_name}.get_forecast", return_value=forecast) as mock_fc:
+            check_grid.get_forecast(zone, 250, provider, **kwargs)
+        mock_fc.assert_called_once_with(*call_args)
 
-    @mock.patch("providers.open_meteo.check_carbon_intensity")
-    def test_routes_to_open_meteo(self, mock_om):
-        mock_om.return_value = (True, 200)
-        is_green, intensity = check_grid.check_carbon_intensity("ZA", 250, PROVIDER_OPEN_METEO)
-        assert is_green is True
-        mock_om.assert_called_once_with("ZA", 250)
-
-    @mock.patch("providers.aemo.get_forecast")
-    def test_forecast_routes_to_aemo(self, mock_forecast):
-        mock_forecast.return_value = (None, None)
-        check_grid.get_forecast("AU-NSW", 250, PROVIDER_AEMO)
-        mock_forecast.assert_called_once_with("AU-NSW", 250)
-
-    @mock.patch("providers.entsoe.get_forecast")
-    def test_forecast_routes_to_entsoe(self, mock_forecast):
-        mock_forecast.return_value = ("2026-03-10T12:00Z", 90)
-        check_grid.get_forecast("DE", 250, PROVIDER_ENTSOE, entsoe_token="tok")
-        mock_forecast.assert_called_once_with("DE", 250, "tok")
-
-    @mock.patch("providers.open_meteo.get_forecast")
-    def test_forecast_routes_to_open_meteo(self, mock_forecast):
-        mock_forecast.return_value = ("2026-03-10T12:00Z", 200)
-        check_grid.get_forecast("ZA", 250, PROVIDER_OPEN_METEO)
-        mock_forecast.assert_called_once_with("ZA", 250)
-
-    @mock.patch("providers.open_meteo.get_history_trend")
-    def test_trend_routes_to_open_meteo(self, mock_trend):
-        mock_trend.return_value = None
-        check_grid.get_history_trend("ZA", PROVIDER_OPEN_METEO)
-        mock_trend.assert_called_once_with("ZA")
-
-    # --- New provider routing tests ---
-
-    @mock.patch("providers.grid_india.check_carbon_intensity")
-    def test_check_routes_to_grid_india(self, mock_check):
-        mock_check.return_value = (True, 300)
-        check_grid.check_carbon_intensity("IN-NO", 500, PROVIDER_GRID_INDIA)
-        mock_check.assert_called_once_with("IN-NO", 500)
-
-    @mock.patch("providers.ons_brazil.check_carbon_intensity")
-    def test_check_routes_to_ons_brazil(self, mock_check):
-        mock_check.return_value = (True, 100)
-        check_grid.check_carbon_intensity("BR-S", 250, PROVIDER_ONS_BRAZIL)
-        mock_check.assert_called_once_with("BR-S", 250)
-
-    @mock.patch("providers.eskom.check_carbon_intensity")
-    def test_check_routes_to_eskom(self, mock_check):
-        mock_check.return_value = (False, 750)
-        check_grid.check_carbon_intensity("ZA", 250, PROVIDER_ESKOM)
-        mock_check.assert_called_once_with("ZA", 250)
-
-    @mock.patch("providers.grid_india.get_forecast")
-    def test_forecast_routes_to_grid_india(self, mock_forecast):
-        mock_forecast.return_value = (None, None)
-        check_grid.get_forecast("IN-SO", 250, PROVIDER_GRID_INDIA)
-        mock_forecast.assert_called_once_with("IN-SO", 250)
-
-    @mock.patch("providers.ons_brazil.get_forecast")
-    def test_forecast_routes_to_ons_brazil(self, mock_forecast):
-        mock_forecast.return_value = (None, None)
-        check_grid.get_forecast("BR-NE", 250, PROVIDER_ONS_BRAZIL)
-        mock_forecast.assert_called_once_with("BR-NE", 250)
-
-    @mock.patch("providers.eskom.get_forecast")
-    def test_forecast_routes_to_eskom(self, mock_forecast):
-        mock_forecast.return_value = (None, None)
-        check_grid.get_forecast("ZA", 250, PROVIDER_ESKOM)
-        mock_forecast.assert_called_once_with("ZA", 250)
-
-    @mock.patch("providers.grid_india.get_history_trend")
-    def test_trend_routes_to_grid_india(self, mock_trend):
-        mock_trend.return_value = None
-        check_grid.get_history_trend("IN-WE", PROVIDER_GRID_INDIA)
-        mock_trend.assert_called_once_with("IN-WE")
-
-    @mock.patch("providers.ons_brazil.get_history_trend")
-    def test_trend_routes_to_ons_brazil(self, mock_trend):
-        mock_trend.return_value = None
-        check_grid.get_history_trend("BR-S", PROVIDER_ONS_BRAZIL)
-        mock_trend.assert_called_once_with("BR-S")
-
-    @mock.patch("providers.eskom.get_history_trend")
-    def test_trend_routes_to_eskom(self, mock_trend):
-        mock_trend.return_value = None
-        check_grid.get_history_trend("ZA", PROVIDER_ESKOM)
-        mock_trend.assert_called_once_with("ZA")
-
-
-# --- New provider detection tests ---
-
-
-class TestNewProviderDetection:
-    def test_india_zones_detect_grid_india(self):
-        for zone in ["IN-NO", "IN-SO", "IN-EA", "IN-WE", "IN-NE"]:
-            assert detect_provider(zone) == PROVIDER_GRID_INDIA
-
-    def test_brazil_zones_detect_ons_brazil(self):
-        for zone in ["BR-S", "BR-SE", "BR-CS", "BR-NE", "BR-N"]:
-            assert detect_provider(zone) == PROVIDER_ONS_BRAZIL
-
-    def test_south_africa_detects_eskom(self):
-        assert detect_provider("ZA") == PROVIDER_ESKOM
-
-    def test_india_zone_not_uk(self):
-        assert detect_provider("IN-NO") != PROVIDER_UK
-
-    def test_brazil_zone_not_eia(self):
-        assert detect_provider("BR-S") != PROVIDER_EIA
+    @pytest.mark.parametrize(
+        ("module_name", "zone", "provider"),
+        [
+            pytest.param("open_meteo", "ZA", PROVIDER_OPEN_METEO, id="open_meteo"),
+            pytest.param("grid_india", "IN-WE", PROVIDER_GRID_INDIA, id="grid_india"),
+            pytest.param("ons_brazil", "BR-S", PROVIDER_ONS_BRAZIL, id="ons_brazil"),
+            pytest.param("eskom", "ZA", PROVIDER_ESKOM, id="eskom"),
+        ],
+    )
+    def test_trend_routes_to_provider(self, module_name, zone, provider):
+        with mock.patch(f"providers.{module_name}.get_history_trend", return_value=None) as mock_tr:
+            check_grid.get_history_trend(zone, provider)
+        mock_tr.assert_called_once_with(zone)
 
 
 # --- Grid India provider tests ---
@@ -3596,9 +3077,7 @@ class TestNewProviderDetection:
 
 class TestGridIndiaProvider:
     def test_unknown_zone(self):
-        is_green, intensity = grid_india.check_carbon_intensity("XX", 250)
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(grid_india.check_carbon_intensity("XX", 250), None, None)
 
     def test_estimate_from_dict_data(self):
         data = {
@@ -3616,14 +3095,12 @@ class TestGridIndiaProvider:
         assert grid_india._estimate_from_national_mix({}) is None
 
     def test_estimate_from_list_data(self):
-        data = [{"coal": 3000, "solar": 1000}]
-        intensity = grid_india._estimate_from_national_mix(data)
-        assert intensity is not None
+        assert grid_india._estimate_from_national_mix([{"coal": 3000, "solar": 1000}]) is not None
 
     @mock.patch("providers.grid_india._fetch_generation_data")
     def test_check_intensity_api_failure(self, mock_fetch):
         mock_fetch.return_value = None
-        is_green, intensity = grid_india.check_carbon_intensity("IN-NO", 250)
+        is_green, _intensity = grid_india.check_carbon_intensity("IN-NO", 250)
         assert is_green is None
 
     @mock.patch("providers.grid_india._fetch_generation_data")
@@ -3633,85 +3110,8 @@ class TestGridIndiaProvider:
         assert is_green is not None
         assert intensity is not None
 
-    def test_forecast_returns_heuristic(self):
-        """Grid India forecast should return time-of-day heuristic."""
-        dt, intensity = grid_india.get_forecast("IN-SO", 500)
-        # With a high threshold, either already green (None) or finds a window
-        assert dt is None or isinstance(dt, str)
-
-    def test_forecast_south_lower_than_north(self):
-        """IN-SO should have lower midday intensity than IN-NO."""
-        dt_south, int_south = grid_india.get_forecast("IN-SO", 1000)
-        dt_north, int_north = grid_india.get_forecast("IN-NO", 1000)
-        # Both should find green windows at high threshold
-        # The actual intensity comparison depends on time of day,
-        # so just verify both return valid results
-        assert dt_south is None or isinstance(dt_south, str)
-        assert dt_north is None or isinstance(dt_north, str)
-
     def test_trend_returns_none(self):
         assert grid_india.get_history_trend("IN-NO") is None
-
-
-# --- ONS Brazil provider tests ---
-
-
-class TestOnsBrazilProvider:
-    def test_unknown_zone(self):
-        is_green, intensity = ons_brazil.check_carbon_intensity("XX", 250)
-        assert is_green is None
-        assert intensity is None
-
-    def test_calculate_intensity_hydro_dominant(self):
-        gen = {"hidraulica": 7000, "termica": 1000, "eolica": 1500, "solar": 500}
-        intensity = base.mix_to_intensity(gen, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True)
-        assert intensity is not None
-        assert intensity < 200  # Hydro-dominant grid should be clean
-
-    def test_calculate_intensity_empty(self):
-        assert base.mix_to_intensity({}, ons_brazil.BRAZIL_EMISSION_FACTORS, substring=True) is None
-
-    def test_parse_energy_balance_nested(self):
-        # Real ONS shape: {region_key: {"geracao": {total, fuel: MW, ...}}}
-        data = {
-            "sul": {
-                "geracao": {
-                    "total": 7000.0,
-                    "hidraulica": 5000.0,
-                    "termica": 2000.0,
-                    "eolica": 0.0,
-                }
-            }
-        }
-        result = ons_brazil._parse_energy_balance(data, "sul")
-        assert result is not None
-        assert result["hidraulica"] == 5000.0
-        assert result["termica"] == 2000.0
-        # the aggregate "total" and zero-valued sources are dropped
-        assert "total" not in result
-        assert "eolica" not in result
-
-    def test_parse_energy_balance_missing_region(self):
-        data = {"sul": {"geracao": {"hidraulica": 5000.0}}}
-        assert ons_brazil._parse_energy_balance(data, "nordeste") is None
-
-    def test_parse_energy_balance_none(self):
-        assert ons_brazil._parse_energy_balance(None, "sul") is None
-
-    @mock.patch("providers.ons_brazil._fetch_energy_balance")
-    def test_check_intensity_api_failure(self, mock_fetch):
-        mock_fetch.return_value = None
-        is_green, intensity = ons_brazil.check_carbon_intensity("BR-S", 250)
-        assert is_green is None
-
-    def test_forecast_returns_heuristic(self):
-        """ONS Brazil forecast should return time-of-day heuristic."""
-        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
-        # With a high threshold, should find a window or already be green
-        assert dt is None or isinstance(dt, str)
-
-    def test_trend_returns_none(self):
-        assert ons_brazil.get_history_trend("BR-S") is None
 
 
 # --- Eskom provider tests ---
@@ -3719,9 +3119,7 @@ class TestOnsBrazilProvider:
 
 class TestEskomProvider:
     def test_unknown_zone(self):
-        is_green, intensity = eskom.check_carbon_intensity("XX", 250)
-        assert is_green is None
-        assert intensity is None
+        assert_verdict(eskom.check_carbon_intensity("XX", 250), None, None)
 
     def test_estimation_without_api_data(self):
         intensity = eskom._estimate_intensity(None)
@@ -3746,24 +3144,8 @@ class TestEskomProvider:
     @mock.patch("providers.eskom._fetch_generation_data")
     def test_check_with_high_threshold(self, mock_fetch):
         mock_fetch.return_value = None
-        is_green, intensity = eskom.check_carbon_intensity("ZA", 1000)
+        is_green, _intensity = eskom.check_carbon_intensity("ZA", 1000)
         assert is_green is True  # Even SA is green at 1000 threshold
-
-    def test_forecast_returns_heuristic(self):
-        """Eskom forecast should return time-of-day heuristic."""
-        # At 250 threshold, SA grid (650+ gCO2eq/kWh) will never be green
-        dt, intensity = eskom.get_forecast("ZA", 250)
-        assert dt == "none_in_forecast"
-        assert intensity is None
-
-    def test_forecast_with_high_threshold(self):
-        """Eskom forecast with high threshold should find a window."""
-        dt, intensity = eskom.get_forecast("ZA", 800)
-        # SA midday is ~650, so with 800 threshold it should find a window
-        assert dt is None or isinstance(dt, str)
-        if dt and dt != "none_in_forecast":
-            assert intensity is not None
-            assert intensity <= 800
 
     def test_trend_returns_none(self):
         assert eskom.get_history_trend("ZA") is None
@@ -3777,13 +3159,10 @@ class TestAutoCleanestPreset:
         result = check_grid.expand_auto_zones("auto:cleanest")
         assert result is not None
         assert len(result) == len(AUTO_CLEANEST_ZONES)
-        zone_names = {z["zone"] for z in result}
-        expected_names = {z["zone"] for z in AUTO_CLEANEST_ZONES}
-        assert zone_names == expected_names
+        assert {z["zone"] for z in result} == {z["zone"] for z in AUTO_CLEANEST_ZONES}
 
     def test_auto_cleanest_includes_free_providers(self):
-        result = check_grid.expand_auto_zones("auto:cleanest")
-        zone_names = {z["zone"] for z in result}
+        zone_names = {z["zone"] for z in check_grid.expand_auto_zones("auto:cleanest")}
         # Should include zones from each free provider
         assert "CISO" in zone_names  # EIA
         assert "GB" in zone_names or "GB-16" in zone_names  # UK
@@ -3795,23 +3174,25 @@ class TestAutoCleanestPreset:
         assert not any(z.startswith("IN-") for z in zone_names)
 
     def test_auto_cleanest_case_insensitive(self):
-        result = check_grid.expand_auto_zones("AUTO:CLEANEST")
-        assert result is not None
+        assert check_grid.expand_auto_zones("AUTO:CLEANEST") is not None
 
 
 class TestAutoEscapeCoalPreset:
-    def test_escape_coal_expansion(self):
-        result = check_grid.expand_auto_zones("auto:escape-coal")
+    @pytest.mark.parametrize(
+        "preset",
+        ["auto:escape-coal", "auto:escape-coal:XX", "auto:escape-coal:ZZ-NOWHERE"],
+        ids=["bare", "unknown_zone", "unlocatable_zone"],
+    )
+    def test_default_set(self, preset):
+        result = check_grid.expand_auto_zones(preset)
         assert result is not None
         assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
 
     def test_escape_coal_specific_zone(self):
         result = check_grid.expand_auto_zones("auto:escape-coal:IN")
         assert result is not None
-        zone_names = {z["zone"] for z in result}
         # Should contain clean alternatives for India
-        expected = set(ESCAPE_COAL_MAPPINGS["IN"])
-        assert zone_names == expected
+        assert {z["zone"] for z in result} == set(ESCAPE_COAL_MAPPINGS["IN"])
 
     def test_escape_coal_china(self):
         result = check_grid.expand_auto_zones("auto:escape-coal:CN")
@@ -3822,13 +3203,7 @@ class TestAutoEscapeCoalPreset:
     def test_escape_coal_poland(self):
         result = check_grid.expand_auto_zones("auto:escape-coal:PL")
         assert result is not None
-        zone_names = {z["zone"] for z in result}
-        assert "NO-NO1" in zone_names
-
-    def test_escape_coal_unknown_zone_uses_default(self):
-        result = check_grid.expand_auto_zones("auto:escape-coal:XX")
-        assert result is not None
-        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
+        assert "NO-NO1" in {z["zone"] for z in result}
 
     def test_escape_coal_mappings_exist(self):
         """All dirty-grid mappings should have valid clean alternatives."""
@@ -3843,16 +3218,9 @@ class TestAutoEscapeCoalPreset:
         pool = {z["zone"] for z in AUTO_ESCAPE_COAL_ZONES}
         assert {z["zone"] for z in result} <= pool
 
-    def test_escape_coal_unlocatable_zone_uses_default(self):
-        result = check_grid.expand_auto_zones("auto:escape-coal:ZZ-NOWHERE")
-        assert result is not None
-        assert len(result) == len(AUTO_ESCAPE_COAL_ZONES)
-
 
 class TestNearestCleanZones:
     def test_returns_nearest_first(self):
-        from providers import _haversine_km, _zone_latlon, nearest_clean_zones
-
         result = nearest_clean_zones("VN")  # Hanoi
         assert len(result) == 5
         origin = _zone_latlon("VN")
@@ -3860,152 +3228,59 @@ class TestNearestCleanZones:
         assert dists == sorted(dists)  # nearest-first ordering
 
     def test_respects_n(self):
-        from providers import nearest_clean_zones
-
         assert len(nearest_clean_zones("PL", n=3)) == 3
 
     def test_none_for_unlocatable(self):
-        from providers import nearest_clean_zones
-
         assert nearest_clean_zones("ZZ-NOWHERE") is None
 
     def test_haversine_known_distance(self):
-        from providers import _haversine_km
-
         # London (51.5, -0.13) to Paris (48.85, 2.35) is ~340 km
         assert 320 < _haversine_km((51.5, -0.13), (48.85, 2.35)) < 360
 
 
 class TestParseZonesAutoPresets:
-    def test_parse_auto_cleanest(self):
-        result = check_grid.parse_zones_input("auto:cleanest")
-        assert result is not None
-        assert len(result) > 0
-
-    def test_parse_auto_escape_coal(self):
-        result = check_grid.parse_zones_input("auto:escape-coal")
+    @pytest.mark.parametrize("preset", ["auto:cleanest", "auto:escape-coal"])
+    def test_parse_expands_preset(self, preset):
+        result = check_grid.parse_zones_input(preset)
         assert result is not None
         assert len(result) > 0
 
     def test_parse_auto_escape_coal_specific(self):
         result = check_grid.parse_zones_input("auto:escape-coal:ZA")
         assert result is not None
-        zone_names = {z["zone"] for z in result}
-        assert "IS" in zone_names  # Iceland is in ZA escape list
-
-
-# --- GCP and Azure region tests ---
-
-
-class TestGcpRegionMapping:
-    def test_us_zones(self):
-        assert get_gcp_region("CISO") == "us-west1"
-        assert get_gcp_region("PJM") == "us-east4"
-        assert get_gcp_region("ERCO") == "us-south1"
-
-    def test_eu_zones(self):
-        assert get_gcp_region("DE") == "europe-west3"
-        assert get_gcp_region("FR") == "europe-west9"
-        assert get_gcp_region("NO-NO1") == "europe-north1"
-
-    def test_apac_zones(self):
-        assert get_gcp_region("JP-TK") == "asia-northeast1"
-        assert get_gcp_region("AU-NSW") == "australia-southeast1"
-        assert get_gcp_region("IN-NO") == "asia-south1"
-
-    def test_latam_zones(self):
-        assert get_gcp_region("BR-S") == "southamerica-east1"
-
-    def test_default_region(self):
-        assert get_gcp_region("UNKNOWN-ZONE") == "us-central1"
-
-
-class TestAzureRegionMapping:
-    def test_us_zones(self):
-        assert get_azure_region("CISO") == "westus2"
-        assert get_azure_region("PJM") == "eastus"
-        assert get_azure_region("ERCO") == "southcentralus"
-
-    def test_eu_zones(self):
-        assert get_azure_region("DE") == "germanywestcentral"
-        assert get_azure_region("FR") == "francecentral"
-        assert get_azure_region("NO-NO1") == "norwayeast"
-        assert get_azure_region("SE-SE2") == "swedencentral"
-
-    def test_apac_zones(self):
-        assert get_azure_region("JP-TK") == "japaneast"
-        assert get_azure_region("AU-NSW") == "australiaeast"
-        assert get_azure_region("IN-NO") == "centralindia"
-
-    def test_africa_zones(self):
-        assert get_azure_region("ZA") == "southafricanorth"
-
-    def test_default_region(self):
-        assert get_azure_region("UNKNOWN-ZONE") == "eastus"
-
-
-# --- Cloud region recommender output tests ---
-
-
-class TestCloudRegionRecommender:
-    def test_set_runner_outputs_includes_all_clouds(self):
-        """set_runner_outputs should set gcp_region and azure_region."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            output_file = f.name
-        os.environ["GITHUB_OUTPUT"] = output_file
-        try:
-            check_grid.set_runner_outputs("CISO", None, "", "", "")
-            with open(output_file) as f:
-                content = f.read()
-            assert "cloud_region=us-west-1" in content
-            assert "gcp_region=us-west1" in content
-            assert "azure_region=westus2" in content
-        finally:
-            os.unlink(output_file)
+        assert "IS" in {z["zone"] for z in result}  # Iceland is in ZA escape list
 
 
 # --- Carbon policy (org config) tests ---
 
 
 class TestCarbonPolicy:
-    def test_no_policy_file(self):
-        os.environ["CARBON_POLICY_PATH"] = "/nonexistent/path.yml"
-        policy = check_grid.load_carbon_policy()
-        assert policy == {}
+    def test_no_policy_file(self, monkeypatch):
+        monkeypatch.setenv("CARBON_POLICY_PATH", "/nonexistent/path.yml")
+        assert check_grid.load_carbon_policy() == {}
 
-    def test_load_simple_policy(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-            f.write("max_carbon_intensity: 150\n")
-            f.write("grid_zones: 'auto:green'\n")
-            f.write("enable_forecast: true\n")
-            f.write("# This is a comment\n")
-            f.write("strategy: queue\n")
-            policy_path = f.name
+    def test_load_simple_policy(self, tmp_path, monkeypatch):
+        policy_path = tmp_path / "policy.yml"
+        policy_path.write_text(
+            "max_carbon_intensity: 150\n"
+            "grid_zones: 'auto:green'\n"
+            "enable_forecast: true\n"
+            "# This is a comment\n"
+            "strategy: queue\n"
+        )
+        monkeypatch.setenv("CARBON_POLICY_PATH", str(policy_path))
+        assert check_grid.load_carbon_policy() == {
+            "max_carbon_intensity": "150",
+            "grid_zones": "auto:green",
+            "enable_forecast": "true",
+            "strategy": "queue",
+        }
 
-        os.environ["CARBON_POLICY_PATH"] = policy_path
-        try:
-            policy = check_grid.load_carbon_policy()
-            assert policy["max_carbon_intensity"] == "150"
-            assert policy["grid_zones"] == "auto:green"
-            assert policy["enable_forecast"] == "true"
-            assert policy["strategy"] == "queue"
-        finally:
-            os.unlink(policy_path)
-
-    def test_policy_ignores_comments_and_blanks(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-            f.write("# Comment\n\n")
-            f.write("max_carbon_intensity: 200\n")
-            f.write("\n# Another comment\n")
-            policy_path = f.name
-
-        os.environ["CARBON_POLICY_PATH"] = policy_path
-        try:
-            policy = check_grid.load_carbon_policy()
-            assert len(policy) == 1
-            assert policy["max_carbon_intensity"] == "200"
-        finally:
-            os.unlink(policy_path)
+    def test_policy_ignores_comments_and_blanks(self, tmp_path, monkeypatch):
+        policy_path = tmp_path / "policy.yml"
+        policy_path.write_text("# Comment\n\nmax_carbon_intensity: 200\n\n# Another comment\n")
+        monkeypatch.setenv("CARBON_POLICY_PATH", str(policy_path))
+        assert check_grid.load_carbon_policy() == {"max_carbon_intensity": "200"}
 
 
 # --- Queue strategy tests ---
@@ -4014,19 +3289,20 @@ class TestCarbonPolicy:
 class TestQueueStrategy:
     @mock.patch("check_grid.check_multiple_zones")
     @mock.patch("check_grid.get_forecast")
-    def test_queue_find_optimal_window_found(self, mock_forecast, mock_check):
+    def test_queue_find_optimal_window_found(self, mock_forecast, _mock_check):
         mock_forecast.return_value = ("2026-03-10T14:00Z", 120)
         zones = [{"zone": "CISO", "runner_label": None}]
-        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
-        assert zone == "CISO"
-        assert time == "2026-03-10T14:00Z"
-        assert intensity == 120
+        assert check_grid.queue_find_optimal_window(zones, 250, 24) == (
+            "CISO",
+            "2026-03-10T14:00Z",
+            120,
+        )
 
     @mock.patch("check_grid.get_forecast")
     def test_queue_find_optimal_window_none(self, mock_forecast):
         mock_forecast.return_value = ("none_in_forecast", None)
         zones = [{"zone": "PJM", "runner_label": None}]
-        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
+        zone, _when, _intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
         assert zone is None
 
     @mock.patch("check_grid.get_forecast")
@@ -4043,159 +3319,116 @@ class TestQueueStrategy:
             {"zone": "CISO", "runner_label": None},
             {"zone": "BPAT", "runner_label": None},
         ]
-        zone, time, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
+        zone, _when, intensity = check_grid.queue_find_optimal_window(zones, 250, 24)
         assert zone == "BPAT"  # Lower intensity
         assert intensity == 80
 
 
+@mock.patch("check_grid.check_multiple_zones")
+@mock.patch("check_grid.set_output")
+@mock.patch("check_grid.write_job_summary")
 class TestQueueStrategyMain:
     """Exercise the queue-strategy branch of main() end to end."""
 
     @mock.patch("check_grid.trigger_workflow")
-    @mock.patch("check_grid.check_multiple_zones")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
     def test_queue_already_green_dispatches_now(
-        self, mock_summary, mock_output, mock_multi, mock_trigger
+        self, mock_trigger, _mock_summary, mock_output, mock_multi
     ):
         # A zone is already green: dispatch immediately, optimal_dispatch_at=now
         mock_multi.return_value = ("CISO", 90, None, [])
-        os.environ["GRID_ZONES"] = "CISO,GB"
-        os.environ["STRATEGY"] = "queue"
-        os.environ["WORKFLOW_ID"] = "heavy.yml"
-        os.environ["GITHUB_TOKEN"] = "tok"
-        os.environ["TARGET_REPO"] = "owner/repo"
+        os.environ.update(
+            GRID_ZONES="CISO,GB",
+            STRATEGY="queue",
+            WORKFLOW_ID="heavy.yml",
+            GITHUB_TOKEN="tok",
+            TARGET_REPO="owner/repo",
+        )
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert main_exit_code() == 0
+        out = outputs_of(mock_output)
         assert out["optimal_dispatch_at"] == "now"
         assert out["grid_clean"] == "true"
         mock_trigger.assert_called_once()
 
     @mock.patch("check_grid.queue_find_optimal_window")
-    @mock.patch("check_grid.check_multiple_zones")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_queue_finds_future_window(self, mock_summary, mock_output, mock_multi, mock_window):
+    def test_queue_finds_future_window(self, mock_window, _mock_summary, mock_output, mock_multi):
         # Nothing green now, but a future window exists within the deadline
         mock_multi.return_value = (None, None, None, [])
         mock_window.return_value = ("CISO", "2026-03-10T14:00Z", 120)
-        os.environ["GRID_ZONES"] = "CISO,GB"
-        os.environ["STRATEGY"] = "queue"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONES="CISO,GB", STRATEGY="queue", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert main_exit_code() == 0
+        out = outputs_of(mock_output)
         assert out["optimal_dispatch_at"] == "2026-03-10T14:00Z"
         assert out["optimal_zone"] == "CISO"
         assert out["grid_clean"] == "false"
 
     @mock.patch("check_grid.queue_find_optimal_window")
-    @mock.patch("check_grid.check_multiple_zones")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_queue_no_window_no_fail(self, mock_summary, mock_output, mock_multi, mock_window):
+    def test_queue_no_window_no_fail(self, mock_window, _mock_summary, mock_output, mock_multi):
         mock_multi.return_value = (None, None, None, [])
         mock_window.return_value = (None, None, None)
-        os.environ["GRID_ZONES"] = "CISO,GB"
-        os.environ["STRATEGY"] = "queue"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONES="CISO,GB", STRATEGY="queue", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
-        assert out["optimal_dispatch_at"] == "none_in_deadline"
+        assert main_exit_code() == 0
+        assert outputs_of(mock_output)["optimal_dispatch_at"] == "none_in_deadline"
 
     @mock.patch("check_grid.queue_find_optimal_window")
-    @mock.patch("check_grid.check_multiple_zones")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
     def test_queue_no_window_fail_on_api_error(
-        self, mock_summary, mock_output, mock_multi, mock_window
+        self, mock_window, _mock_summary, _mock_output, mock_multi
     ):
         # No window + fail_on_api_error: must exit non-zero
         mock_multi.return_value = (None, None, None, [])
         mock_window.return_value = (None, None, None)
-        os.environ["GRID_ZONES"] = "CISO,GB"
-        os.environ["STRATEGY"] = "queue"
-        os.environ["FAIL_ON_API_ERROR"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(
+            GRID_ZONES="CISO,GB", STRATEGY="queue", FAIL_ON_API_ERROR="true", WORKFLOW_ID=""
+        )
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 1
+        assert main_exit_code() == 1
 
 
+@mock.patch("check_grid.check_carbon_intensity")
+@mock.patch("check_grid.set_output")
+@mock.patch("check_grid.write_job_summary")
 class TestSingleZoneDirtyMain:
     """Exercise the single-zone dirty and API-error paths of main()."""
 
     @mock.patch("check_grid.handle_dirty_grid")
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
     def test_dirty_grid_sets_outputs_no_dispatch(
-        self, mock_summary, mock_output, mock_check, mock_dirty
+        self, mock_dirty, _mock_summary, _mock_output, mock_check
     ):
         mock_check.return_value = (False, 480)
         mock_dirty.return_value = ("stable", "2026-03-10T03:00Z", 90)
-        os.environ["GRID_ZONE"] = "AU-NSW"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="AU-NSW", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
+        assert main_exit_code() == 0
         mock_dirty.assert_called_once()
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_api_error_skips_without_fail_flag(self, mock_summary, mock_output, mock_check):
+    def test_api_error_skips_without_fail_flag(self, _mock_summary, mock_output, mock_check):
         mock_check.return_value = (None, None)
-        os.environ["GRID_ZONE"] = "CISO"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="CISO", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 0
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        assert main_exit_code() == 0
+        out = outputs_of(mock_output)
         assert out["grid_clean"] == "false"
         assert out["carbon_intensity"] == "unknown"
 
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_api_error_fails_with_flag(self, mock_summary, mock_output, mock_check):
+    def test_api_error_fails_with_flag(self, _mock_summary, _mock_output, mock_check):
         mock_check.return_value = (None, None)
-        os.environ["GRID_ZONE"] = "CISO"
-        os.environ["FAIL_ON_API_ERROR"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="CISO", FAIL_ON_API_ERROR="true", WORKFLOW_ID="")
 
-        with pytest.raises(SystemExit) as exc:
-            check_grid.main()
-        assert exc.value.code == 1
+        assert main_exit_code() == 1
 
     @mock.patch("check_grid.smart_wait_single")
-    @mock.patch("check_grid.check_carbon_intensity")
-    @mock.patch("check_grid.set_output")
-    @mock.patch("check_grid.write_job_summary")
-    def test_smart_wait_invoked_when_dirty(self, mock_summary, mock_output, mock_check, mock_wait):
+    def test_smart_wait_invoked_when_dirty(self, mock_wait, _mock_summary, mock_output, mock_check):
         # Dirty now + max_wait set: smart_wait_single runs and turns it green
         mock_check.return_value = (False, 400)
         mock_wait.return_value = (True, 90, 12.0)
-        os.environ["GRID_ZONE"] = "CISO"
-        os.environ["MAX_WAIT"] = "60"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(GRID_ZONE="CISO", MAX_WAIT="60", WORKFLOW_ID="")
 
         # Green single-zone path returns normally (no sys.exit)
         check_grid.main()
         mock_wait.assert_called_once()
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
-        assert out["grid_clean"] == "true"
+        assert outputs_of(mock_output)["grid_clean"] == "true"
 
 
 # --- Inline mode simplification test ---
@@ -4203,23 +3436,15 @@ class TestSingleZoneDirtyMain:
 
 class TestInlineModeDispatch:
     @mock.patch("check_grid.check_carbon_intensity")
-    def test_inline_no_workflow_id(self, mock_check):
+    def test_inline_no_workflow_id(self, mock_check, github_output):
         """Inline mode should work without workflow_id or github_token."""
         mock_check.return_value = (True, 100)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            output_file = f.name
-        os.environ["GITHUB_OUTPUT"] = output_file
         os.environ["GRID_ZONE"] = "GB"
         os.environ.pop("WORKFLOW_ID", None)
         os.environ.pop("GITHUB_TOKEN", None)
-        try:
-            # Should not raise, since inline mode doesn't need token
-            check_grid.main()
-            with open(output_file) as f:
-                content = f.read()
-            assert "grid_clean=true" in content
-        finally:
-            os.unlink(output_file)
+        # Should not raise, since inline mode doesn't need token
+        check_grid.main()
+        assert "grid_clean=true" in github_output.read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -4228,81 +3453,56 @@ class TestInlineModeDispatch:
 
 
 class TestSetupWizard:
-    def test_wizard_registries_match_dispatcher(self):
+    def test_wizard_names_every_dispatcher_provider(self):
         """The wizard must know every provider the dispatcher routes to, so it
         can't silently mislabel a zone (e.g. after a new provider is added)."""
-        import check_grid
-        from setup_wizard import _PROVIDER_MODULES, _PROVIDER_NAMES
-
         for p in check_grid._PROVIDER_MODULES:
-            assert p in _PROVIDER_NAMES, f"Wizard missing display name for {p}"
-            assert p in _PROVIDER_MODULES, f"Wizard missing module for {p}"
+            assert p in setup_wizard._PROVIDER_NAMES, f"Wizard missing display name for {p}"
 
-    @mock.patch("setup_wizard.canada.check_carbon_intensity", return_value=(True, 30))
-    def test_zone_canada(self, mock_check):
-        from setup_wizard import test_zone
-
-        result = test_zone("CA-QC")
+    @pytest.mark.parametrize(
+        ("module_name", "zone", "verdict", "provider_name"),
+        [
+            pytest.param("canada", "CA-QC", (True, 30), "Canada", id="canada"),
+            pytest.param("taiwan", "TW", (False, 527), "Taipower", id="taiwan"),
+            pytest.param("uk", "GB", (True, 100), None, id="uk"),
+        ],
+    )
+    def test_zone_ok(self, module_name, zone, verdict, provider_name):
+        with mock.patch(f"providers.{module_name}.check_carbon_intensity", return_value=verdict):
+            result = setup_wizard.test_zone(zone)
         assert result["status"] == "ok"
-        assert result["intensity"] == 30
-        assert "Canada" in result["provider"]
+        assert result["intensity"] == verdict[1]
+        if provider_name is not None:
+            assert provider_name in result["provider"]
 
-    @mock.patch("setup_wizard.taiwan.check_carbon_intensity", return_value=(False, 527))
-    def test_zone_taiwan(self, mock_check):
-        from setup_wizard import test_zone
-
-        result = test_zone("TW")
-        assert result["status"] == "ok"
-        assert result["intensity"] == 527
-        assert "Taipower" in result["provider"]
-
-    @mock.patch("setup_wizard.eia.check_carbon_intensity", return_value=(None, None))
-    def test_zone_error_on_no_data(self, mock_check):
-        from setup_wizard import test_zone
-
-        result = test_zone("CISO")
+    @mock.patch("providers.eia.check_carbon_intensity", return_value=(None, None))
+    def test_zone_error_on_no_data(self, _mock_check):
+        result = setup_wizard.test_zone("CISO")
         assert result["status"] == "error"
         assert "no data" in result["error"]
 
-    @mock.patch("setup_wizard.uk.check_carbon_intensity", side_effect=RuntimeError("boom"))
-    def test_zone_error_on_exception(self, mock_check):
-        from setup_wizard import test_zone
-
-        result = test_zone("GB")
+    @mock.patch("providers.uk.check_carbon_intensity", side_effect=RuntimeError("boom"))
+    def test_zone_error_on_exception(self, _mock_check):
+        result = setup_wizard.test_zone("GB")
         assert result["status"] == "error"
         assert "boom" in result["error"]
 
-    @mock.patch("setup_wizard.uk.check_carbon_intensity", return_value=(True, 100))
-    def test_zone_test_uk(self, mock_check):
-        from setup_wizard import test_zone
-
-        result = test_zone("GB")
-        assert result["status"] == "ok"
-        assert result["intensity"] == 100
-
     def test_zone_test_entsoe_skipped_without_token(self):
-        from setup_wizard import test_zone
-
-        result = test_zone("DE", entsoe_token="")
+        result = setup_wizard.test_zone("DE", entsoe_token="")
         # DE without entsoe token should use Open-Meteo (if coordinates exist)
         # or be skipped for ENTSO-E
         assert result["status"] in ("ok", "skipped", "error")
 
     def test_zone_test_emaps_skipped_without_token(self):
-        from setup_wizard import test_zone
-
         # Use a fake zone that only Electricity Maps can handle (no coordinates)
-        result = test_zone("XX-NOCOORDS", emaps_api_key="")
+        result = setup_wizard.test_zone("XX-NOCOORDS", emaps_api_key="")
         assert result["status"] == "skipped"
         assert "portal.electricitymaps.com" in result["error"]
 
-    @mock.patch("setup_wizard.open_meteo.check_carbon_intensity", return_value=(True, 300))
-    def test_zone_with_open_meteo_fallback(self, mock_check):
-        from setup_wizard import test_zone
-
+    @mock.patch("providers.open_meteo.check_carbon_intensity", return_value=(True, 300))
+    def test_zone_with_open_meteo_fallback(self, _mock_check):
         # SG has Open-Meteo coordinates, should work without emaps token
-        result = test_zone("SG", emaps_api_key="")
-        assert result["status"] == "ok"
+        assert setup_wizard.test_zone("SG", emaps_api_key="")["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -4311,29 +3511,24 @@ class TestSetupWizard:
 
 
 class TestCloudRegionMappingCompleteness:
-    # Every curated preset's zones should have an EXPLICIT cloud-region mapping.
+    # Every curated preset's zones should have an EXPLICIT cloud-region mapping:
     # get_cloud_region() falls back to a default (us-east-1) for unmapped zones,
     # so we assert membership in the mapping dicts rather than "is not None",
     # which would pass even for a totally unmapped zone
-    def _preset_zones(self):
-        from providers import AUTO_GREEN_ZONES_FULL
-
+    @pytest.mark.parametrize(
+        ("cloud", "mapping"),
+        [
+            pytest.param("AWS", ZONE_TO_AWS_REGION, id="aws"),
+            pytest.param("GCP", ZONE_TO_GCP_REGION, id="gcp"),
+            pytest.param("Azure", ZONE_TO_AZURE_REGION, id="azure"),
+        ],
+    )
+    def test_all_preset_zones_have_mapping(self, cloud, mapping):
         zones = set()
         for preset in (AUTO_GREEN_ZONES, AUTO_CLEANEST_ZONES, AUTO_GREEN_ZONES_FULL):
             zones.update(e["zone"] for e in preset)
-        return zones
-
-    def test_all_preset_zones_have_aws_mapping(self):
-        missing = [z for z in self._preset_zones() if z not in ZONE_TO_AWS_REGION]
-        assert not missing, f"Preset zones missing AWS region: {sorted(missing)}"
-
-    def test_all_preset_zones_have_gcp_mapping(self):
-        missing = [z for z in self._preset_zones() if z not in ZONE_TO_GCP_REGION]
-        assert not missing, f"Preset zones missing GCP region: {sorted(missing)}"
-
-    def test_all_preset_zones_have_azure_mapping(self):
-        missing = [z for z in self._preset_zones() if z not in ZONE_TO_AZURE_REGION]
-        assert not missing, f"Preset zones missing Azure region: {sorted(missing)}"
+        missing = [z for z in zones if z not in mapping]
+        assert not missing, f"Preset zones missing {cloud} region: {sorted(missing)}"
 
     def test_brazil_se_zone_in_all_clouds(self):
         """BR-SE should have mappings in all three clouds."""
@@ -4353,72 +3548,29 @@ class TestCloudRegionMappingCompleteness:
 
 
 class TestProviderRegistryConsistency:
-    def test_all_providers_in_check_grid_registry(self):
+    @pytest.mark.parametrize(
+        "provider",
+        [
+            PROVIDER_UK,
+            PROVIDER_EIA,
+            PROVIDER_AEMO,
+            PROVIDER_GRID_INDIA,
+            PROVIDER_ONS_BRAZIL,
+            PROVIDER_ESKOM,
+            PROVIDER_ENTSOE,
+            PROVIDER_OPEN_METEO,
+            PROVIDER_ELECTRICITY_MAPS,
+        ],
+    )
+    def test_provider_in_check_grid_registry(self, provider):
         """All provider constants should be in check_grid's module registry."""
-        from check_grid import _PROVIDER_MODULES
-        from providers import (
-            PROVIDER_AEMO,
-            PROVIDER_EIA,
-            PROVIDER_ELECTRICITY_MAPS,
-            PROVIDER_ENTSOE,
-            PROVIDER_ESKOM,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_UK,
-        )
-
-        for p in [
-            PROVIDER_UK,
-            PROVIDER_EIA,
-            PROVIDER_AEMO,
-            PROVIDER_GRID_INDIA,
-            PROVIDER_ONS_BRAZIL,
-            PROVIDER_ESKOM,
-            PROVIDER_ENTSOE,
-            PROVIDER_OPEN_METEO,
-            PROVIDER_ELECTRICITY_MAPS,
-        ]:
-            assert p in _PROVIDER_MODULES, f"Missing {p} in _PROVIDER_MODULES"
+        assert provider in check_grid._PROVIDER_MODULES, f"Missing {provider} in _PROVIDER_MODULES"
 
     def test_all_provider_modules_have_required_functions(self):
         """Every provider module exposes the three required provider functions."""
-        from check_grid import _PROVIDER_MODULES
-
-        for provider_id, module in _PROVIDER_MODULES.items():
-            assert hasattr(module, "check_carbon_intensity"), (
-                f"{provider_id} missing check_carbon_intensity"
-            )
-            assert hasattr(module, "get_forecast"), f"{provider_id} missing get_forecast"
-            assert hasattr(module, "get_history_trend"), f"{provider_id} missing get_history_trend"
-
-    def test_detect_provider_prefers_free_over_paid(self):
-        """Free providers should be preferred over token-required providers."""
-        # India zones should detect Grid India (free) ahead of Electricity Maps
-        assert detect_provider("IN-SO") == PROVIDER_GRID_INDIA
-        # Brazil zones should detect ONS Brazil (free)
-        assert detect_provider("BR-S") == PROVIDER_ONS_BRAZIL
-        # South Africa should detect Eskom (free)
-        assert detect_provider("ZA") == PROVIDER_ESKOM
-        # Australia should detect AEMO (free)
-        assert detect_provider("AU-NSW") == PROVIDER_AEMO
-
-    def test_eu_zones_fallback_to_open_meteo_without_token(self):
-        """EU zones with coordinates should detect Open-Meteo without ENTSO-E token.
-
-        FR and DE are exceptions: they have keyless real sources (RTE,
-        Energy-Charts), preferred over the Open-Meteo estimate when no token is
-        set. NO-NO1 (a subzone with no national keyless source here) still uses
-        Open-Meteo.
-        """
-        assert detect_provider("DE") == PROVIDER_ENERGY_CHARTS
-        assert detect_provider("FR") == PROVIDER_RTE
-        assert detect_provider("NO-NO1") == PROVIDER_OPEN_METEO
-
-    def test_eu_zones_prefer_entsoe_with_token(self):
-        """EU zones should prefer ENTSO-E when token is available."""
-        assert detect_provider("DE", entsoe_token="tok") == PROVIDER_ENTSOE
-        assert detect_provider("FR", entsoe_token="tok") == PROVIDER_ENTSOE
+        for provider_id, module in check_grid._PROVIDER_MODULES.items():
+            for fn in ("check_carbon_intensity", "get_forecast", "get_history_trend"):
+                assert hasattr(module, fn), f"{provider_id} missing {fn}"
 
 
 # ---------------------------------------------------------------------------
@@ -4429,39 +3581,29 @@ class TestProviderRegistryConsistency:
 class TestFallbackChain:
     @mock.patch("check_grid.open_meteo.check_carbon_intensity", return_value=(True, 200))
     @mock.patch("check_grid.eia.check_carbon_intensity", return_value=(None, None))
-    def test_eia_failure_falls_back_to_open_meteo(self, mock_eia, mock_meteo):
+    def test_eia_failure_falls_back_to_open_meteo(self, _mock_eia, mock_meteo, monkeypatch):
         """When EIA fails for a zone with Open-Meteo coordinates, fallback works."""
         # CISO doesn't have Open-Meteo coords (it's EIA), so a zone that hits
         # EIA and also has coords doesn't exist naturally. Add coords for CISO
         # here to test the generic fallback path
-        from providers.open_meteo import ZONE_COORDINATES
+        monkeypatch.setitem(open_meteo.ZONE_COORDINATES, "CISO", (37.8, -122.4))
+        result = check_grid.check_carbon_intensity("CISO", 250, PROVIDER_EIA, eia_api_key="")
+        assert_verdict(result, True, 200)
+        mock_meteo.assert_called_once()
 
-        # Temporarily add coords for test
-        ZONE_COORDINATES["CISO"] = (37.8, -122.4)
-        try:
-            is_green, intensity = check_grid.check_carbon_intensity(
-                "CISO", 250, PROVIDER_EIA, eia_api_key=""
-            )
-            assert is_green is True
-            assert intensity == 200
-            mock_meteo.assert_called_once()
-        finally:
-            del ZONE_COORDINATES["CISO"]
-
+    @mock.patch("check_grid.open_meteo.check_carbon_intensity")
     @mock.patch("check_grid.uk.check_carbon_intensity", return_value=(True, 150))
-    def test_no_fallback_when_primary_succeeds(self, mock_uk):
+    def test_no_fallback_when_primary_succeeds(self, _mock_uk, mock_meteo):
         """Fallback should NOT trigger when primary provider succeeds."""
-        with mock.patch("check_grid.open_meteo.check_carbon_intensity") as mock_meteo:
-            is_green, intensity = check_grid.check_carbon_intensity("GB", 250, PROVIDER_UK)
-            assert is_green is True
-            assert intensity == 150
-            mock_meteo.assert_not_called()
+        result = check_grid.check_carbon_intensity("GB", 250, PROVIDER_UK)
+        assert_verdict(result, True, 150)
+        mock_meteo.assert_not_called()
 
     @mock.patch("check_grid.open_meteo.check_carbon_intensity")
     def test_no_double_fallback_for_open_meteo(self, mock_meteo):
         """Open-Meteo itself should not trigger fallback to Open-Meteo."""
         mock_meteo.return_value = (None, None)
-        is_green, intensity = check_grid.check_carbon_intensity("IS", 250, PROVIDER_OPEN_METEO)
+        is_green, _intensity = check_grid.check_carbon_intensity("IS", 250, PROVIDER_OPEN_METEO)
         assert is_green is None
         # Should be called once (primary only, no self-fallback)
         assert mock_meteo.call_count == 1
@@ -4471,86 +3613,89 @@ class TestFallbackChain:
 # Cloud auto-detection tests
 # ---------------------------------------------------------------------------
 
+_CLOUD_ENV_KEYS = [
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "GOOGLE_CLOUD_REGION",
+    "CLOUDSDK_COMPUTE_REGION",
+    "CLOUD_RUN_REGION",
+    "AZURE_REGION",
+    "REGION_NAME",
+    "WEBSITE_SITE_NAME_REGION",
+    "CLOUD_REGION_OVERRIDE",
+    "GITHUB_ACTIONS",
+    "RUNNER_NAME",
+]
 
+
+@pytest.fixture
+def no_cloud_env(monkeypatch):
+    """Strip every env var the cloud detector reads."""
+    for key in _CLOUD_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.usefixtures("no_cloud_env")
 class TestCloudAutoDetection:
-    def test_aws_region_detection(self):
-        """Detects grid zone from AWS_REGION env var."""
-        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}, clear=False):
-            zone, source = detect_cloud_zone()
-            assert zone == "BPAT"
-            assert "AWS" in source
-
-    def test_aws_default_region_detection(self):
-        with mock.patch.dict(os.environ, {"AWS_DEFAULT_REGION": "eu-west-2"}, clear=False):
-            os.environ.pop("AWS_REGION", None)
-            zone, source = detect_cloud_zone()
-            assert zone == "GB"
-
-    def test_gcp_region_detection(self):
-        with mock.patch.dict(os.environ, {"GOOGLE_CLOUD_REGION": "europe-west9"}, clear=False):
-            os.environ.pop("AWS_REGION", None)
-            os.environ.pop("AWS_DEFAULT_REGION", None)
-            zone, source = detect_cloud_zone()
-            assert zone == "FR"
-            assert "GCP" in source
-
-    def test_azure_region_detection(self):
-        with mock.patch.dict(os.environ, {"AZURE_REGION": "japaneast"}, clear=False):
-            os.environ.pop("AWS_REGION", None)
-            os.environ.pop("AWS_DEFAULT_REGION", None)
-            os.environ.pop("GOOGLE_CLOUD_REGION", None)
-            zone, source = detect_cloud_zone()
-            assert zone == "JP-TK"
-            assert "Azure" in source
-
-    def test_cloud_region_override(self):
-        with mock.patch.dict(os.environ, {"CLOUD_REGION_OVERRIDE": "ap-southeast-1"}, clear=False):
-            zone, source = detect_cloud_zone()
-            assert zone == "SG"
-            assert "CLOUD_REGION_OVERRIDE" in source
+    @pytest.mark.parametrize(
+        ("env", "zone", "source_tag"),
+        [
+            pytest.param({"AWS_REGION": "us-west-2"}, "BPAT", "AWS", id="aws_region"),
+            pytest.param({"AWS_DEFAULT_REGION": "eu-west-2"}, "GB", None, id="aws_default_region"),
+            pytest.param({"GOOGLE_CLOUD_REGION": "europe-west9"}, "FR", "GCP", id="gcp_region"),
+            pytest.param({"AZURE_REGION": "japaneast"}, "JP-TK", "Azure", id="azure_region"),
+            pytest.param(
+                {"CLOUD_REGION_OVERRIDE": "ap-southeast-1"},
+                "SG",
+                "CLOUD_REGION_OVERRIDE",
+                id="cloud_region_override",
+            ),
+        ],
+    )
+    def test_detects_zone_from_env(self, monkeypatch, env, zone, source_tag):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        detected, source = detect_cloud_zone()
+        assert detected == zone
+        if source_tag is not None:
+            assert source_tag in source
 
     def test_no_cloud_env_returns_none(self):
-        env_keys = [
-            "AWS_REGION",
-            "AWS_DEFAULT_REGION",
-            "GOOGLE_CLOUD_REGION",
-            "CLOUDSDK_COMPUTE_REGION",
-            "CLOUD_RUN_REGION",
-            "AZURE_REGION",
-            "REGION_NAME",
-            "WEBSITE_SITE_NAME_REGION",
-            "CLOUD_REGION_OVERRIDE",
-            "GITHUB_ACTIONS",
-            "RUNNER_NAME",
-        ]
-        clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
-        with mock.patch.dict(os.environ, clean_env, clear=True):
-            zone, source = detect_cloud_zone()
-            assert zone is None
-            assert source is None
+        assert detect_cloud_zone() == (None, None)
 
-    def test_unknown_region_returns_none(self):
-        with mock.patch.dict(os.environ, {"AWS_REGION": "xx-unknown-99"}, clear=False):
-            os.environ.pop("CLOUD_REGION_OVERRIDE", None)
-            zone, source = detect_cloud_zone()
-            assert zone is None
+    def test_unknown_region_returns_none(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "xx-unknown-99")
+        zone, _source = detect_cloud_zone()
+        assert zone is None
 
 
 class TestReverseRegionMappings:
-    def test_aws_reverse_map_covers_major_regions(self):
-        major = ["us-west-1", "us-west-2", "us-east-1", "eu-west-2", "ap-northeast-1"]
+    @pytest.mark.parametrize(
+        ("cloud", "reverse", "major"),
+        [
+            pytest.param(
+                "AWS",
+                AWS_REGION_TO_ZONE,
+                ["us-west-1", "us-west-2", "us-east-1", "eu-west-2", "ap-northeast-1"],
+                id="aws",
+            ),
+            pytest.param(
+                "GCP",
+                GCP_REGION_TO_ZONE,
+                ["us-west1", "us-east4", "europe-west2", "asia-northeast1"],
+                id="gcp",
+            ),
+            pytest.param(
+                "Azure",
+                AZURE_REGION_TO_ZONE,
+                ["eastus", "westus2", "uksouth", "japaneast"],
+                id="azure",
+            ),
+        ],
+    )
+    def test_reverse_map_covers_major_regions(self, cloud, reverse, major):
         for region in major:
-            assert region in AWS_REGION_TO_ZONE, f"Missing AWS reverse: {region}"
-
-    def test_gcp_reverse_map_covers_major_regions(self):
-        major = ["us-west1", "us-east4", "europe-west2", "asia-northeast1"]
-        for region in major:
-            assert region in GCP_REGION_TO_ZONE, f"Missing GCP reverse: {region}"
-
-    def test_azure_reverse_map_covers_major_regions(self):
-        major = ["eastus", "westus2", "uksouth", "japaneast"]
-        for region in major:
-            assert region in AZURE_REGION_TO_ZONE, f"Missing Azure reverse: {region}"
+            assert region in reverse, f"Missing {cloud} reverse: {region}"
 
     def test_forward_regions_resolve_in_reverse_map(self):
         """Every region a zone forward-maps to must exist in the reverse map,
@@ -4564,107 +3709,79 @@ class TestReverseRegionMappings:
             assert not missing, f"{cloud} regions used but absent from reverse map: {missing}"
 
 
+@pytest.mark.usefixtures("no_cloud_env")
 class TestAutoDetectPreset:
-    def test_auto_detect_expansion_with_aws_region(self):
-        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-1"}, clear=False):
-            result = check_grid.expand_auto_zones("auto:detect")
-            assert result is not None
-            assert len(result) == 1
-            assert result[0]["zone"] == "CISO"
+    def test_auto_detect_expansion_with_aws_region(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "us-west-1")
+        result = check_grid.expand_auto_zones("auto:detect")
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["zone"] == "CISO"
 
     def test_auto_detect_fallback_to_cleanest(self):
         """auto:detect falls back to auto:cleanest when no cloud env is set."""
-        env_keys = [
-            "AWS_REGION",
-            "AWS_DEFAULT_REGION",
-            "GOOGLE_CLOUD_REGION",
-            "CLOUDSDK_COMPUTE_REGION",
-            "CLOUD_RUN_REGION",
-            "AZURE_REGION",
-            "REGION_NAME",
-            "WEBSITE_SITE_NAME_REGION",
-            "CLOUD_REGION_OVERRIDE",
-            "GITHUB_ACTIONS",
-            "RUNNER_NAME",
-        ]
-        clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
-        with mock.patch.dict(os.environ, clean_env, clear=True):
-            result = check_grid.expand_auto_zones("auto:detect")
-            assert result is not None
-            assert len(result) == len(AUTO_CLEANEST_ZONES)
+        result = check_grid.expand_auto_zones("auto:detect")
+        assert result is not None
+        assert len(result) == len(AUTO_CLEANEST_ZONES)
 
 
 class TestZeroConfigDefault:
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.set_output")
     @mock.patch("check_grid.write_job_summary")
-    def test_no_zone_input_uses_auto_detect(self, mock_summary, mock_output, mock_check):
+    def test_no_zone_input_uses_auto_detect(
+        self, _mock_summary, mock_output, mock_check, monkeypatch
+    ):
         """When no zone is specified, should use auto:detect."""
         mock_check.return_value = (True, 100)
-        os.environ.pop("GRID_ZONE", None)
-        os.environ.pop("GRID_ZONES", None)
-        os.environ["WORKFLOW_ID"] = ""
-        os.environ.pop("CARBON_POLICY_PATH", None)
+        for key in ("GRID_ZONE", "GRID_ZONES", "CARBON_POLICY_PATH"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("WORKFLOW_ID", "")
         # Set a cloud region so auto:detect finds something
-        os.environ["AWS_REGION"] = "us-west-2"
-        try:
-            check_grid.main()
-            output_calls = {call[0][0]: call[0][1] for call in mock_output.call_args_list}
-            assert output_calls["grid_clean"] == "true"
-        finally:
-            os.environ.pop("AWS_REGION", None)
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        check_grid.main()
+        assert outputs_of(mock_output)["grid_clean"] == "true"
 
 
 # ---------------------------------------------------------------------------
-# Forecast heuristic tests
+# Forecast heuristic tests (Grid India, ONS Brazil, Eskom time-of-day curves)
 # ---------------------------------------------------------------------------
 
 
-class TestIndiaForecastHeuristic:
-    def test_high_threshold_finds_window(self):
-        """With high threshold, India forecast should find a green window."""
-        dt, intensity = grid_india.get_forecast("IN-SO", 500)
-        # Should either be already in window (None) or find one
-        if dt is not None:
-            assert isinstance(dt, str)
-            if dt != "none_in_forecast":
-                assert intensity is not None
-                assert intensity <= 500
-
-    def test_very_low_threshold_no_window(self):
-        """With very low threshold, India forecast won't find a window."""
-        dt, intensity = grid_india.get_forecast("IN-NO", 50)
-        assert dt == "none_in_forecast"
-        assert intensity is None
-
-
-class TestBrazilForecastHeuristic:
-    def test_high_threshold_finds_window(self):
-        dt, intensity = ons_brazil.get_forecast("BR-S", 500)
+class TestHeuristicForecasts:
+    @pytest.mark.parametrize(
+        ("module", "zone", "threshold"),
+        [
+            pytest.param(grid_india, "IN-SO", 500, id="india_south_high_threshold"),
+            pytest.param(grid_india, "IN-SO", 1000, id="india_south_very_high_threshold"),
+            pytest.param(grid_india, "IN-NO", 1000, id="india_north_very_high_threshold"),
+            pytest.param(ons_brazil, "BR-S", 500, id="brazil_south_high_threshold"),
+            # BR-S (hydro) should be green at moderate threshold
+            pytest.param(ons_brazil, "BR-S", 200, id="brazil_hydro_moderate_threshold"),
+            pytest.param(ons_brazil, "BR-NE", 10, id="brazil_northeast_tiny_threshold"),
+            # SA midday is ~650, so with 800 threshold it should find a window
+            pytest.param(eskom, "ZA", 800, id="south_africa_high_threshold"),
+        ],
+    )
+    def test_window_is_none_or_within_threshold(self, module, zone, threshold):
+        # Either already green (None), no window, or a window at or under the
+        # threshold, never a crash, at any hour
+        dt, intensity = module.get_forecast(zone, threshold)
+        assert dt is None or isinstance(dt, str)
         if dt is not None and dt != "none_in_forecast":
             assert intensity is not None
-            assert intensity <= 500
+            assert intensity <= threshold
 
-    def test_hydro_zone_very_clean(self):
-        """BR-S (hydro) should be green at moderate threshold."""
-        dt, intensity = ons_brazil.get_forecast("BR-S", 200)
-        # Should find a window or be already green
-        if dt is not None and dt != "none_in_forecast":
-            assert intensity <= 200
-
-
-class TestEskomForecastHeuristic:
-    def test_coal_grid_rarely_green(self):
-        """SA grid at low threshold should not find green window."""
-        dt, intensity = eskom.get_forecast("ZA", 250)
-        assert dt == "none_in_forecast"
-
-    def test_high_threshold_finds_window(self):
-        """SA grid at high threshold should find midday window."""
-        dt, intensity = eskom.get_forecast("ZA", 800)
-        if dt is not None and dt != "none_in_forecast":
-            assert intensity is not None
-            assert intensity <= 800
+    @pytest.mark.parametrize(
+        ("module", "zone", "threshold"),
+        [
+            # SA grid (650+ gCO2eq/kWh) will never be green at 250
+            pytest.param(eskom, "ZA", 250, id="south_africa_coal_never_green"),
+            pytest.param(grid_india, "IN-NO", 50, id="india_north_tiny_threshold"),
+        ],
+    )
+    def test_no_window_below_floor(self, module, zone, threshold):
+        assert module.get_forecast(zone, threshold) == ("none_in_forecast", None)
 
 
 # ---------------------------------------------------------------------------
@@ -4673,77 +3790,51 @@ class TestEskomForecastHeuristic:
 
 
 class TestAutoNearestPreset:
-    def test_nearest_with_tz_utc(self):
-        """TZ=UTC should resolve to UTC+0 zones."""
-        with mock.patch.dict(os.environ, {"TZ": "UTC+0"}):
-            zones = check_grid.expand_auto_zones("auto:nearest")
-            zone_ids = [z["zone"] for z in zones]
-            assert "GB-16" in zone_ids or "GB" in zone_ids
+    @pytest.mark.parametrize(
+        ("tz", "present"),
+        [
+            pytest.param("UTC+0", {"GB-16", "GB"}, id="utc_resolves_to_uk"),
+            # Grid India itself is geo-walled, so UTC+5.5 maps to Australian clean zones
+            pytest.param("UTC+5.5", {"AU-TAS"}, id="india_offset_resolves_to_australia"),
+            pytest.param("UTC-8", {"CISO"}, id="us_west"),
+            # Etc/GMT-5 means UTC+5 (inverted sign)
+            pytest.param("Etc/GMT-5", {"AU-TAS"}, id="etc_gmt_inverted_sign"),
+        ],
+    )
+    def test_tz_resolves_to_reachable_zones(self, monkeypatch, tz, present):
+        monkeypatch.setenv("TZ", tz)
+        zone_ids = [z["zone"] for z in check_grid.expand_auto_zones("auto:nearest")]
+        assert present & set(zone_ids)
+        assert not any(z.startswith("IN-") for z in zone_ids)
 
-    def test_nearest_with_tz_offset_positive(self):
-        """TZ=UTC+5.5 (India) resolves to the nearest reachable clean zones.
-
-        Grid India itself is geo-walled, so the offset maps to Australian
-        clean zones rather than the unreachable IN-* zones."""
-        with mock.patch.dict(os.environ, {"TZ": "UTC+5.5"}):
-            zones = check_grid.expand_auto_zones("auto:nearest")
-            zone_ids = [z["zone"] for z in zones]
-            assert len(zone_ids) > 0
-            assert not any(z.startswith("IN-") for z in zone_ids)
-            assert "AU-TAS" in zone_ids
-
-    def test_nearest_with_tz_offset_negative(self):
-        """TZ=UTC-8 should resolve to US West zones."""
-        with mock.patch.dict(os.environ, {"TZ": "UTC-8"}):
-            zones = check_grid.expand_auto_zones("auto:nearest")
-            zone_ids = [z["zone"] for z in zones]
-            assert "CISO" in zone_ids
-
-    def test_nearest_fallback_to_cleanest(self):
+    def test_nearest_fallback_to_cleanest(self, monkeypatch):
         """No TZ env var falls back to system timezone (which resolves to some zones)."""
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("TZ", None)
-            zones = check_grid.expand_auto_zones("auto:nearest")
-            assert len(zones) > 0
-
-    def test_nearest_etc_gmt_inverted(self):
-        """Etc/GMT-5 means UTC+5 (inverted sign), resolving to reachable zones."""
-        with mock.patch.dict(os.environ, {"TZ": "Etc/GMT-5"}):
-            zones = check_grid.expand_auto_zones("auto:nearest")
-            zone_ids = [z["zone"] for z in zones]
-            # UTC+5 maps to the AU clean zones (Grid India is geo-walled)
-            assert "AU-TAS" in zone_ids
+        monkeypatch.delenv("TZ", raising=False)
+        assert len(check_grid.expand_auto_zones("auto:nearest")) > 0
 
 
 class TestDetectUtcOffset:
-    def test_utc_zero(self):
-        with mock.patch.dict(os.environ, {"TZ": "UTC"}):
-            assert check_grid._detect_utc_offset() == 0
+    @pytest.mark.parametrize(
+        ("tz", "offset"),
+        [
+            pytest.param("UTC", 0, id="utc_zero"),
+            pytest.param("UTC+5.5", 5.5, id="utc_plus_half_hour"),
+            pytest.param("UTC-8", -8, id="utc_minus"),
+            pytest.param("GMT+3", 3, id="gmt_plus"),
+            # Etc/GMT offsets are inverted: Etc/GMT-5 = UTC+5
+            pytest.param("Etc/GMT-5", 5, id="etc_gmt_inverted"),
+        ],
+    )
+    def test_parses_tz(self, monkeypatch, tz, offset):
+        monkeypatch.setenv("TZ", tz)
+        assert check_grid._detect_utc_offset() == offset
 
-    def test_utc_plus_offset(self):
-        with mock.patch.dict(os.environ, {"TZ": "UTC+5.5"}):
-            assert check_grid._detect_utc_offset() == 5.5
-
-    def test_utc_minus_offset(self):
-        with mock.patch.dict(os.environ, {"TZ": "UTC-8"}):
-            assert check_grid._detect_utc_offset() == -8
-
-    def test_gmt_offset(self):
-        with mock.patch.dict(os.environ, {"TZ": "GMT+3"}):
-            assert check_grid._detect_utc_offset() == 3
-
-    def test_etc_gmt_inverted(self):
-        """Etc/GMT offsets are inverted: Etc/GMT-5 = UTC+5."""
-        with mock.patch.dict(os.environ, {"TZ": "Etc/GMT-5"}):
-            assert check_grid._detect_utc_offset() == 5
-
-    def test_system_fallback(self):
+    def test_system_fallback(self, monkeypatch):
         """With no TZ env, should fall back to system time."""
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("TZ", None)
-            offset = check_grid._detect_utc_offset()
-            assert offset is not None
-            assert -12 <= offset <= 14
+        monkeypatch.delenv("TZ", raising=False)
+        offset = check_grid._detect_utc_offset()
+        assert offset is not None
+        assert -12 <= offset <= 14
 
 
 # ---------------------------------------------------------------------------
@@ -4752,29 +3843,21 @@ class TestDetectUtcOffset:
 
 
 class TestSuggestGreenCron:
-    def test_solar_zone(self):
-        """Solar zones should suggest midday cron."""
-        cron, desc = check_grid.suggest_green_cron("CISO")
+    @pytest.mark.parametrize(
+        ("zone", "phrase"),
+        [
+            pytest.param("CISO", "solar peak", id="solar_zone_midday"),
+            pytest.param("BPAT", "off-peak", id="hydro_zone_off_peak"),
+            pytest.param("GB-16", "wind peak", id="wind_zone_night"),
+        ],
+    )
+    def test_description_matches_zone_type(self, zone, phrase):
+        cron, desc = check_grid.suggest_green_cron(zone)
         assert cron is not None
-        assert "solar peak" in desc
-
-    def test_hydro_zone(self):
-        """Hydro zones should suggest off-peak cron."""
-        cron, desc = check_grid.suggest_green_cron("BPAT")
-        assert cron is not None
-        assert "off-peak" in desc
-
-    def test_wind_zone(self):
-        """Wind zones should suggest nighttime cron."""
-        cron, desc = check_grid.suggest_green_cron("GB-16")
-        assert cron is not None
-        assert "wind peak" in desc
+        assert phrase in desc
 
     def test_unknown_zone_returns_none(self):
-        """Unknown zone should return None."""
-        cron, desc = check_grid.suggest_green_cron("UNKNOWN-ZONE-XYZ")
-        assert cron is None
-        assert desc is None
+        assert check_grid.suggest_green_cron("UNKNOWN-ZONE-XYZ") == (None, None)
 
     def test_cron_format_valid(self):
         """Cron expression should have 5 fields."""
@@ -4792,14 +3875,10 @@ class TestSuggestGreenCron:
 
 class TestNearestZonesMapping:
     def test_all_major_offsets_covered(self):
-        from providers import NEAREST_ZONES_BY_OFFSET
-
         for offset in range(-10, 14):
             assert offset in NEAREST_ZONES_BY_OFFSET, f"Missing offset {offset}"
 
     def test_half_hour_offsets(self):
-        from providers import NEAREST_ZONES_BY_OFFSET
-
         assert 5.5 in NEAREST_ZONES_BY_OFFSET  # India
         assert 9.5 in NEAREST_ZONES_BY_OFFSET  # Australia Central
 
@@ -4810,42 +3889,49 @@ class TestNearestZonesMapping:
 
 
 class TestEnvParsingHelpers:
-    def test_env_float_default_when_unset(self):
-        os.environ.pop("MAX_CARBON", None)
-        assert check_grid._env_float("MAX_CARBON", 250) == 250
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(None, 250, id="default_when_unset"),
+            pytest.param("", 250, id="default_when_empty"),
+            pytest.param("123.5", 123.5, id="parses_value"),
+        ],
+    )
+    def test_env_float(self, monkeypatch, raw, expected):
+        if raw is None:
+            monkeypatch.delenv("MAX_CARBON", raising=False)
+        else:
+            monkeypatch.setenv("MAX_CARBON", raw)
+        assert check_grid._env_float("MAX_CARBON", 250) == expected
 
-    def test_env_float_default_when_empty(self):
-        with mock.patch.dict(os.environ, {"MAX_CARBON": ""}):
-            assert check_grid._env_float("MAX_CARBON", 250) == 250
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [pytest.param(None, 0, id="default_when_unset"), pytest.param("30", 30, id="parses_value")],
+    )
+    def test_env_int(self, monkeypatch, raw, expected):
+        if raw is None:
+            monkeypatch.delenv("MAX_WAIT", raising=False)
+        else:
+            monkeypatch.setenv("MAX_WAIT", raw)
+        assert check_grid._env_int("MAX_WAIT", 0) == expected
 
-    def test_env_float_parses_value(self):
-        with mock.patch.dict(os.environ, {"MAX_CARBON": "123.5"}):
-            assert check_grid._env_float("MAX_CARBON", 250) == 123.5
+    @pytest.mark.parametrize(
+        ("parser", "name", "raw"),
+        [
+            pytest.param(check_grid._env_float, "MAX_CARBON", "notanumber", id="float"),
+            pytest.param(check_grid._env_int, "MAX_WAIT", "soon", id="int"),
+        ],
+    )
+    def test_exits_on_malformed(self, monkeypatch, parser, name, raw):
+        monkeypatch.setenv(name, raw)
+        with pytest.raises(SystemExit) as exc:
+            parser(name, 0)
+        assert exc.value.code == check_grid.EXIT_FAILURE
 
-    def test_env_float_exits_on_malformed(self):
-        with mock.patch.dict(os.environ, {"MAX_CARBON": "notanumber"}):
-            with pytest.raises(SystemExit) as exc:
-                check_grid._env_float("MAX_CARBON", 250)
-            assert exc.value.code == check_grid.EXIT_FAILURE
-
-    def test_env_int_default_when_unset(self):
-        os.environ.pop("MAX_WAIT", None)
-        assert check_grid._env_int("MAX_WAIT", 0) == 0
-
-    def test_env_int_parses_value(self):
-        with mock.patch.dict(os.environ, {"MAX_WAIT": "30"}):
-            assert check_grid._env_int("MAX_WAIT", 0) == 30
-
-    def test_env_int_exits_on_malformed(self):
-        with mock.patch.dict(os.environ, {"MAX_WAIT": "soon"}):
-            with pytest.raises(SystemExit) as exc:
-                check_grid._env_int("MAX_WAIT", 0)
-            assert exc.value.code == check_grid.EXIT_FAILURE
-
-    def test_env_float_raw_overrides_env(self):
+    def test_env_float_raw_overrides_env(self, monkeypatch):
         # Explicit raw string takes precedence (policy-fallback path)
-        with mock.patch.dict(os.environ, {"MAX_CARBON": "999"}):
-            assert check_grid._env_float("MAX_CARBON", 250, "100") == 100
+        monkeypatch.setenv("MAX_CARBON", "999")
+        assert check_grid._env_float("MAX_CARBON", 250, "100") == 100
 
     def test_env_float_raw_empty_uses_default(self):
         assert check_grid._env_float("DEADLINE_HOURS", 24, "") == 24
@@ -4872,8 +3958,7 @@ class TestGetForecastEiaKey:
     def test_eia_still_returns_none_without_gridstatus(self, mock_eia_fc, mock_gs):
         # Without a gridstatus key, EIA forecast resolves to (None, None) today
         mock_eia_fc.return_value = (None, None)
-        result = check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "")
-        assert result == (None, None)
+        assert check_grid.get_forecast("CISO", 250, PROVIDER_EIA, "") == (None, None)
         mock_gs.assert_not_called()
 
 
@@ -4882,47 +3967,39 @@ class TestGetForecastEiaKey:
 # ---------------------------------------------------------------------------
 
 
+@mock.patch("check_grid.trigger_workflow")
+@mock.patch("check_grid.write_job_summary")
+@mock.patch("check_grid.set_output")
 class TestEmitGreenResult:
-    @mock.patch("check_grid.trigger_workflow")
-    def test_sets_grid_clean_and_co2_saved(self, mock_trigger):
-        outputs = {}
-
-        def _capture(name, value):
-            outputs[name] = value
-
-        with mock.patch("check_grid.set_output", side_effect=_capture):
-            with mock.patch("check_grid.write_job_summary") as mock_summary:
-                # Low intensity vs global average produces positive savings
-                check_grid._emit_green_result(
-                    "CISO", 50, None, 250, False, "", "", "", "main", "", "", "run-1"
-                )
-
-        assert outputs["grid_clean"] == "true"
-        assert outputs["carbon_intensity"] == "50"
-        assert "co2_saved_grams" in outputs
-        assert float(outputs["co2_saved_grams"]) > 0
+    def test_sets_grid_clean_and_co2_saved(self, mock_output, mock_summary, mock_trigger):
+        # Low intensity vs global average produces positive savings
+        check_grid._emit_green_result(
+            "CISO", 50, None, 250, False, "", "", "", "main", "", "", "run-1"
+        )
+        out = outputs_of(mock_output)
+        assert out["grid_clean"] == "true"
+        assert out["carbon_intensity"] == "50"
+        assert "co2_saved_grams" in out
+        assert float(out["co2_saved_grams"]) > 0
         mock_summary.assert_called_once()
         # Inline mode (no dispatch) should not trigger a workflow
         mock_trigger.assert_not_called()
 
-    @mock.patch("check_grid.trigger_workflow")
-    def test_dispatch_mode_triggers_workflow(self, mock_trigger):
-        with mock.patch("check_grid.set_output"):
-            with mock.patch("check_grid.write_job_summary"):
-                check_grid._emit_green_result(
-                    "CISO",
-                    50,
-                    None,
-                    250,
-                    True,
-                    "owner/repo",
-                    "wf.yml",
-                    "tok",
-                    "main",
-                    "",
-                    "",
-                    "run-1",
-                )
+    def test_dispatch_mode_triggers_workflow(self, _mock_output, _mock_summary, mock_trigger):
+        check_grid._emit_green_result(
+            "CISO",
+            50,
+            None,
+            250,
+            True,
+            "owner/repo",
+            "wf.yml",
+            "tok",
+            "main",
+            "",
+            "",
+            "run-1",
+        )
         mock_trigger.assert_called_once_with("owner/repo", "wf.yml", "tok", "main")
 
 
@@ -4950,32 +4027,24 @@ _AESO_HTML = (
 
 
 class TestCanadaProvider:
-    def test_detect_provider(self):
-        for z in ("CA-ON", "CA-AB", "CA-QC"):
-            assert detect_provider(z) == PROVIDER_CANADA
-
     def test_quebec_is_fixed_estimate(self):
-        is_green, intensity = canada.check_carbon_intensity("CA-QC", 250)
-        assert is_green is True
-        assert intensity == 30
+        assert_verdict(canada.check_carbon_intensity("CA-QC", 250), True, 30)
 
+    @pytest.mark.parametrize(
+        ("zone", "body", "expected"),
+        [
+            # nuclear 8000*12 + hydro 4000*24 + gas 1000*490 + wind 500*12
+            # = 96000 + 96000 + 490000 + 6000 = 688000 / 13500 = 51
+            pytest.param("CA-ON", _IESO_XML, (True, 51), id="ieso_ontario_parse"),
+            # coal 800*820 + gas 1500*490 + wind 300*12 = 656000+735000+3600
+            # = 1394600 / 2600 = 536
+            pytest.param("CA-AB", _AESO_HTML, (False, 536), id="aeso_alberta_parse"),
+        ],
+    )
     @mock.patch("providers.base._SESSION.get")
-    def test_ieso_ontario_parse(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=200, text=_IESO_XML)
-        is_green, intensity = canada.check_carbon_intensity("CA-ON", 250)
-        # nuclear 8000*12 + hydro 4000*24 + gas 1000*490 + wind 500*12
-        # = 96000 + 96000 + 490000 + 6000 = 688000 / 13500 = 51
-        assert intensity == 51
-        assert is_green is True
-
-    @mock.patch("providers.base._SESSION.get")
-    def test_aeso_alberta_parse(self, mock_get):
-        mock_get.return_value = mock.Mock(status_code=200, text=_AESO_HTML)
-        is_green, intensity = canada.check_carbon_intensity("CA-AB", 250)
-        # coal 800*820 + gas 1500*490 + wind 300*12 = 656000+735000+3600
-        # = 1394600 / 2600 = 536
-        assert intensity == 536
-        assert is_green is False
+    def test_parses_live_mix(self, mock_get, zone, body, expected):
+        mock_get.return_value = mock.Mock(status_code=200, text=body)
+        assert_verdict(canada.check_carbon_intensity(zone, 250), *expected)
 
     @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
@@ -5014,18 +4083,13 @@ _TAIPOWER_JSON = (
 
 
 class TestTaiwanProvider:
-    def test_detect_provider(self):
-        assert detect_provider("TW") == PROVIDER_TAIWAN
-
     @mock.patch("providers.base._SESSION.get")
     def test_parse_generation(self, mock_get):
         mock_get.return_value = mock.Mock(status_code=200, content=_TAIPOWER_JSON)
-        is_green, intensity = taiwan.check_carbon_intensity("TW", 250)
         # coal 5000*820 + lng 3000*490 + nuclear 2000*12 + solar 1000*45
         # = 4100000 + 1470000 + 24000 + 45000 = 5639000 / 11000 = 513
         # (the "Load" row is skipped as storage charging)
-        assert intensity == 513
-        assert is_green is False
+        assert_verdict(taiwan.check_carbon_intensity("TW", 250), False, 513)
 
     @mock.patch("providers.base._SESSION.get")
     def test_api_failure_returns_none(self, mock_get):
@@ -5035,11 +4099,17 @@ class TestTaiwanProvider:
     def test_unknown_zone(self):
         assert taiwan.check_carbon_intensity("TW-XX", 250) == (None, None)
 
-    def test_fuel_mapping(self):
-        assert taiwan._fuel_of("Coal") == "coal"
-        assert taiwan._fuel_of("LNG") == "natural_gas"
-        assert taiwan._fuel_of("Energy Storage Load") is None
-        assert taiwan._fuel_of("Energy Storage") == "battery"
+    @pytest.mark.parametrize(
+        ("label", "fuel"),
+        [
+            ("Coal", "coal"),
+            ("LNG", "natural_gas"),
+            ("Energy Storage Load", None),
+            ("Energy Storage", "battery"),
+        ],
+    )
+    def test_fuel_mapping(self, label, fuel):
+        assert taiwan._fuel_of(label) == fuel
 
     def test_no_forecast_or_trend(self):
         assert taiwan.get_forecast("TW", 250) == (None, None)
@@ -5053,70 +4123,61 @@ class TestTaiwanProvider:
 
 class TestFlowTracing:
     def test_solver_attributes_imports(self):
-        from providers import flow_tracing as ft
-
         # IT-NO imports clean FR nuclear -> reads cleaner. NL imports DE coal -> dirtier
         prod_mw = {"FR": 50000, "IT-NO": 20000, "DE": 60000, "NL": 10000}
         prod_int = {"FR": 55, "IT-NO": 380, "DE": 420, "NL": 350}
         flows = {("FR", "IT-NO"): 4000, ("DE", "NL"): 8000}
-        cons = ft.trace_consumption_intensity(prod_mw, prod_int, flows)
+        cons = flow_tracing.trace_consumption_intensity(prod_mw, prod_int, flows)
         assert cons["FR"] == 55.0  # exporter unchanged
         assert cons["IT-NO"] < prod_int["IT-NO"]  # importing clean -> lower
         assert cons["NL"] > prod_int["NL"]  # importing dirty -> higher
 
     def test_solver_empty(self):
-        from providers import flow_tracing as ft
-
-        assert ft.trace_consumption_intensity({}, {}, {}) == {}
+        assert flow_tracing.trace_consumption_intensity({}, {}, {}) == {}
 
     def test_solver_ignores_unknown_and_zero_flows(self):
-        from providers import flow_tracing as ft
-
         prod_mw = {"FR": 1000}
         prod_int = {"FR": 50}
         # flow from an unknown zone and a zero flow are both ignored
         flows = {("XX", "FR"): 500, ("FR", "FR"): 0}
-        assert ft.trace_consumption_intensity(prod_mw, prod_int, flows) == {"FR": 50.0}
+        assert flow_tracing.trace_consumption_intensity(prod_mw, prod_int, flows) == {"FR": 50.0}
 
+    @pytest.mark.parametrize(
+        ("zone", "traced", "is_green", "intensity", "expected"),
+        [
+            pytest.param(
+                "IT-NO", {"IT-NO": 326.0}, False, 380, (False, 326), id="traced_zone_overridden"
+            ),
+            pytest.param("FR", {}, True, 55, (True, 55), id="no_value_falls_back"),
+            # production 280 (dirty), consumption 240 (green) at threshold 250
+            pytest.param("FR", {"FR": 240.0}, False, 280, (True, 240), id="flips_verdict_to_green"),
+        ],
+    )
     @mock.patch("providers.flow_tracing.compute_consumption_intensities")
-    def test_apply_override_traced_zone(self, mock_compute):
-        mock_compute.return_value = {"IT-NO": 326.0}
-        g, i = check_grid._apply_consumption_intensity("IT-NO", 250, False, 380, "tok")
-        assert i == 326 and g is False
+    def test_apply_override(self, mock_compute, zone, traced, is_green, intensity, expected):
+        mock_compute.return_value = traced
+        result = check_grid._apply_consumption_intensity(zone, 250, is_green, intensity, "tok")
+        assert_verdict(result, *expected)
 
     def test_apply_override_untraced_zone_unchanged(self):
-        g, i = check_grid._apply_consumption_intensity("CISO", 250, True, 100, "tok")
-        assert (g, i) == (True, 100)
-
-    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
-    def test_apply_override_no_value_falls_back(self, mock_compute):
-        mock_compute.return_value = {}  # computation produced nothing for FR
-        g, i = check_grid._apply_consumption_intensity("FR", 250, True, 55, "tok")
-        assert (g, i) == (True, 55)
-
-    @mock.patch("providers.flow_tracing.compute_consumption_intensities")
-    def test_apply_override_flips_verdict_to_green(self, mock_compute):
-        # production 280 (dirty), consumption 240 (green) at threshold 250
-        mock_compute.return_value = {"FR": 240.0}
-        g, i = check_grid._apply_consumption_intensity("FR", 250, False, 280, "tok")
-        assert i == 240 and g is True
+        result = check_grid._apply_consumption_intensity("CISO", 250, True, 100, "tok")
+        assert_verdict(result, True, 100)
 
     @mock.patch("providers.flow_tracing.compute_consumption_intensities")
     @mock.patch("check_grid.check_carbon_intensity")
     @mock.patch("check_grid.set_output")
     @mock.patch("check_grid.write_job_summary")
     def test_main_consumption_mode_end_to_end(
-        self, mock_summary, mock_output, mock_check, mock_compute
+        self, _mock_summary, mock_output, mock_check, mock_compute
     ):
         mock_check.return_value = (False, 380)  # FR production dirty
         mock_compute.return_value = {"FR": 240.0}  # consumption green
-        os.environ["GRID_ZONE"] = "FR"
-        os.environ["ENTSOE_TOKEN"] = "tok"
-        os.environ["CONSUMPTION_BASED"] = "true"
-        os.environ["WORKFLOW_ID"] = ""
+        os.environ.update(
+            GRID_ZONE="FR", ENTSOE_TOKEN="tok", CONSUMPTION_BASED="true", WORKFLOW_ID=""
+        )
 
         check_grid.main()
-        out = {c[0][0]: c[0][1] for c in mock_output.call_args_list}
+        out = outputs_of(mock_output)
         assert out["grid_clean"] == "true"
         assert out["carbon_intensity"] == "240"
 
@@ -5125,25 +4186,21 @@ class TestFlowTracing:
     @mock.patch("check_grid.set_output")
     @mock.patch("check_grid.write_job_summary")
     def test_main_consumption_off_uses_production(
-        self, mock_summary, mock_output, mock_check, mock_compute
+        self, _mock_summary, _mock_output, mock_check, mock_compute
     ):
         mock_check.return_value = (True, 90)
-        os.environ["GRID_ZONE"] = "FR"
-        os.environ["ENTSOE_TOKEN"] = "tok"
+        os.environ.update(GRID_ZONE="FR", ENTSOE_TOKEN="tok", WORKFLOW_ID="")
         os.environ.pop("CONSUMPTION_BASED", None)  # default off
-        os.environ["WORKFLOW_ID"] = ""
 
         check_grid.main()
         mock_compute.assert_not_called()  # never computed when mode is off
 
     def test_flow_parse_latest(self):
-        from providers.entsoe import _parse_flow_latest
-
         xml = (
             "<TimeSeries><Period>"
             "<Point><position>1</position><quantity>1200</quantity></Point>"
             "<Point><position>2</position><quantity>1500</quantity></Point>"
             "</Period></TimeSeries>"
         )
-        assert _parse_flow_latest(xml) == 1500.0
-        assert _parse_flow_latest("") is None
+        assert entsoe._parse_flow_latest(xml) == 1500.0
+        assert entsoe._parse_flow_latest("") is None
