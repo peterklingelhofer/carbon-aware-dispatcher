@@ -57,7 +57,7 @@ def append(rows):
     fresh = [r for r in rows if (r[0], r[1]) not in seen]
     with open(LOG, "a", newline="") as fh:
         writer = csv.writer(fh)
-        if not seen:
+        if not fh.tell():  # new or empty file, so it still needs the header
             writer.writerow(HEADER)
         writer.writerows(fresh)
     return len(fresh)
