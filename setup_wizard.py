@@ -39,23 +39,8 @@ from providers import (
     PROVIDER_RTE,
     PROVIDER_TAIWAN,
     PROVIDER_UK,
-    aemo,
-    cammesa,
-    canada,
     detect_provider,
-    eia,
-    eirgrid,
-    electricity_maps,
-    energinet,
-    energy_charts,
     entsoe,
-    eskom,
-    grid_india,
-    ons_brazil,
-    open_meteo,
-    rte,
-    taiwan,
-    uk,
 )
 
 _PROVIDER_NAMES = {
@@ -75,25 +60,6 @@ _PROVIDER_NAMES = {
     PROVIDER_ENTSOE: "ENTSO-E (EU, free token)",
     PROVIDER_OPEN_METEO: "Open-Meteo estimate (free)",
     PROVIDER_ELECTRICITY_MAPS: "Electricity Maps (free token)",
-}
-
-_PROVIDER_MODULES = {
-    PROVIDER_UK: uk,
-    PROVIDER_EIA: eia,
-    PROVIDER_AEMO: aemo,
-    PROVIDER_GRID_INDIA: grid_india,
-    PROVIDER_ONS_BRAZIL: ons_brazil,
-    PROVIDER_ESKOM: eskom,
-    PROVIDER_CANADA: canada,
-    PROVIDER_CAMMESA: cammesa,
-    PROVIDER_TAIWAN: taiwan,
-    PROVIDER_EIRGRID: eirgrid,
-    PROVIDER_ENERGINET: energinet,
-    PROVIDER_RTE: rte,
-    PROVIDER_ENERGY_CHARTS: energy_charts,
-    PROVIDER_ENTSOE: entsoe,
-    PROVIDER_OPEN_METEO: open_meteo,
-    PROVIDER_ELECTRICITY_MAPS: electricity_maps,
 }
 
 
@@ -132,7 +98,7 @@ def test_zone(zone, eia_api_key="", emaps_api_key="", entsoe_token=""):
             emaps_api_key=emaps_api_key,
             entsoe_token=entsoe_token,
         )
-        _is_green, intensity = _PROVIDER_MODULES[provider].check_carbon_intensity(
+        _is_green, intensity = check_grid._PROVIDER_MODULES[provider].check_carbon_intensity(
             zone, 9999, *extra
         )
         if intensity is not None:
