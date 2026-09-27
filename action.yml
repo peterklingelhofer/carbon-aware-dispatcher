@@ -54,7 +54,7 @@ inputs:
     required: false
     default: '0'
   enable_forecast:
-    description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts. Global zones require an Electricity Maps token.'
+    description: 'If true, fetch carbon intensity forecast when the grid is dirty. UK zones get free 48h forecasts. US zones require a GridStatus API key for forecasts. EU zones use ENTSO-E day-ahead data when entsoe_token is set. Other zones get a keyless Open-Meteo weather estimate or a time-of-day heuristic.'
     required: false
     default: 'false'
   runner_provider:
