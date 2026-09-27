@@ -360,7 +360,7 @@ def cmd_forecast_accuracy(args):
             doc = forecast_log.empty_log()
 
     now = datetime.now(timezone.utc)
-    measured: list = []
+    measured = []
     with contextlib.redirect_stdout(sys.stderr):
         check_grid.check_multiple_zones(
             [{"zone": first, "runner_label": None}],
@@ -1320,7 +1320,7 @@ def cmd_sample_curves(args):
 
     zones = check_grid.parse_zones_input(args.zones)
     tok = _tokens(args)
-    measured: list = []
+    measured = []
     check_grid.check_multiple_zones(
         zones, 10**12, tok["eia"], tok["emaps"], tok["entsoe"], collect=measured
     )
