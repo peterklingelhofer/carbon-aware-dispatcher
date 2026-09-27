@@ -1099,23 +1099,14 @@ def _emit_budget_outputs(summary):
         return
 
     mtd = float(summary.get("emitted_mtd", 0))
-    used_pct = round(mtd / budget * 100, 1)
-    remaining = round(max(0.0, budget - mtd), 1)
-    exceeded = mtd >= budget
-    state = "exceeded" if exceeded else ("warning" if used_pct >= 80 else "ok")
+    status = ledger.budget_status(mtd, budget)
+    exceeded = status["state"] == "exceeded"
 
-    set_output("budget_used_pct", str(used_pct))
-    set_output("budget_remaining_grams", str(remaining))
+    set_output("budget_used_pct", str(status["used_pct"]))
+    set_output("budget_remaining_grams", str(status["remaining"]))
     set_output("budget_exceeded", "true" if exceeded else "false")
-    set_output("budget_state", state)
-    _budget_summary = {
-        "budget": budget,
-        "mtd": mtd,
-        "used_pct": used_pct,
-        "remaining": remaining,
-        "exceeded": exceeded,
-        "state": state,
-    }
+    set_output("budget_state", status["state"])
+    _budget_summary = {"budget": budget, "mtd": mtd, "exceeded": exceeded, **status}
     if exceeded:
         print(
             f"::warning::Carbon budget exceeded: {mtd:.0f} of {budget:.0f} gCO2eq this "

@@ -135,10 +135,4 @@ def _budget_status(env, data, today):
         return None
     if budget <= 0:
         return None
-    mtd = ledger.month_to_date_emitted(data, today.strftime("%Y-%m"))
-    used_pct = round(mtd / budget * 100, 1)
-    return {
-        "used_pct": used_pct,
-        "remaining": round(max(0.0, budget - mtd), 1),
-        "state": "exceeded" if mtd >= budget else ("warning" if used_pct >= 80 else "ok"),
-    }
+    return ledger.budget_status(ledger.month_to_date_emitted(data, today.strftime("%Y-%m")), budget)

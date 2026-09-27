@@ -277,6 +277,18 @@ def curve_profile(data, zone, min_hours=6):
     return _cell_profile(data, "curve", zone, min_hours)
 
 
+def budget_status(emitted_grams, budget_grams):
+    """Share of a monthly budget used, grams left, and the state: ok, warning from 80%, exceeded."""
+    used_pct = round(emitted_grams / budget_grams * 100, 1)
+    return {
+        "used_pct": used_pct,
+        "remaining": round(max(0.0, budget_grams - emitted_grams), 1),
+        "state": "exceeded"
+        if emitted_grams >= budget_grams
+        else ("warning" if used_pct >= 80 else "ok"),
+    }
+
+
 def month_to_date_emitted(data, month_prefix):
     """Sum emitted gCO2 for history days within the given YYYY-MM prefix."""
     total = 0.0
