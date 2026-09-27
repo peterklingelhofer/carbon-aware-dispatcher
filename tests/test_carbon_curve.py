@@ -1,8 +1,18 @@
 """Tests for the hour-of-day carbon curve."""
 
+import json
 from unittest import mock
 
 import carbon_curve
+import ledger
+
+
+def _curve_doc(zone, base, hours=6):
+    """A ledger doc sampling `hours` distinct hours for zone at intensity base + hour."""
+    data = ledger.empty_ledger()
+    for hour in range(hours):
+        data = ledger.merge_curve_sample(data, zone, hour, base + hour)
+    return data
 
 
 class TestProfileFromSamples:
@@ -78,13 +88,13 @@ class TestSavings:
 
 class TestCleanestWindow:
     def test_picks_lowest_block(self):
-        profile = {h: 100 for h in range(24)}
+        profile = dict.fromkeys(range(24), 100)
         profile.update({11: 50, 12: 40, 13: 45})  # cleanest block around noon
         start, avg = carbon_curve.cleanest_window(profile, 3)
         assert start == 11 and avg < 50
 
     def test_wraps_midnight(self):
-        profile = {h: 100 for h in range(24)}
+        profile = dict.fromkeys(range(24), 100)
         profile.update({23: 10, 0: 10, 1: 10})  # cleanest block spans midnight
         start, _ = carbon_curve.cleanest_window(profile, 3)
         assert start == 23
@@ -165,10 +175,6 @@ class TestWeekday:
         assert carbon_curve.build_weekday_profile("FR") == {}
 
     def test_build_weekday_uses_community_fallback(self, monkeypatch, tmp_path):
-        import json
-
-        import ledger
-
         monkeypatch.delenv("LEDGER", raising=False)
         data = ledger.empty_ledger()
         for wd in range(4):
@@ -204,8 +210,9 @@ class TestBuildProfile:
         assert carbon_curve.build_profile("GB") == {12: 82.0}
 
     def test_non_gb_uses_ledger_when_available(self, monkeypatch):
-        monkeypatch.setattr(carbon_curve, "ledger_profile", lambda z: {h: 100.0 for h in range(8)})
-        assert carbon_curve.build_profile("FR") == {h: 100.0 for h in range(8)}
+        flat = dict.fromkeys(range(8), 100.0)
+        monkeypatch.setattr(carbon_curve, "ledger_profile", lambda z: flat)
+        assert carbon_curve.build_profile("FR") == flat
 
     def test_non_gb_none_without_ledger(self, monkeypatch):
         monkeypatch.setattr(carbon_curve, "ledger_profile", lambda z: {})
@@ -218,13 +225,7 @@ class TestCommunityProfile:
         assert carbon_curve.community_profile("FR") == {}
 
     def test_reads_pooled_file(self, monkeypatch, tmp_path):
-        import json
-
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        data = _curve_doc("FR", 100)
         path = tmp_path / "community.json"
         path.write_text(json.dumps({"curve": data["curve"]}))
         monkeypatch.setenv("COMMUNITY_CURVE", str(path))
@@ -232,11 +233,7 @@ class TestCommunityProfile:
         assert len(prof) == 6 and prof[3] == 103.0
 
     def test_reads_pooled_url(self, monkeypatch):
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
+        data = _curve_doc("FR", 100)
         monkeypatch.setenv("COMMUNITY_CURVE", "https://example.com/pool.json")
         with mock.patch("carbon_curve.base.request", return_value={"curve": data["curve"]}) as req:
             prof = carbon_curve.community_profile("FR")
@@ -249,14 +246,8 @@ class TestCommunityProfile:
             assert carbon_curve.community_profile("FR") == {}
 
     def test_build_profile_uses_community_fallback(self, monkeypatch, tmp_path):
-        import json
-
-        import ledger
-
         monkeypatch.delenv("LEDGER", raising=False)  # no local ledger
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, "JP", hour, 400 + hour)
+        data = _curve_doc("JP", 400)
         path = tmp_path / "community.json"
         path.write_text(json.dumps({"curve": data["curve"]}))
         monkeypatch.setenv("COMMUNITY_CURVE", str(path))
@@ -271,15 +262,8 @@ class TestLedgerProfile:
         assert carbon_curve.ledger_profile("FR") == {}
 
     def test_reads_file_ledger(self, monkeypatch, tmp_path):
-        import json
-
-        import ledger
-
-        data = ledger.empty_ledger()
-        for hour in range(6):
-            data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour)
         path = tmp_path / "ledger.json"
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(_curve_doc("FR", 100)))
         monkeypatch.setenv("LEDGER", f"file:{path}")
         prof = carbon_curve.ledger_profile("FR")
         assert len(prof) == 6 and prof[3] == 103.0

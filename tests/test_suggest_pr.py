@@ -3,25 +3,25 @@
 import base64
 from unittest import mock
 
+import pytest
+
 import suggest_pr
 
 
 class TestSwapCronHour:
-    def test_simple_daily(self):
-        assert suggest_pr.swap_cron_hour("0 14 * * *", 3) == "0 3 * * *"
-
-    def test_preserves_minute(self):
-        assert suggest_pr.swap_cron_hour("30 9 * * *", 23) == "30 23 * * *"
-
-    def test_none_when_already_that_hour(self):
-        assert suggest_pr.swap_cron_hour("0 3 * * *", 3) is None
-
-    def test_none_for_non_single_hour(self):
-        assert suggest_pr.swap_cron_hour("*/15 * * * *", 3) is None
-        assert suggest_pr.swap_cron_hour("0 */6 * * *", 3) is None
-
-    def test_none_for_malformed(self):
-        assert suggest_pr.swap_cron_hour("0 14 * *", 3) is None
+    @pytest.mark.parametrize(
+        ("cron", "hour", "expected"),
+        [
+            ("0 14 * * *", 3, "0 3 * * *"),
+            ("30 9 * * *", 23, "30 23 * * *"),  # minute preserved
+            ("0 3 * * *", 3, None),  # already that hour
+            ("*/15 * * * *", 3, None),  # not a single fixed hour
+            ("0 */6 * * *", 3, None),
+            ("0 14 * *", 3, None),  # malformed
+        ],
+    )
+    def test_swap(self, cron, hour, expected):
+        assert suggest_pr.swap_cron_hour(cron, hour) == expected
 
 
 class TestRewriteCrons:
@@ -42,23 +42,19 @@ class TestRewriteCrons:
 
 
 class TestRunsPerDay:
-    def test_hourly(self):
-        assert suggest_pr.runs_per_day("17 * * * *") == 24
-
-    def test_every_15_min(self):
-        assert suggest_pr.runs_per_day("*/15 * * * *") == 96  # 4/hr x 24
-
-    def test_daily(self):
-        assert suggest_pr.runs_per_day("0 3 * * *") == 1
-
-    def test_weekly_scaled(self):
-        assert suggest_pr.runs_per_day("0 13 * * 1") == round(1 / 7, 2)
-
-    def test_monthly_scaled(self):
-        assert suggest_pr.runs_per_day("0 0 1 * *") == round(1 / 30, 2)
-
-    def test_malformed(self):
-        assert suggest_pr.runs_per_day("not a cron") == 0.0
+    @pytest.mark.parametrize(
+        ("cron", "expected"),
+        [
+            ("17 * * * *", 24),
+            ("*/15 * * * *", 96),  # 4/hr x 24
+            ("0 3 * * *", 1),
+            ("0 13 * * 1", round(1 / 7, 2)),  # weekly, scaled
+            ("0 0 1 * *", round(1 / 30, 2)),  # monthly, scaled
+            ("not a cron", 0.0),
+        ],
+    )
+    def test_runs_per_day(self, cron, expected):
+        assert suggest_pr.runs_per_day(cron) == expected
 
 
 class TestSavingsLine:

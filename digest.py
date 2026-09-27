@@ -19,27 +19,17 @@ ISSUE_TITLE = "Carbon-Aware Dispatcher: impact digest"
 SPARK = "▁▂▃▄▅▆▇█"
 
 
-def _headers(token):
-    return base.github_headers(token)
-
-
-def _recent_days(today, days):
-    """Return YYYY-MM-DD strings for the last `days` days ending at today."""
-    return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
-
-
 def summarize_period(data, days, today):
     """Summarize the last `days` days of the ledger (pure).
 
     Returns a dict with saved_g, emitted_g, runs, and a per-day saved series
     aligned oldest-to-newest.
     """
-    wanted = _recent_days(today, days)
     by_day = {h.get("date"): h for h in (data.get("history") or [])}
     series = []
     saved = emitted = runs = 0.0
-    for day in wanted:
-        entry = by_day.get(day)
+    for i in range(days - 1, -1, -1):
+        entry = by_day.get((today - timedelta(days=i)).strftime("%Y-%m-%d"))
         day_saved = float(entry.get("saved_g", 0)) if entry else 0.0
         series.append(day_saved)
         saved += day_saved
@@ -56,14 +46,10 @@ def summarize_period(data, days, today):
 
 def sparkline(series):
     """Render a numeric series as a unicode sparkline."""
-    if not series or max(series) <= 0:
+    hi = max(series, default=0)
+    if hi <= 0:
         return SPARK[0] * len(series)
-    hi = max(series)
-    out = []
-    for v in series:
-        idx = int(v / hi * (len(SPARK) - 1)) if hi else 0
-        out.append(SPARK[idx])
-    return "".join(out)
+    return "".join(SPARK[int(v / hi * (len(SPARK) - 1))] for v in series)
 
 
 def render_issue_body(week, month, lifetime_msg, budget, today):
@@ -94,15 +80,10 @@ def render_issue_body(week, month, lifetime_msg, budget, today):
     return "\n".join(lines)
 
 
-def _find_existing_issue(repo, token):
+def _find_existing_issue(repo, headers):
     url = f"{API}/repos/{repo}/issues?state=open&per_page=100"
-    issues = base.request(url, headers=_headers(token), parse="json")
-    if not issues:
-        return None
-    for issue in issues:
-        if MARKER in (issue.get("body") or ""):
-            return issue.get("number")
-    return None
+    issues = base.request(url, headers=headers, parse="json") or []
+    return next((i.get("number") for i in issues if MARKER in (i.get("body") or "")), None)
 
 
 def post_issue(repo, token, title, body):
@@ -110,21 +91,13 @@ def post_issue(repo, token, title, body):
     if not token or not repo:
         print("::warning::digest needs github_token and a repository, skipping")
         return False
-    existing = _find_existing_issue(repo, token)
+    headers = base.github_headers(token)
+    existing = _find_existing_issue(repo, headers)
     if existing:
-        url = f"{API}/repos/{repo}/issues/{existing}"
-        result = base.request(
-            url, method="PATCH", headers=_headers(token), json_body={"body": body}, parse="json"
-        )
+        url, method, payload = f"{API}/repos/{repo}/issues/{existing}", "PATCH", {"body": body}
     else:
-        url = f"{API}/repos/{repo}/issues"
-        result = base.request(
-            url,
-            method="POST",
-            headers=_headers(token),
-            json_body={"title": title, "body": body},
-            parse="json",
-        )
+        url, method, payload = f"{API}/repos/{repo}/issues", "POST", {"title": title, "body": body}
+    result = base.request(url, method=method, headers=headers, json_body=payload, parse="json")
     if result is None:
         print("::warning::Failed to post carbon digest issue")
         return False
@@ -132,22 +105,11 @@ def post_issue(repo, token, title, body):
     return True
 
 
-def _load_ledger_data(config, gist_token):
-    """Read the ledger contents for digesting (gist or file), or None."""
-    backend, location = ledger.parse_config(config)
-    if not backend or not location:
-        print("::warning::digest mode needs the ledger input, nothing to summarize")
-        return None
-    if backend == "file":
-        return ledger._load_file(location)
-    data, _ = ledger._gist_read(location, gist_token)
-    return data
-
-
 def run(env):
     """Entry point for digest mode. env is a mapping (os.environ)."""
-    data = _load_ledger_data(env.get("LEDGER", ""), env.get("GIST_TOKEN", ""))
+    data = ledger.load(env.get("LEDGER", ""), env.get("GIST_TOKEN", ""))
     if data is None:
+        print("::warning::digest mode needs the ledger input, nothing to summarize")
         return False
 
     today = datetime.now(timezone.utc).date()

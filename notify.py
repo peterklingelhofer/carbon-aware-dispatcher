@@ -24,10 +24,8 @@ def parse_events(raw):
     Defaults to {"green", "exceeded"} (the actionable events) when empty.
     Unknown tokens are ignored.
     """
-    if not raw:
-        return {"green", "exceeded"}
-    events = {e.strip().lower() for e in raw.split(",") if e.strip()}
-    return {e for e in events if e in VALID_EVENTS} or {"green", "exceeded"}
+    events = {e.strip().lower() for e in (raw or "").split(",")} & VALID_EVENTS
+    return events or {"green", "exceeded"}
 
 
 def should_notify(events, is_green, budget_exceeded):
@@ -36,11 +34,7 @@ def should_notify(events, is_green, budget_exceeded):
         return True
     if budget_exceeded and "exceeded" in events:
         return True
-    if is_green and "green" in events:
-        return True
-    if (not is_green) and "dirty" in events:
-        return True
-    return False
+    return ("green" if is_green else "dirty") in events
 
 
 def build_message(zone, intensity, is_green, tier, budget, dry_run=False):
@@ -49,8 +43,7 @@ def build_message(zone, intensity, is_green, tier, budget, dry_run=False):
         verdict = "would dispatch (grid clean)" if is_green else "would defer (grid dirty)"
     else:
         verdict = "grid clean, dispatching" if is_green else "grid dirty, deferring"
-    parts = [f"Carbon-Aware Dispatcher: {verdict}"]
-    parts.append(f"zone {zone}")
+    parts = [f"Carbon-Aware Dispatcher: {verdict}", f"zone {zone}"]
     if intensity is not None:
         parts.append(f"{intensity} gCO2eq/kWh")
     if tier and tier != "unknown":

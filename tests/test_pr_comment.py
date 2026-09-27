@@ -1,11 +1,17 @@
 """Tests for the sticky pull-request comment."""
 
 import json
-import os
-import tempfile
 from unittest import mock
 
+import pytest
+
 import pr_comment
+
+
+def _event_file(tmp_path, payload):
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(payload))
+    return str(path)
 
 
 class TestBuildComment:
@@ -77,34 +83,21 @@ class TestBuildComment:
 
 
 class TestPrNumberFromEvent:
-    def test_pull_request_number(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"pull_request": {"number": 42}}, f)
-            path = f.name
-        try:
-            assert pr_comment.pr_number_from_event(path) == 42
-        finally:
-            os.unlink(path)
-
-    def test_issue_fallback(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"issue": {"number": 7}}, f)
-            path = f.name
-        try:
-            assert pr_comment.pr_number_from_event(path) == 7
-        finally:
-            os.unlink(path)
+    @pytest.mark.parametrize(
+        ("payload", "number"),
+        [({"pull_request": {"number": 42}}, 42), ({"issue": {"number": 7}}, 7)],  # issue fallback
+    )
+    def test_reads_number(self, tmp_path, payload, number):
+        assert pr_comment.pr_number_from_event(_event_file(tmp_path, payload)) == number
 
     def test_missing_file(self):
         assert pr_comment.pr_number_from_event("/no/such/file.json") is None
 
 
 class TestPostComment:
-    def _event_file(self, number=42):
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        json.dump({"pull_request": {"number": number}}, f)
-        f.close()
-        return f.name
+    @pytest.fixture
+    def event_path(self, tmp_path):
+        return _event_file(tmp_path, {"pull_request": {"number": 42}})
 
     def test_skips_non_pr_event(self):
         assert pr_comment.post_comment("o/r", "tok", "push", "", "body") is False
@@ -113,38 +106,26 @@ class TestPostComment:
         assert pr_comment.post_comment("o/r", "", "pull_request", "", "body") is False
 
     @mock.patch("pr_comment.base.request")
-    def test_creates_new_comment_when_none_exists(self, mock_request):
-        path = self._event_file(42)
-        try:
-            # find_existing -> empty list, POST -> created
-            mock_request.side_effect = [[], {"id": 1}]
-            ok = pr_comment.post_comment("o/r", "tok", "pull_request", path, "hello")
-            assert ok is True
-            post_call = mock_request.call_args_list[1]
-            assert post_call.kwargs["method"] == "POST"
-            assert "/issues/42/comments" in post_call.args[0]
-        finally:
-            os.unlink(path)
+    def test_creates_new_comment_when_none_exists(self, mock_request, event_path):
+        # find_existing -> empty list, POST -> created
+        mock_request.side_effect = [[], {"id": 1}]
+        ok = pr_comment.post_comment("o/r", "tok", "pull_request", event_path, "hello")
+        assert ok is True
+        post_call = mock_request.call_args_list[1]
+        assert post_call.kwargs["method"] == "POST"
+        assert "/issues/42/comments" in post_call.args[0]
 
     @mock.patch("pr_comment.base.request")
-    def test_updates_existing_comment(self, mock_request):
-        path = self._event_file(42)
-        try:
-            existing = [{"id": 99, "body": f"old {pr_comment.MARKER}"}]
-            mock_request.side_effect = [existing, {"id": 99}]
-            ok = pr_comment.post_comment("o/r", "tok", "pull_request", path, "updated")
-            assert ok is True
-            patch_call = mock_request.call_args_list[1]
-            assert patch_call.kwargs["method"] == "PATCH"
-            assert "/issues/comments/99" in patch_call.args[0]
-        finally:
-            os.unlink(path)
+    def test_updates_existing_comment(self, mock_request, event_path):
+        existing = [{"id": 99, "body": f"old {pr_comment.MARKER}"}]
+        mock_request.side_effect = [existing, {"id": 99}]
+        ok = pr_comment.post_comment("o/r", "tok", "pull_request", event_path, "updated")
+        assert ok is True
+        patch_call = mock_request.call_args_list[1]
+        assert patch_call.kwargs["method"] == "PATCH"
+        assert "/issues/comments/99" in patch_call.args[0]
 
     @mock.patch("pr_comment.base.request")
-    def test_write_failure_returns_false(self, mock_request):
-        path = self._event_file(42)
-        try:
-            mock_request.side_effect = [[], None]
-            assert pr_comment.post_comment("o/r", "tok", "pull_request", path, "x") is False
-        finally:
-            os.unlink(path)
+    def test_write_failure_returns_false(self, mock_request, event_path):
+        mock_request.side_effect = [[], None]
+        assert pr_comment.post_comment("o/r", "tok", "pull_request", event_path, "x") is False

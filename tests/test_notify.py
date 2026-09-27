@@ -2,52 +2,52 @@
 
 from unittest import mock
 
+import pytest
+
 import notify
 
 
 class TestParseEvents:
-    def test_default_when_empty(self):
-        assert notify.parse_events("") == {"green", "exceeded"}
-
-    def test_parsed(self):
-        assert notify.parse_events("dirty, always") == {"dirty", "always"}
-
-    def test_unknown_tokens_dropped(self):
-        assert notify.parse_events("green,bogus") == {"green"}
-
-    def test_all_unknown_falls_back(self):
-        assert notify.parse_events("nonsense") == {"green", "exceeded"}
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("", {"green", "exceeded"}),  # default when empty
+            ("dirty, always", {"dirty", "always"}),
+            ("green,bogus", {"green"}),  # unknown tokens dropped
+            ("nonsense", {"green", "exceeded"}),  # all unknown falls back to the default
+        ],
+    )
+    def test_parse(self, raw, expected):
+        assert notify.parse_events(raw) == expected
 
 
 class TestShouldNotify:
-    def test_always(self):
-        assert notify.should_notify({"always"}, False, False) is True
-
-    def test_green_match(self):
-        assert notify.should_notify({"green"}, True, False) is True
-        assert notify.should_notify({"green"}, False, False) is False
-
-    def test_dirty_match(self):
-        assert notify.should_notify({"dirty"}, False, False) is True
-
-    def test_exceeded_match(self):
-        assert notify.should_notify({"exceeded"}, True, True) is True
-        assert notify.should_notify({"green"}, False, True) is False
+    @pytest.mark.parametrize(
+        ("events", "is_green", "exceeded", "expected"),
+        [
+            ({"always"}, False, False, True),
+            ({"green"}, True, False, True),
+            ({"green"}, False, False, False),
+            ({"dirty"}, False, False, True),
+            ({"exceeded"}, True, True, True),
+            ({"green"}, False, True, False),
+        ],
+    )
+    def test_matches_subscribed_events(self, events, is_green, exceeded, expected):
+        assert notify.should_notify(events, is_green, exceeded) is expected
 
 
 class TestFormatPayload:
-    def test_slack(self):
-        p = notify.format_payload("https://hooks.slack.com/services/xxx", "hi")
-        assert p == {"text": "hi"}
-
-    def test_discord(self):
-        p = notify.format_payload("https://discord.com/api/webhooks/xxx", "hi")
-        assert p == {"content": "hi"}
-
-    def test_generic(self):
-        p = notify.format_payload("https://example.com/hook", "hi")
-        assert p["message"] == "hi"
-        assert p["event"] == "carbon-aware-dispatcher"
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://hooks.slack.com/services/xxx", {"text": "hi"}),
+            ("https://discord.com/api/webhooks/xxx", {"content": "hi"}),
+            ("https://example.com/hook", {"event": "carbon-aware-dispatcher", "message": "hi"}),
+        ],
+    )
+    def test_shape_follows_destination(self, url, expected):
+        assert notify.format_payload(url, "hi") == expected
 
 
 class TestBuildMessage:

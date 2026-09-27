@@ -18,10 +18,6 @@ API = "https://api.github.com"
 PROJECT_URL = "https://github.com/peterklingelhofer/carbon-aware-dispatcher"
 
 
-def _headers(token):
-    return base.github_headers(token)
-
-
 def build_comment(
     *,
     is_green,
@@ -54,7 +50,6 @@ def build_comment(
     if intensity is not None:
         lines.append(f"| Carbon intensity | {intensity} gCO2eq/kWh |")
     if tier and tier != "unknown":
-        # The tier word (green/amber/red) is the status
         lines.append(f"| Carbon tier | {tier} |")
     lines.append(f"| Threshold | {max_carbon} gCO2eq/kWh |")
     if co2_saved and co2_saved > 0:
@@ -63,7 +58,6 @@ def build_comment(
     if lifetime:
         lines.append(f"| Lifetime CO2 saved | {lifetime} |")
     if budget:
-        # Percent used and the state word carry the status
         lines.append(
             f"| Carbon budget | {budget.get('used_pct', 0):.0f}% used"
             f" ({budget.get('state', '')}) |",
@@ -87,15 +81,10 @@ def pr_number_from_event(event_path):
     return number
 
 
-def _find_existing(repo, pr_number, token):
+def _find_existing(repo, pr_number, headers):
     url = f"{API}/repos/{repo}/issues/{pr_number}/comments?per_page=100"
-    comments = base.request(url, headers=_headers(token), parse="json")
-    if not comments:
-        return None
-    for c in comments:
-        if MARKER in (c.get("body") or ""):
-            return c.get("id")
-    return None
+    comments = base.request(url, headers=headers, parse="json") or []
+    return next((c.get("id") for c in comments if MARKER in (c.get("body") or "")), None)
 
 
 def post_comment(repo, token, event_name, event_path, body):
@@ -113,17 +102,15 @@ def post_comment(repo, token, event_name, event_path, body):
         print("::warning::Could not determine PR number from event, skipping PR comment")
         return False
 
-    existing = _find_existing(repo, pr_number, token)
+    headers = base.github_headers(token)
+    existing = _find_existing(repo, pr_number, headers)
     if existing:
-        url = f"{API}/repos/{repo}/issues/comments/{existing}"
-        result = base.request(
-            url, method="PATCH", headers=_headers(token), json_body={"body": body}, parse="json"
-        )
+        url, method = f"{API}/repos/{repo}/issues/comments/{existing}", "PATCH"
     else:
-        url = f"{API}/repos/{repo}/issues/{pr_number}/comments"
-        result = base.request(
-            url, method="POST", headers=_headers(token), json_body={"body": body}, parse="json"
-        )
+        url, method = f"{API}/repos/{repo}/issues/{pr_number}/comments", "POST"
+    result = base.request(
+        url, method=method, headers=headers, json_body={"body": body}, parse="json"
+    )
     if result is None:
         print("::warning::Failed to post PR comment")
         return False
