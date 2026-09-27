@@ -36,12 +36,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only dev tooling is declared. The framework adapters in integrations/ use a
-# lazy/optional import and run against whatever the user already has installed
-# (Airflow, Ray, Dagster, Prefect, Lightning, Transformers). You don't install
-# this package to GET those frameworks. You add a carbon gate to your existing
-# ones. So we don't declare them as extras, keeping the base install tiny and
-# avoiding locking/tracking their heavy dependency trees
+# Only dev tooling is declared. The adapters in integrations/ import their
+# framework lazily and run against the Airflow, Ray, Dagster, Prefect, Lightning
+# or Transformers install the user already has, and declaring those as extras
+# would pull their heavy dependency trees into uv.lock
 dev = [
     "pytest>=7",
     "pytest-cov",
@@ -79,38 +77,18 @@ only-include = [
     "integrations",
 ]
 
-[tool.hatch.build.targets.wheel.sources]
-"check_grid.py" = "check_grid.py"
-"cli.py" = "cli.py"
-"setup_wizard.py" = "setup_wizard.py"
-"ledger.py" = "ledger.py"
-"notify.py" = "notify.py"
-"digest.py" = "digest.py"
-"pr_comment.py" = "pr_comment.py"
-"carbon_curve.py" = "carbon_curve.py"
-"suggest_pr.py" = "suggest_pr.py"
-"marginal.py" = "marginal.py"
-"forecast_log.py" = "forecast_log.py"
-"citations_generated.py" = "citations_generated.py"
-"data/emission-factors.json" = "data/emission-factors.json"
-"providers" = "providers"
-"integrations" = "integrations"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-# Coverage is opt-in (run: pytest --cov) so the default run stays fast
-# and avoids a coverage subprocess hang seen in some sandboxed shells
-addopts = ""
 
 [tool.ruff]
-target-version = "py39"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "W"]
+select = ["E", "F", "I", "UP", "B", "W", "SIM", "C4", "RET", "PIE", "PERF", "RUF"]
 
 [tool.mypy]
+files = ["*.py", "providers", "integrations", "scripts"]
 python_version = "3.10"
 warn_unused_ignores = true
 no_implicit_optional = true
