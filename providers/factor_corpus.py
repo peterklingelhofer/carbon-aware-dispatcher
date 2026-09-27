@@ -11,21 +11,22 @@ Refresh it with:
     curl -sSfo data/emission-factors.json \\
       https://raw.githubusercontent.com/peterklingelhofer/carbon-lens/main/data/emission-factors.json
 
-Loading is strict. A factor must either resolve its citekey against
-``docs/CITATIONS.csl.json`` or declare itself an assumption (no citekey, an
-``assumption`` string, evidence tier E). Anything else raises at import, so a
-factor can never reach a reported number with no stated basis at all.
-
-Stdlib only, and no syntax newer than Python 3.9.
+Loading is strict. A factor must either resolve its citekey against the
+``CITATION_IDS`` generated from ``docs/CITATIONS.csl.json`` or declare itself an
+assumption (no citekey, an ``assumption`` string, evidence tier E). Anything else
+raises at import, so a factor can never reach a reported number with no stated
+basis at all. The generated ids are used because they ship in the wheel and the
+Docker image, where ``docs/`` does not.
 """
 
 import json
 import os
 from typing import Optional
 
+from citations_generated import CITATION_IDS
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS_PATH = os.path.join(ROOT, "data", "emission-factors.json")
-CITATIONS_PATH = os.path.join(ROOT, "docs", "CITATIONS.csl.json")
 
 # Corpus key -> the name this project's providers already use. Only the names
 # differ between the two projects, never the values
@@ -38,19 +39,7 @@ class FactorCorpusError(RuntimeError):
     """The corpus is missing, malformed, or has a factor with no stated basis."""
 
 
-def _citekeys() -> set:
-    """Every citekey defined in the CSL-JSON corpus."""
-    try:
-        with open(CITATIONS_PATH) as fh:
-            entries = json.load(fh)
-    except OSError as exc:
-        raise FactorCorpusError(f"citation corpus not found at {CITATIONS_PATH}") from exc
-    except ValueError as exc:
-        raise FactorCorpusError(f"citation corpus is not valid JSON: {exc}") from exc
-    return {entry["id"] for entry in entries if "id" in entry}
-
-
-def _check(record: dict, citekeys: set) -> None:
+def _check(record: dict) -> None:
     """Enforce the corpus contract on one record."""
     key = record.get("key")
     if not key:
@@ -71,7 +60,7 @@ def _check(record: dict, citekeys: set) -> None:
             )
         if tier != "E":
             raise FactorCorpusError(f"{key} is an assumption but claims evidence tier {tier!r}")
-    elif citation not in citekeys:
+    elif citation not in CITATION_IDS:
         raise FactorCorpusError(
             f"{key} cites {citation!r}, which is not a citekey in CITATIONS.csl.json"
         )
@@ -93,10 +82,9 @@ def load() -> dict:
     except ValueError as exc:
         raise FactorCorpusError(f"emission-factor corpus is not valid JSON: {exc}") from exc
 
-    citekeys = _citekeys()
     records = {}
     for record in doc.get("factors", []):
-        _check(record, citekeys)
+        _check(record)
         if record["key"] in records:
             raise FactorCorpusError(f"duplicate factor key {record['key']!r}")
         records[record["key"]] = record
