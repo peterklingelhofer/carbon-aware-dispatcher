@@ -80,7 +80,7 @@ Use a preset instead of looking up zone codes:
 
 | Preset | What It Does |
 |--------|-------------|
-| *(no input)* | Auto-detects cloud region, falls back to checking all free zones worldwide |
+| *(no input)* | Auto-detects cloud region, falls back to `auto:cleanest` |
 | `auto:detect` | Detects AWS/GCP/Azure region from environment variables |
 | `auto:nearest` | Picks zones closest to your timezone |
 | `auto:green` | 11 curated green zones across 4 continents (free providers only) |
@@ -144,8 +144,6 @@ jobs:
     grid_zone: 'CISO'                 # California ISO (see Supported Zones below)
     max_carbon_intensity: '200'
 ```
-
-US, UK, Australia, India, Brazil, and South Africa need no keys. EU zones use a free `entsoe_token`. Other global zones use a free `electricity_maps_token`.
 
 ### Dispatch mode (trigger a separate workflow)
 
@@ -357,7 +355,7 @@ Outputs `optimal_dispatch_at` (ISO 8601) and `optimal_zone`. Good for nightly ML
 Skipping builds is a blunt instrument: teams want their CI to run. Instead of a
 binary gate, the action classifies the grid into a `carbon_tier` so downstream
 jobs can *right-size* their work: full matrix when green, critical-path when
-amber, smoke test when red. CI always makes progress. The heaviest compute
+amber, smoke test when red. CI always makes progress, and the heaviest compute
 shifts to the cleanest hours.
 
 ```yaml
@@ -436,10 +434,8 @@ release:
   if: needs.carbon.outputs.sla_breached != 'true'
 ```
 
-Check compliance anytime from the CLI: `carbon-aware sla --target 95` (reads the
-same ledger. Exit 0 compliant or warning, 1 breached, 2 not enough data). It's an
-uptime-style SLA for carbon: the share of your compute that ran clean, attested
-over time.
+Check compliance anytime from the CLI: `carbon-aware sla --target 95` reads the
+same ledger. Exit 0 compliant or warning, 1 breached, 2 not enough data.
 
 ## Carbon budgets as code
 
@@ -610,10 +606,9 @@ Large, deferrable workloads such as ML training, batch inference, ETL and HPC
 jobs use far more energy than CI. The same engine plugs into the tools that
 orchestrate them, so a long run lands on clean energy with no manual timing.
 
-Each adapter uses a lazy/optional import and runs against the framework you
-already have installed. This package never pulls in Airflow or Ray itself.
-You add a carbon gate to your existing one. So the base install stays tiny (just
-`requests`) and there are no heavy extras to manage.
+Each adapter imports its framework lazily and runs against the one you already
+have installed, so the base install stays at `requests` and there are no extras
+to manage.
 
 | Framework | Import | Example |
 |---|---|---|
@@ -621,13 +616,14 @@ You add a carbon gate to your existing one. So the base install stays tiny (just
 | Hugging Face Trainer | `integrations.huggingface_carbon.CarbonAwareTrainerCallback` | [huggingface_carbon_training.py](examples/standalone/huggingface_carbon_training.py) |
 | Airflow | `integrations.airflow_carbon.CarbonAwareSensor` | [airflow_carbon_dag.py](examples/standalone/airflow_carbon_dag.py) |
 | Prefect | `integrations.prefect_carbon.carbon_gate` | [prefect_carbon_flow.py](examples/standalone/prefect_carbon_flow.py) |
-| Dagster | `integrations.dagster_carbon.carbon_gate` | [dagster_carbon_job.py](examples/standalone/dagster_carbon_job.py) |
+| Dagster | `integrations.dagster_carbon.carbon_gate` (or a sensor on `grid_is_clean`) | [dagster_carbon_job.py](examples/standalone/dagster_carbon_job.py) |
 | Ray | `integrations.ray_carbon.run_when_clean` | [ray_carbon_job.py](examples/standalone/ray_carbon_job.py) |
 | Inference routing | `integrations.inference_router.cleanest_endpoint` | [inference_routing.py](examples/standalone/inference_routing.py) |
 | KEDA (k8s) | `wait-for-green` initContainer | [keda-scaledjob.yaml](examples/standalone/keda-scaledjob.yaml) |
 | Slurm (HPC) | `wait-for-green` submit wrapper | [slurm-carbon-submit.sh](examples/standalone/slurm-carbon-submit.sh) |
 
-Sections below cover each in more detail.
+The sections below show the Lightning, Airflow and inference-routing calls. The
+Prefect, Dagster, Ray, KEDA and Slurm examples are complete files.
 
 ## Carbon-aware ML training (PyTorch Lightning)
 
@@ -673,41 +669,6 @@ gate >> heavy_training_task
 `mode="reschedule"` frees the worker slot between pokes. See
 [`examples/standalone/airflow_carbon_dag.py`](examples/standalone/airflow_carbon_dag.py).
 
-## Carbon-aware Prefect
-
-Gate a Prefect flow with `carbon_gate`, which blocks until a target zone is clean:
-
-```python
-from prefect import flow, task
-from integrations.prefect_carbon import carbon_gate
-
-
-@flow
-def pipeline():
-    task(carbon_gate)(zones="auto:green", max_carbon=200)
-    retrain()
-```
-
-See [`examples/standalone/prefect_carbon_flow.py`](examples/standalone/prefect_carbon_flow.py).
-
-## Carbon-aware Dagster
-
-Gate a Dagster op with `carbon_gate`, or only launch runs when clean with a
-sensor on `grid_is_clean`:
-
-```python
-from integrations.dagster_carbon import carbon_gate, grid_is_clean
-```
-
-See [`examples/standalone/dagster_carbon_job.py`](examples/standalone/dagster_carbon_job.py).
-
-## Carbon-aware KEDA
-
-Pair event-driven autoscaling with clean-energy timing: a KEDA `ScaledJob`
-scales on your queue, and an initContainer running `carbon-aware wait-for-green`
-holds each job until the grid is clean. See
-[`examples/standalone/keda-scaledjob.yaml`](examples/standalone/keda-scaledjob.yaml).
-
 ## Carbon-aware inference routing
 
 Inference is a fast-growing, often latency-tolerant load. Route async/batch
@@ -727,10 +688,9 @@ See [`examples/standalone/inference_routing.py`](examples/standalone/inference_r
 
 ## Use outside GitHub Actions (CLI & container)
 
-Nightly ML training, ETL and batch inference use far more energy than CI. The
-same engine ships as a standalone `carbon-aware` CLI so any scheduler (cron,
-systemd timers, Kubernetes CronJobs, Airflow, Nomad) can gate or time that work.
-It composes through exit codes, so no glue code is needed:
+The same engine ships as a standalone `carbon-aware` CLI so any scheduler (cron,
+systemd timers, Kubernetes CronJobs, Airflow, Nomad) can gate or time deferrable
+work. It composes through exit codes, so no glue code is needed:
 
 ```bash
 pipx install carbon-aware-dispatcher        # or use the container (below)
@@ -828,7 +788,6 @@ cleaner) as well as a diurnal one. Contribute via PR to
 [publish workflow](.github/workflows/publish-community-curve.yml) pools every
 contribution with the [self-sampled](.github/workflows/sample-community-curves.yml)
 zones and publishes the result to the `community-data` branch automatically.
-More contributors mean broader coverage.
 
 ### Shift the schedule once
 
@@ -869,13 +828,9 @@ jobs:
 Only simple daily crons are rewritten (cadence and minute preserved). See
 [`examples/suggest-cron-pr.yml`](examples/suggest-cron-pr.yml).
 
-And before adding any of this, ask `carbon-aware worth-it`: on a flat,
-baseload-dominated grid the intensity barely moves across the day, so shifting
-saves little. The tool reports that directly, so you don't add complexity that
-wouldn't help.
-
-Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data. Info logs go to
-stderr, and stdout carries only the result (add `--json` for machine output).
+Exit codes: `0` green/clean, `1` dirty or timed out, `2` no data, `3` bad
+arguments. Info logs go to stderr, and stdout carries only the result (add
+`--json` for machine output).
 
 Grid feeds only refresh every 5-30 min, so composed runs can reuse a recent
 reading instead of re-fetching: pass `--cache-ttl 300` (or set
@@ -899,16 +854,6 @@ docker build -t carbon-aware . && docker run --rm carbon-aware check --zones GB
 Ready-to-copy schedulers: a [Kubernetes CronJob](examples/standalone/k8s-cronjob.yaml)
 (carbon-gated via an initContainer), a [cron/systemd wrapper](examples/standalone/cron-wrapper.sh),
 and a [Slurm submit wrapper](examples/standalone/slurm-carbon-submit.sh) for HPC jobs.
-
-For distributed training/batch on **Ray**, gate the driver before submitting work:
-
-```python
-from integrations.ray_carbon import run_when_clean
-
-run_when_clean(run_batch, zones="auto:green", max_carbon=200)  # waits, then submits
-```
-
-See [`examples/standalone/ray_carbon_job.py`](examples/standalone/ray_carbon_job.py).
 
 ## Example workflows
 
@@ -961,6 +906,15 @@ Ready-to-copy files in [`examples/`](examples/):
 | `cost_weight` | `0` | Blend cloud cost with carbon when choosing among zones (0 = clean only, 1 = cheap only). See [Cost + carbon routing](#cost--carbon-routing). |
 | `notify_webhook` | none | Webhook URL for carbon-event notifications (Slack/Discord/generic). See [Notifications](#notifications). |
 | `notify_on` | `green,exceeded` | Events to notify on: `green`, `dirty`, `exceeded`, or `always`. |
+| `mode` | `check` | `check` runs the grid check. `digest`, `doctor` and `suggest` run the [weekly digest](#weekly-digest), [diagnostics](#doctor-mode-diagnostics) or the [cron-shifting PR](#shift-the-schedule-once). |
+| `suggest_target` / `suggest_base` | none / `main` | Workflow file whose daily cron `mode: suggest` shifts, and the PR's base branch. |
+| `scale_min` / `scale_max` | `0.25` / `1.0` | Floor and ceiling of the `carbon_scale` factor. See [Carbon-aware autoscaling](#carbon-aware-autoscaling-the-continuous-dial). |
+| `green_sla_target` | none | Percent of this month's runs that must run clean. Needs `ledger`. See [Green SLA](#green-sla). |
+| `cost_price_map` | none | JSON of `zone -> USD/hour` to price non-Azure clouds when `cost_weight` > 0. |
+| `job_energy_kwh` | none | Measured energy per run in kWh. Overrides `job_power_watts` (default `13`) x `job_duration_minutes` (default `15`). See [Methodology](#methodology--accounting). |
+| `pue` / `embodied_grams` | `1.0` / `0` | Datacenter overhead multiplier and amortized hardware CO2 added to `co2_emitted_grams`. |
+| `watttime_username` / `watttime_password` | none | WattTime credentials for the marginal signal. See [Marginal emissions](#marginal-emissions-watttime). |
+| `marginal_region` / `marginal_max_percentile` | `CAISO_NORTH` / `33` | WattTime region, and the co2_moer percentile at or below which `marginal_clean` is `true`. |
 
 ## Outputs
 
@@ -990,6 +944,13 @@ Ready-to-copy files in [`examples/`](examples/):
 | `suggested_cron` | Suggested cron schedule for green builds based on zone energy type. |
 | `dry_run` | `true` when the action ran in report-only mode. |
 | `would_defer` | In `dry_run` mode, `true` if the grid was dirty and the build would have been deferred under enforcement. |
+| `data_source` / `data_confidence` | Provider that produced the reading, and `measured` (grid-operator data) or `estimated` (Open-Meteo). |
+| `co2_emitted_grams` (+ `_low` / `_high`) | Grams this run produced: intensity x energy x PUE + embodied. The bounds carry the 6-25 W runner power range and are empty when you set `job_energy_kwh` or `job_power_watts`. |
+| `co2_saved_basis` | How `co2_saved_grams` is derived, so the methodology travels with the number. |
+| `co2_avoided_total_grams` | Lifetime grams avoided vs this zone's own typical hour (needs `ledger`, accrues once the curve fills). |
+| `carbon_method` / `carbon_citations` / `carbon_evidence_tier` / `carbon_factor_table` | Accounting method behind the intensity, its citekeys and evidence tier A-E per [`docs/CITATIONS.md`](docs/CITATIONS.md), and the emission-factor corpus version. |
+| `sla_status` / `sla_compliance_pct` / `sla_breached` | Green SLA status this month (needs `green_sla_target` + `ledger`). |
+| `marginal_percentile` / `marginal_clean` | WattTime marginal co2_moer percentile (lower = cleaner) and whether it's at or below `marginal_max_percentile`. |
 
 ## Methodology & accounting
 
@@ -1010,9 +971,6 @@ What each number means:
   emissions from shifting load is *marginal* intensity, which is free only for
   `CAISO_NORTH` (via WattTime, see [Marginal emissions](#marginal-emissions-watttime)).
   We don't fake it for other regions.
-
-Use `co2_emitted_grams` for reporting and `co2_saved_grams` as a
-directional benchmark that makes no offset claim.
 
 **Provenance on every reading.** The action emits `data_source` (the provider
 that produced the number, e.g. `uk_carbon_intensity`, `energy_charts`,
@@ -1167,11 +1125,12 @@ measurement. Electricity Maps advertises 200+ zones. That's their paid catalog, 
 the free tier is a single registered zone. These counts are audited in
 [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
-**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > Canada > Taiwan > ENTSO-E (with token) > Open-Meteo (with coordinates) > Electricity Maps (last resort: free tier is one registered zone). If a primary provider fails, the action automatically falls back to Open-Meteo weather-based estimation.
+**Provider priority:** UK > EIA > AEMO > Grid India > ONS Brazil > Eskom > CAMMESA > Canada > Taiwan > EirGrid > ENTSO-E (with token) > Energinet > RTE > Energy-Charts > Open-Meteo (with coordinates) > Electricity Maps (last resort: free tier is one registered zone). If a primary provider fails, the action falls back to Open-Meteo weather-based estimation.
 
 **Reliability notes:**
 - **Grid India** is reachable only from Indian IPs, so it always fails from GitHub-hosted (US/EU) runners. India zones are therefore left out of the curated `auto:*` presets. They still work if you pass `grid_zones: 'IN-SO'` explicitly from a runner inside India.
 - **`auto:detect`** needs a cloud-region environment variable, which GitHub-hosted runners don't provide. On those runners it falls back to `auto:cleanest` (greenest free zone worldwide) and says so in the log. Set `grid_zones` explicitly to pin a region.
+- **Japan, South Korea and Singapore** have no free real-time feed, so measured data there needs an Electricity Maps token. Other zones without a grid-operator API fall back to the Open-Meteo estimate.
 
 ### Forecasts
 
@@ -1203,7 +1162,7 @@ labels the estimates "(estimated)" so the two are easy to tell apart.
 
 ### How carbon intensity is calculated
 
-Fuel-mix providers (EIA, AEMO, ENTSO-E, Grid India, ONS Brazil, Canada, Taipower) weight each source by its IPCC AR5 lifecycle factor in gCO2eq/kWh: coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 45, geothermal 38, hydro 24, wind 12, nuclear 12. Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value. Electricity Maps returns intensity directly. Open-Meteo modulates each zone's approximate annual-average intensity (a per-zone prior from public yearly data) by real-time solar irradiance and wind speed, so a structurally clean grid (e.g. nuclear France, hydro Norway) reads clean rather than defaulting to a fossil average.
+Fuel-mix providers weight each source by its lifecycle factor in gCO2eq/kWh from the shared corpus [`data/emission-factors.json`](data/emission-factors.json): coal 820, lignite 1050, gas 490, oil 650, biomass 230, solar 48, geothermal 38, hydro 24, wind 11, nuclear 12. Most are IPCC AR5 medians, and each departure is declared in the corpus (see [`docs/VERIFICATION.md`](docs/VERIFICATION.md)). Storage (battery, pumped hydro) is excluded. The UK API returns a pre-calculated value. Electricity Maps returns intensity directly. Open-Meteo modulates each zone's approximate annual-average intensity (a per-zone prior from public yearly data) by real-time solar irradiance and wind speed, so a structurally clean grid (e.g. nuclear France, hydro Norway) reads clean rather than defaulting to a fossil average.
 
 ### Consumption-based intensity (EU)
 
@@ -1226,13 +1185,8 @@ flow-tracing linear system (Tranberg et al., 2019) with Gauss-Seidel iteration,
 no extra dependencies. Covered zones: FR, DE, NL, BE, CH, AT, ES, PT, IT-NO, PL,
 CZ, GB, IE, DK-DK1. Zones outside this traced network fall back to production
 intensity. Note: this costs extra ENTSO-E calls (one per traced zone plus its
-borders), so enable it only when the import/export correction matters.
-
-### Known limitations
-
-- **Coverage is best where a free grid-operator API exists.** US, UK, EU (with a free ENTSO-E token), Australia, Canada, Taiwan, Brazil, India, and South Africa use real grid data. Other zones fall back to an Open-Meteo weather estimate, or to Electricity Maps if a token is set. Some regions (e.g. Japan, South Korea, Singapore) have no clean free real-time feed, so measured data there requires an Electricity Maps token.
-- **Consumption-based intensity is EU-only and opt-in** (see above). Other regions report production-based intensity. For global consumption-based data, use a commercial source such as Electricity Maps.
-- **Some forecasts are heuristic** (see [Forecasts](#forecasts)), labeled as estimates in the job summary.
+borders), so enable it only when the import/export correction matters. Other
+regions report production-based intensity.
 
 ## Setup wizard
 

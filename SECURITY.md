@@ -15,9 +15,11 @@ few days.
 - The action never logs full request URLs (which can carry tokens in query
   strings) and truncates upstream error bodies in its warnings.
 - Most zones work with no key at all. Optional tokens (Electricity Maps,
-  ENTSO-E, GridStatus, EIA) only widen coverage.
-- The action makes outbound HTTPS requests to public grid-operator APIs and,
-  in dispatch mode, to the GitHub REST API. It doesn't execute remote code.
+  ENTSO-E, GridStatus, EIA, WattTime) add coverage, forecasts or accuracy.
+- The action makes outbound HTTPS requests to public grid, weather and cloud-pricing APIs, to
+  the GitHub REST API when you enable workflow dispatch, the PR comment, the
+  digest issue, suggest-mode PRs or the gist ledger, and to `notify_webhook`
+  when set. It doesn't execute remote code.
 
 ## Supported versions
 

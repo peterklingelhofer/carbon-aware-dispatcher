@@ -31,6 +31,6 @@ jobs:
           suggest_target: ".github/workflows/nightly-batch.yml"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Optional: feed the accumulating curve from a ledger so non-GB zones
-          # build a profile over time.
+          # build a profile over time
           # ledger: 'gist:${{ vars.CARBON_LEDGER_GIST }}'
           # gist_token: ${{ secrets.GIST_TOKEN }}

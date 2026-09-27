@@ -1,10 +1,10 @@
 # Marginal-Aware Timing (WattTime)
 #
 # Marginal emissions (MOER) reflect the generator that responds to YOUR added
-# load. Average intensity doesn't capture that, but MOER is the right signal
-# for deciding when to run flexible compute. This gates a job on WattTime's
-# free marginal signal: run only when the margin is in the cleanest third of
-# the last two weeks.
+# load, which average intensity leaves out, so MOER is the signal for deciding
+# when to run flexible compute. This gates a job on WattTime's free marginal
+# signal: run only when the margin is in the cleanest third of the last two
+# weeks.
 #
 # Setup:
 #   - Register at https://watttime.org/ (free tier covers CAISO_NORTH)
