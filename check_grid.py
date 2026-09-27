@@ -1904,16 +1904,6 @@ def write_job_summary(
             f"| **Marginal ({m['region']})** | {m['percentile']}th percentile MOER ({verdict}) |"
         )
 
-    if record is not None:
-        # The number's basis travels with the number. Without this, a reader has
-        # no way to tell a grid operator's published figure from a weather guess
-        lines.append("")
-        lines.append(f"How this number was produced: {provenance.summary_line(record)}.")
-        lines.append(
-            "Sources: [docs/CITATIONS.md](docs/CITATIONS.md) | "
-            "measured accuracy: [docs/VALIDATION.md](docs/VALIDATION.md)"
-        )
-
     if _sla_summary and _sla_summary.get("compliance") is not None:
         s = _sla_summary
         lines.append(
@@ -1924,6 +1914,18 @@ def write_job_summary(
     if skipped:
         skipped_str = ", ".join(f"`{z}` ({r})" for z, r in skipped)
         lines.append(f"| **Skipped Zones** | {skipped_str} |")
+
+    if record is not None:
+        # The number's basis travels with the number. Without this, a reader has
+        # no way to tell a grid operator's published figure from a weather guess.
+        # It goes after the last row because a paragraph ends a markdown table
+        # and any row appended below it renders as literal pipes
+        lines.append("")
+        lines.append(f"How this number was produced: {provenance.summary_line(record)}.")
+        lines.append(
+            "Sources: [docs/CITATIONS.md](docs/CITATIONS.md) | "
+            "measured accuracy: [docs/VALIDATION.md](docs/VALIDATION.md)"
+        )
 
     lines.append("")
 
