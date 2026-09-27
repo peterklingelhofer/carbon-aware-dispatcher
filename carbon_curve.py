@@ -9,11 +9,13 @@ sample source (a paid provider, a local log) can feed them.
 """
 
 import math
+import os
+import statistics
 from datetime import datetime, timedelta, timezone
 
-from providers import base
+import ledger
+from providers import base, uk
 
-UK_API_BASE = "https://api.carbonintensity.org.uk"
 # UK history endpoint accepts at most a 14-day span per request
 MAX_HISTORY_DAYS = 14
 
@@ -62,13 +64,7 @@ def median_profile_from_samples(samples):
     A single bad reading (a grid data glitch) can drag an hour's mean around, but
     the median ignores it, so the cleanest-hour pick is more trustworthy.
     """
-    out = {}
-    for hour, vals in _bucket_samples(samples).items():
-        vals.sort()
-        n = len(vals)
-        mid = n // 2
-        out[hour] = round(vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2, 1)
-    return out
+    return {h: round(statistics.median(v), 1) for h, v in _bucket_samples(samples).items()}
 
 
 def anova_f(stats):
@@ -225,7 +221,7 @@ def _uk_history_periods(days=7):
     to = datetime.now(timezone.utc)
     frm = to - timedelta(days=days)
     fmt = "%Y-%m-%dT%H:%MZ"
-    url = f"{UK_API_BASE}/intensity/{frm.strftime(fmt)}/{to.strftime(fmt)}"
+    url = f"{uk.UK_API_BASE}/intensity/{frm.strftime(fmt)}/{to.strftime(fmt)}"
     data = base.request(url, parse="json")
     if not data:
         return []
@@ -254,16 +250,12 @@ def uk_weekday_samples(days=14):
 
 def weekday_profile_from_samples(samples, min_days=3):
     """Average intensity by weekday (Mon=0..Sun=6). {} until min_days seen."""
-    profile = {d: round(sum(v) / len(v), 1) for d, v in _bucket_samples(samples).items()}
+    profile = profile_from_samples(samples)
     return profile if len(profile) >= min_days else {}
 
 
-def cleanest_weekday(profile):
-    """Return (weekday, intensity) of the lowest-intensity day, or (None, None)."""
-    if not profile:
-        return None, None
-    day = min(profile, key=lambda d: profile[d])
-    return day, profile[day]
+# Same argmin over a {weekday: intensity} profile, returning (weekday, intensity)
+cleanest_weekday = cleanest_hour
 
 
 def build_weekday_profile(zone):
@@ -277,22 +269,12 @@ def build_weekday_profile(zone):
         profile = weekday_profile_from_samples(uk_weekday_samples())
         if profile:
             return profile
-    return ledger_weekday_profile(zone) or community_weekday_profile(zone) or {}
+    return ledger_weekday_profile(zone) or community_weekday_profile(zone)
 
 
 def _load_ledger_doc():
     """Load the configured ledger document, or None when none is configured."""
-    import os
-
-    import ledger
-
-    backend, location = ledger.parse_config(os.environ.get("LEDGER", ""))
-    if not backend or not location:
-        return None
-    if backend == "file":
-        return ledger._load_file(location)
-    data, _ = ledger._gist_read(location, os.environ.get("GIST_TOKEN", ""))
-    return data
+    return ledger.load(os.environ.get("LEDGER", ""), os.environ.get("GIST_TOKEN", ""))
 
 
 def ledger_profile(zone):
@@ -302,34 +284,22 @@ def ledger_profile(zone):
     coverage extends beyond GB without paid history. Returns {} when no ledger is
     configured or too few hours are recorded yet.
     """
-    import ledger
-
-    data = _load_ledger_doc()
-    return ledger.curve_profile(data, zone) if data is not None else {}
+    return ledger.curve_profile(_load_ledger_doc() or {}, zone)
 
 
 def ledger_weekday_profile(zone):
     """Build a day-of-week profile from the weekday curve accumulated in the ledger."""
-    import ledger
-
-    data = _load_ledger_doc()
-    return ledger.weekday_profile(data, zone) if data is not None else {}
+    return ledger.weekday_profile(_load_ledger_doc() or {}, zone)
 
 
-def _load_community_curve(src):
-    """Load a pooled curve doc from a local path or an http(s) URL, or {}."""
+def _community_doc():
+    """The pooled curve doc at COMMUNITY_CURVE, a local path or http(s) URL, or an empty one."""
+    src = os.environ.get("COMMUNITY_CURVE", "")
+    if not src:
+        return {}
     if src.startswith(("http://", "https://")):
         return base.request(src) or {}
-    import json
-    import os
-
-    if not os.path.exists(src):
-        return {}
-    try:
-        with open(src) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    return ledger._load_file(src)
 
 
 def community_profile(zone):
@@ -341,17 +311,7 @@ def community_profile(zone):
     have sampled, even with no local history. Returns {} when unset, unreachable,
     or too sparse for the zone.
     """
-    import os
-
-    src = os.environ.get("COMMUNITY_CURVE", "")
-    if not src:
-        return {}
-    data = _load_community_curve(src)
-    if not data:
-        return {}
-    import ledger
-
-    return ledger.curve_profile(data, zone)
+    return ledger.curve_profile(_community_doc(), zone)
 
 
 def community_weekday_profile(zone):
@@ -361,17 +321,7 @@ def community_weekday_profile(zone):
     weekday_curve so zones with no free weekday history still gain a
     weekend-vs-weekday profile as the commons grows.
     """
-    import os
-
-    src = os.environ.get("COMMUNITY_CURVE", "")
-    if not src:
-        return {}
-    data = _load_community_curve(src)
-    if not data:
-        return {}
-    import ledger
-
-    return ledger.weekday_profile(data, zone)
+    return ledger.weekday_profile(_community_doc(), zone)
 
 
 def build_profile(zone, days=7):

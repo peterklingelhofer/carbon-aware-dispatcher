@@ -1,11 +1,10 @@
 """Open a pull request that shifts a workflow's schedule to the grid's cleanest hour.
 
-The biggest change this tool can make: turn a recommendation into a
-one-click change. Given a target workflow file, it moves the hour of any simple
-daily ``cron:`` to the cleanest hour and opens a PR. Cadence and minute are
-preserved. Non-daily or complex schedules are left untouched (and reported), so
-it never silently changes how often a job runs. Best-effort and never raises: any
-API failure degrades to a warning.
+Turns a recommendation into a one-click change: given a target workflow file, it
+moves the hour of any simple daily ``cron:`` to the cleanest hour and opens a
+PR. Cadence and minute are preserved. Non-daily or complex schedules are left
+untouched (and reported), so it never silently changes how often a job runs.
+Best-effort and never raises: any API failure degrades to a warning.
 """
 
 import base64
@@ -92,10 +91,6 @@ def runs_per_day(cron_expr):
     return round(per_day, 2)
 
 
-def _headers(token):
-    return base.github_headers(token)
-
-
 def _savings_line(profile, energy_kwh, changes, new_hour):
     """A concrete savings sentence for the PR body, or '' when not computable."""
     if not profile or not energy_kwh:
@@ -133,11 +128,10 @@ def open_cron_pr(
     if not (repo and token and path):
         print("::warning::suggest mode needs github_token, a repo, and suggest_target, skipping")
         return False
+    headers = base.github_headers(token)
 
     cfile = base.request(
-        f"{API}/repos/{repo}/contents/{path}?ref={base_branch}",
-        headers=_headers(token),
-        parse="json",
+        f"{API}/repos/{repo}/contents/{path}?ref={base_branch}", headers=headers, parse="json"
     )
     if not cfile or "content" not in cfile:
         print(f"::warning::suggest mode: could not read {path}, skipping")
@@ -154,7 +148,7 @@ def open_cron_pr(
         return False
 
     head = base.request(
-        f"{API}/repos/{repo}/git/ref/heads/{base_branch}", headers=_headers(token), parse="json"
+        f"{API}/repos/{repo}/git/ref/heads/{base_branch}", headers=headers, parse="json"
     )
     if not head:
         print("::warning::suggest mode: could not read base branch, skipping")
@@ -165,14 +159,14 @@ def open_cron_pr(
     base.request(
         f"{API}/repos/{repo}/git/refs",
         method="POST",
-        headers=_headers(token),
+        headers=headers,
         json_body={"ref": f"refs/heads/{BRANCH}", "sha": base_sha},
         parse="json",
     )
 
     # Use the file's sha on the branch (equals base when freshly created)
     branch_file = base.request(
-        f"{API}/repos/{repo}/contents/{path}?ref={BRANCH}", headers=_headers(token), parse="json"
+        f"{API}/repos/{repo}/contents/{path}?ref={BRANCH}", headers=headers, parse="json"
     )
     file_sha = (branch_file or cfile).get("sha")
 
@@ -180,7 +174,7 @@ def open_cron_pr(
     put = base.request(
         f"{API}/repos/{repo}/contents/{path}",
         method="PUT",
-        headers=_headers(token),
+        headers=headers,
         json_body={
             "message": f"chore: shift {path} schedule to the grid's cleanest hour",
             "content": base64.b64encode(new_text.encode()).decode(),
@@ -205,7 +199,7 @@ def open_cron_pr(
     pr = base.request(
         f"{API}/repos/{repo}/pulls",
         method="POST",
-        headers=_headers(token),
+        headers=headers,
         json_body={
             "title": "Shift schedule to the grid's cleanest hour",
             "head": BRANCH,

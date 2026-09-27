@@ -1,9 +1,9 @@
 """Forecast self-calibration: grade our own green-window predictions over time.
 
-A free service that measures how good its own forecasts are is rare, and the
-record builds trust (and a bias correction). Each run records the forecast it
-made (predicted time + intensity). A later run, once that time has passed,
-resolves the prediction against the actual reading and accrues the error.
+The record shows how good the forecasts are and yields a bias correction. Each
+run records the forecast it made (predicted time + intensity). A later run, once
+that time has passed, resolves the prediction against the actual reading and
+accrues the error.
 accuracy_report() summarizes mean error and bias. bias_correction() returns the
 systematic offset to subtract from future heuristic forecasts. All functions are
 pure. The CLI handles persistence and the network.

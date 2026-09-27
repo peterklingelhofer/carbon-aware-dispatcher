@@ -11,7 +11,8 @@ r_squared says how much of the variation the load change explains, i.e. how much
 to trust the number. No extra dependencies, no key.
 """
 
-import math
+import statistics
+from itertools import pairwise
 
 # A reported marginal outside this band (gCO2eq/kWh) is unphysical, so clamp to the
 # range spanned by the dirtiest (lignite ~1050) and cleanest real fuels. Let
@@ -28,23 +29,15 @@ def _slope_through_origin(xs, ys):
     sxx = sum(x * x for x in xs)
     if sxx <= 0:
         return None
-    return sum(x * y for x, y in zip(xs, ys)) / sxx
+    return sum(x * y for x, y in zip(xs, ys, strict=True)) / sxx
 
 
 def _pearson_r2(xs, ys):
     """Square of the Pearson correlation between xs and ys, or None if undefined."""
-    n = len(xs)
-    if n < 2:
+    try:
+        return statistics.correlation(xs, ys) ** 2
+    except statistics.StatisticsError:  # fewer than two pairs, or a constant input
         return None
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    sxx = sum((x - mx) ** 2 for x in xs)
-    syy = sum((y - my) ** 2 for y in ys)
-    if sxx <= 0 or syy <= 0:
-        return None
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    r = sxy / math.sqrt(sxx * syy)
-    return r * r
 
 
 def estimate_marginal(series, min_load_change=1.0):
@@ -67,7 +60,7 @@ def estimate_marginal(series, min_load_change=1.0):
         return None
 
     dgs, des = [], []
-    for (g0, e0), (g1, e1) in zip(rows, rows[1:]):
+    for (g0, e0), (g1, e1) in pairwise(rows):
         dg = g1 - g0
         if abs(dg) < min_load_change:
             continue

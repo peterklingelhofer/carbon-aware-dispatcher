@@ -9,11 +9,16 @@ def _dt(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def _one_prediction(zone="GB", intensity=120):
+    """A log holding one forecast for 03:00Z on 2026-06-17, made the day before."""
+    return forecast_log.record_prediction(
+        forecast_log.empty_log(), zone, "2026-06-17T03:00Z", intensity, "2026-06-16T12:00Z"
+    )
+
+
 class TestRecordPrediction:
     def test_appends(self):
-        doc = forecast_log.record_prediction(
-            forecast_log.empty_log(), "GB", "2026-06-17T03:00Z", 120, "2026-06-16T12:00Z"
-        )
+        doc = _one_prediction()
         assert len(doc["predictions"]) == 1
         assert doc["predictions"][0]["actual"] is None
 
@@ -26,34 +31,26 @@ class TestRecordPrediction:
 
 class TestResolveDue:
     def test_resolves_within_window_and_signs_error(self):
-        doc = forecast_log.record_prediction(
-            forecast_log.empty_log(), "GB", "2026-06-17T03:00Z", 120, "2026-06-16T12:00Z"
-        )
         now = _dt("2026-06-17T03:30Z")  # 30 min after the target
-        doc, n = forecast_log.resolve_due(doc, now, actual_intensity=100, zone="GB")
+        doc, n = forecast_log.resolve_due(_one_prediction(), now, actual_intensity=100, zone="GB")
         assert n == 1
         # predicted 120 vs actual 100 -> forecast ran high by +20
         assert doc["predictions"][0]["error"] == 20.0
 
     def test_skips_other_zone(self):
-        doc = forecast_log.record_prediction(
-            forecast_log.empty_log(), "FR", "2026-06-17T03:00Z", 60, "now"
-        )
+        doc = _one_prediction(zone="FR", intensity=60)
         doc, n = forecast_log.resolve_due(doc, _dt("2026-06-17T03:10Z"), 80, zone="GB")
         assert n == 0
 
     def test_skips_outside_window(self):
-        doc = forecast_log.record_prediction(
-            forecast_log.empty_log(), "GB", "2026-06-17T03:00Z", 120, "now"
-        )
         # 5 hours later is well past the 90-min resolve window
-        doc, n = forecast_log.resolve_due(doc, _dt("2026-06-17T08:00Z"), 100, zone="GB")
+        _doc, n = forecast_log.resolve_due(
+            _one_prediction(), _dt("2026-06-17T08:00Z"), 100, zone="GB"
+        )
         assert n == 0
 
     def test_does_not_double_resolve(self):
-        doc = forecast_log.record_prediction(
-            forecast_log.empty_log(), "GB", "2026-06-17T03:00Z", 120, "now"
-        )
+        doc = _one_prediction()
         now = _dt("2026-06-17T03:30Z")
         doc, _ = forecast_log.resolve_due(doc, now, 100, zone="GB")
         doc, n2 = forecast_log.resolve_due(doc, now, 90, zone="GB")

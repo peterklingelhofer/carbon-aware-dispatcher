@@ -1,9 +1,9 @@
 """Tests for the cumulative carbon-savings ledger."""
 
 import json
-import os
-import tempfile
 from unittest import mock
+
+import pytest
 
 import ledger
 
@@ -127,8 +127,6 @@ class TestMergeEntry:
         data = ledger.empty_ledger()
         for hour in range(6):
             data = ledger.merge_curve_sample(data, "FR", hour, 100 + hour * 10)
-        import json
-
         (tmp_path / "led.json").write_text(json.dumps(data))
         # A run at intensity 25 (vs mean 125) with 10 kWh -> avoided (125-25)*10 = 1000
         summary = ledger.record_savings(
@@ -152,12 +150,18 @@ class TestMergeEntry:
         prof = ledger.curve_profile(d, "FR")
         assert len(prof) == 6 and prof[0] == 100.0
 
-    def test_status_badge_payload_colors(self):
-        assert ledger.status_badge_payload("GB", 90, "green")["color"] == "brightgreen"
-        assert ledger.status_badge_payload("GB", 250, "amber")["color"] == "yellow"
-        assert ledger.status_badge_payload("PL", 600, "red")["color"] == "red"
-        p = ledger.status_badge_payload("GB", 90, "green")
-        assert "GB" in p["message"] and "90" in p["message"]
+    @pytest.mark.parametrize(
+        ("zone", "intensity", "tier", "color"),
+        [
+            ("GB", 90, "green", "brightgreen"),
+            ("GB", 250, "amber", "yellow"),
+            ("PL", 600, "red", "red"),
+        ],
+    )
+    def test_status_badge_payload_colors(self, zone, intensity, tier, color):
+        p = ledger.status_badge_payload(zone, intensity, tier)
+        assert p["color"] == color
+        assert zone in p["message"] and str(intensity) in p["message"]
 
     def test_history_capped(self):
         d = ledger.empty_ledger()
@@ -313,18 +317,16 @@ class TestValidateCurveDoc:
 
 
 class TestFormatAndBadge:
-    def test_format_grams(self):
-        assert ledger.format_total(850) == "850 g"
-
-    def test_format_kg(self):
-        assert ledger.format_total(4200) == "4.2 kg"
+    @pytest.mark.parametrize(("grams", "text"), [(850, "850 g"), (4200, "4.2 kg")])
+    def test_format_total(self, grams, text):
+        assert ledger.format_total(grams) == text
 
     def test_badge_payload(self):
         d = ledger.merge_entry(ledger.empty_ledger(), 4200, "2026-06-14")
         payload = ledger.badge_payload(d)
         assert payload["schemaVersion"] == 1
         assert payload["label"] == "CO2 saved"
-        assert "4.2 kg over 1 builds" == payload["message"]
+        assert payload["message"] == "4.2 kg over 1 builds"
         assert payload["color"] == "brightgreen"
 
     def test_badge_payload_empty_is_grey(self):
@@ -333,59 +335,52 @@ class TestFormatAndBadge:
 
 
 class TestParseConfig:
-    def test_gist(self):
-        assert ledger.parse_config("gist:abc123") == ("gist", "abc123")
-
-    def test_file(self):
-        assert ledger.parse_config("file:/tmp/x.json") == ("file", "/tmp/x.json")
-
-    def test_empty(self):
-        assert ledger.parse_config("") == (None, None)
-
-    def test_unknown_prefix(self):
-        assert ledger.parse_config("s3:bucket") == (None, None)
-
-    def test_whitespace_trimmed(self):
-        assert ledger.parse_config("  gist: abc  ") == ("gist", "abc")
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ("gist:abc123", ("gist", "abc123")),
+            ("file:/tmp/x.json", ("file", "/tmp/x.json")),
+            ("", (None, None)),
+            ("s3:bucket", (None, None)),
+            ("  gist: abc  ", ("gist", "abc")),  # whitespace trimmed
+        ],
+    )
+    def test_parse(self, config, expected):
+        assert ledger.parse_config(config) == expected
 
 
 class TestFileBackend:
-    def test_round_trip(self):
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            path = f.name
-        os.unlink(path)  # start with no file
-        try:
-            s1 = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14", emitted_grams=25)
-            assert s1["total_grams"] == 100
-            assert s1["total_runs"] == 1
-            assert s1["badge_url"] is None
-            assert s1["message"] == "100 g over 1 builds"
-            assert s1["emitted_mtd"] == 25
+    def test_round_trip(self, tmp_path):
+        path = tmp_path / "ledger.json"  # start with no file
+        s1 = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14", emitted_grams=25)
+        assert s1["total_grams"] == 100
+        assert s1["total_runs"] == 1
+        assert s1["badge_url"] is None
+        assert s1["message"] == "100 g over 1 builds"
+        assert s1["emitted_mtd"] == 25
 
-            s2 = ledger.record_savings(f"file:{path}", "", 50, "2026-06-15")
-            assert s2["total_grams"] == 150
-            assert s2["total_runs"] == 2
+        s2 = ledger.record_savings(f"file:{path}", "", 50, "2026-06-15")
+        assert s2["total_grams"] == 150
+        assert s2["total_runs"] == 2
 
-            with open(path) as fh:
-                stored = json.load(fh)
-            assert stored["totals"]["co2_saved_grams"] == 150
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        stored = json.loads(path.read_text())
+        assert stored["totals"]["co2_saved_grams"] == 150
 
-    def test_corrupt_file_starts_fresh(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("{not valid json")
-            path = f.name
-        try:
-            s = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14")
-            assert s["total_grams"] == 100
-            assert s["total_runs"] == 1
-        finally:
-            os.unlink(path)
+    def test_corrupt_file_starts_fresh(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        path.write_text("{not valid json")
+        s = ledger.record_savings(f"file:{path}", "", 100, "2026-06-14")
+        assert s["total_grams"] == 100
+        assert s["total_runs"] == 1
 
     def test_disabled_returns_none(self):
         assert ledger.record_savings("", "", 100, "2026-06-14") is None
+
+    def test_load(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        path.write_text(json.dumps({"totals": {"runs": 3}}))
+        assert ledger.load(f"file:{path}") == {"totals": {"runs": 3}}
+        assert ledger.load("") is None
 
 
 class TestGistBackend:
@@ -428,6 +423,21 @@ class TestGistBackend:
         assert ledger.record_savings("gist:abc", "tok", 100, "2026-06-14") is None
 
     @mock.patch("ledger.base.request")
+    def test_read_failure_skips_instead_of_overwriting(self, mock_request):
+        # A failed GET must not be followed by a PATCH that replaces the history
+        mock_request.return_value = None
+        assert ledger.record_savings("gist:abc", "tok", 100, "2026-06-14") is None
+        assert mock_request.call_count == 1
+
+    @mock.patch("ledger.base.request")
+    def test_load_reads_gist(self, mock_request):
+        mock_request.return_value = {
+            "owner": {"login": "x"},
+            "files": {ledger.LEDGER_FILENAME: {"content": json.dumps({"totals": {"runs": 2}})}},
+        }
+        assert ledger.load("gist:abc", "tok") == {"totals": {"runs": 2}}
+
+    @mock.patch("ledger.base.request")
     def test_write_status_badge_url(self, mock_request):
         mock_request.return_value = {"owner": {"login": "octocat"}}
         url = ledger.write_status_badge("abc", "tok", "GB", 90, "green")
@@ -452,10 +462,3 @@ class TestGistBackend:
         summary = ledger.record_savings("gist:abc", "tok", 75, "2026-06-14")
         assert summary["total_grams"] == 75
         assert summary["total_runs"] == 1
-
-    @mock.patch("ledger.base.request")
-    def test_read_failure_skips_instead_of_overwriting(self, mock_request):
-        # A failed GET must not be followed by a PATCH that replaces the history
-        mock_request.return_value = None
-        assert ledger.record_savings("gist:abc", "tok", 100, "2026-06-14") is None
-        assert mock_request.call_count == 1

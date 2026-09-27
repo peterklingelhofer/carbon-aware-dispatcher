@@ -134,8 +134,8 @@ def _cell_profile(data, field, zone, min_cells):
 def merge_curve_sample(data, zone, hour, intensity):
     """Fold one (hour, intensity) reading into the per-zone hour-of-day curve.
 
-    Builds an hour-of-day profile for any zone over time (24 cells per zone), not
-    just those with free historical APIs.
+    Builds an hour-of-day profile (24 cells per zone) for any zone over time,
+    including zones without a free historical API.
     """
     return _merge_sample(data, "curve", zone, hour, intensity)
 
@@ -257,10 +257,8 @@ def validate_curve_doc(doc, max_intensity=MAX_PLAUSIBLE_INTENSITY, min_hours=6):
             for zone, cells in weekday_curve.items():
                 _validate_cells(zone, "weekday", cells, 0, 6, max_intensity, problems)
 
-    if min_hours and not problems:
-        usable = any(len(curve_profile(doc, z, min_hours)) for z in curve)
-        if not usable:
-            problems.append(f"no zone has >= {min_hours} sampled hours (too sparse to contribute)")
+    if min_hours and not problems and not any(curve_profile(doc, z, min_hours) for z in curve):
+        problems.append(f"no zone has >= {min_hours} sampled hours (too sparse to contribute)")
     return problems
 
 
@@ -337,26 +335,10 @@ def write_status_badge(gist_id, token, zone, intensity, tier):
     """Write the live status badge to the gist and return its shields URL or None."""
     if not token or not gist_id:
         return None
-    body = {
-        "files": {
-            STATUS_BADGE_FILENAME: {
-                "content": json.dumps(status_badge_payload(zone, intensity, tier), indent=2)
-            }
-        }
-    }
-    resp = base.request(
-        f"{GIST_API}/{gist_id}",
-        method="PATCH",
-        headers=base.github_headers(token),
-        json_body=body,
-        parse="json",
-    )
-    if resp is None:
-        return None
-    owner = (resp.get("owner") or {}).get("login")
-    if not owner:
-        return None
-    return _shields_endpoint(owner, gist_id, STATUS_BADGE_FILENAME)
+    badge = status_badge_payload(zone, intensity, tier)
+    resp = _gist_patch(gist_id, token, {STATUS_BADGE_FILENAME: badge})
+    owner = ((resp or {}).get("owner") or {}).get("login")
+    return _shields_endpoint(owner, gist_id, STATUS_BADGE_FILENAME) if owner else None
 
 
 def _shields_endpoint(owner, gist_id, filename):
@@ -383,17 +365,16 @@ def _load_file(path):
     try:
         with open(path) as f:
             return json.load(f)
-    except (FileNotFoundError, ValueError, OSError):
+    except (OSError, ValueError):
         return empty_ledger()
 
 
-def _save_file(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-
 def _gist_read(gist_id, token):
-    """Return (ledger_data, owner_login). Falls back to an empty ledger."""
+    """Return (ledger_data, owner_login). Falls back to an empty ledger.
+
+    owner_login is None when the gist itself could not be fetched, so callers
+    can tell a failed read from a gist that has no ledger file yet
+    """
     resp = base.request(f"{GIST_API}/{gist_id}", headers=base.github_headers(token), parse="json")
     if not resp:
         return empty_ledger(), None
@@ -407,13 +388,9 @@ def _gist_read(gist_id, token):
         return empty_ledger(), owner
 
 
-def _gist_write(gist_id, token, data):
-    body = {
-        "files": {
-            LEDGER_FILENAME: {"content": json.dumps(data, indent=2)},
-            BADGE_FILENAME: {"content": json.dumps(badge_payload(data), indent=2)},
-        }
-    }
+def _gist_patch(gist_id, token, files):
+    """PATCH {filename: document} JSON files into the gist. Returns the response or None."""
+    body = {"files": {name: {"content": json.dumps(doc, indent=2)} for name, doc in files.items()}}
     return base.request(
         f"{GIST_API}/{gist_id}",
         method="PATCH",
@@ -423,18 +400,31 @@ def _gist_write(gist_id, token, data):
     )
 
 
-def _summary(data, badge_url, month=None):
+def load(config, token=""):
+    """Read the ledger named by a ``ledger`` config string, or None when it is disabled.
+
+    A missing or unreadable store reads as an empty ledger, matching record_savings
+    """
+    backend, location = parse_config(config)
+    if not backend or not location:
+        return None
+    if backend == "file":
+        return _load_file(location)
+    return _gist_read(location, token)[0]
+
+
+def _summary(data, badge_url, month):
     totals = data.get("totals") or {}
     grams = float(totals.get("co2_saved_grams", 0))
     runs = int(totals.get("runs", 0))
-    green_mtd, runs_mtd = sla_window(data, month) if month else (0, 0)
+    green_mtd, runs_mtd = sla_window(data, month)
     return {
         "total_grams": grams,
         "total_runs": runs,
         "message": f"{format_total(grams)} over {runs} builds",
         "badge_url": badge_url,
         "emitted_total": float(totals.get("co2_emitted_grams", 0)),
-        "emitted_mtd": month_to_date_emitted(data, month) if month else 0,
+        "emitted_mtd": month_to_date_emitted(data, month),
         "avoided_total": float(totals.get("co2_avoided_grams", 0)),
         "green_mtd": green_mtd,
         "runs_mtd": runs_mtd,
@@ -501,7 +491,8 @@ def record_savings(
             is_green,
         )
         try:
-            _save_file(location, data)
+            with open(location, "w") as f:
+                json.dump(data, f, indent=2)
         except OSError as exc:
             print(f"::warning::Could not write ledger file {location}: {exc}")
             return None
@@ -522,8 +513,8 @@ def record_savings(
     data = _assemble(
         current, saved_grams, date_str, emitted_grams, zone, intensity, hour, energy_kwh, is_green
     )
-    if _gist_write(location, token, data) is None:
+    files = {LEDGER_FILENAME: data, BADGE_FILENAME: badge_payload(data)}
+    if _gist_patch(location, token, files) is None:
         print("::warning::Could not update ledger gist, skipping ledger update")
         return None
-    badge_url = _shields_endpoint(owner, location, BADGE_FILENAME) if owner else None
-    return _summary(data, badge_url, month)
+    return _summary(data, _shields_endpoint(owner, location, BADGE_FILENAME), month)
