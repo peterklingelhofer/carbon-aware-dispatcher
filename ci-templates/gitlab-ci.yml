@@ -31,13 +31,13 @@ stages:
     GRID_ZONE: "auto:detect"
     MAX_CARBON: "250"
   before_script:
-    - pip install -q uv && uv pip install --system -q requests==2.32.*
+    - pip install -q uv && uv pip install --system -q requests==2.34.*
   script:
     - |
       python -c "
       import os, sys
       sys.path.insert(0, '.')
-      from check_grid import parse_zones_input, check_carbon_intensity, detect_provider
+      from check_grid import parse_zones_input, check_carbon_intensity
       from providers import detect_provider
 
       zone_str = os.environ.get('GRID_ZONE', 'auto:detect')

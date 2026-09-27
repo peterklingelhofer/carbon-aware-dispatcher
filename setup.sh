@@ -110,7 +110,7 @@ cat >> "$WORKFLOW_FILE" << 'WORKFLOW_EOF'
     if: needs.green-check.outputs.clean == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: |
           echo "Running on clean energy in ${{ needs.green-check.outputs.zone }}!"
           echo "Carbon intensity: ${{ needs.green-check.outputs.intensity }} gCO2eq/kWh"
