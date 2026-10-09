@@ -19,6 +19,8 @@ power assumption 4x too high and a factor table mislabelled as IPCC.
 
 For a job or a CI pipeline, Carbon-Aware Dispatcher waits for a cleaner grid window, cutting carbon intensity by 27 gCO2eq/kWh per deferral in a 90-day backtest. It aggregates grid data from 16 grid-operator and open-data sources, and publishes how often it called it wrong.
 
+It's free and MIT-licensed, and it covers 196 zones without an API key or a data-provider account.
+
 ```yaml
 # .github/workflows/carbon-aware-build.yml
 name: Carbon-Aware Build
